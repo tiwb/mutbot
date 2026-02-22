@@ -1,0 +1,644 @@
+:root {
+  --bg: #1a1a2e;
+  --bg-sidebar: #16213e;
+  --bg-msg-user: #0f3460;
+  --bg-msg-assistant: #1a1a2e;
+  --bg-tool: #162447;
+  --bg-input: #16213e;
+  --text: #e4e4e4;
+  --text-dim: #8888aa;
+  --accent: #e94560;
+  --accent-green: #4ecca3;
+  --accent-yellow: #f0c040;
+  --border: #2a2a4a;
+  --radius: 8px;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: 14px;
+  color: var(--text);
+  background: var(--bg);
+}
+
+/* Layout */
+.app {
+  display: flex;
+  height: 100%;
+}
+
+.sidebar {
+  width: 260px;
+  min-width: 260px;
+  background: var(--bg-sidebar);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+}
+
+.sidebar-header {
+  padding: 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.sidebar-header h1 {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.main-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.empty-state {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-dim);
+}
+
+/* Session list */
+.session-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px;
+}
+
+.btn-new-session {
+  width: 100%;
+  padding: 10px;
+  background: transparent;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  color: var(--text-dim);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 13px;
+  margin-bottom: 8px;
+  transition: border-color 0.2s, color 0.2s;
+}
+
+.btn-new-session:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.session-list ul {
+  list-style: none;
+}
+
+.session-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 12px;
+  border-radius: var(--radius);
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.session-item:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.session-item.active {
+  background: rgba(233, 69, 96, 0.15);
+}
+
+.session-item.ended {
+  opacity: 0.5;
+}
+
+.session-title {
+  font-size: 13px;
+}
+
+.session-status {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.session-status.active {
+  color: var(--accent-green);
+}
+
+/* Agent panel */
+.agent-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.agent-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+  color: var(--text-dim);
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--text-dim);
+  transition: background 0.3s;
+}
+
+.status-dot.connected {
+  background: var(--accent-green);
+}
+
+/* Message list */
+.message-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.message {
+  max-width: 85%;
+  border-radius: var(--radius);
+  line-height: 1.6;
+}
+
+.message.user {
+  align-self: flex-end;
+  background: var(--bg-msg-user);
+  padding: 10px 14px;
+}
+
+.message.assistant.text {
+  align-self: flex-start;
+  background: var(--bg-msg-assistant);
+  border: 1px solid var(--border);
+  padding: 10px 14px;
+}
+
+.message.assistant.tool-group {
+  align-self: flex-start;
+  max-width: 90%;
+  padding: 0;
+  background: transparent;
+  border: none;
+}
+
+.message.assistant.error {
+  align-self: flex-start;
+  background: rgba(233, 69, 96, 0.1);
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  padding: 10px 14px;
+}
+
+.tool-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-dim);
+  margin-bottom: 4px;
+}
+
+.message-content pre {
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: "SF Mono", "Cascadia Code", Consolas, monospace;
+  font-size: 13px;
+  margin: 0;
+}
+
+/* ----------------------------------------------------------------
+   Markdown body
+   ---------------------------------------------------------------- */
+.markdown-body {
+  font-size: 14px;
+  line-height: 1.6;
+  word-wrap: break-word;
+}
+
+.markdown-body > :first-child {
+  margin-top: 0;
+}
+
+.markdown-body > :last-child {
+  margin-bottom: 0;
+}
+
+.markdown-body p {
+  margin: 0.5em 0;
+}
+
+.markdown-body h1,
+.markdown-body h2,
+.markdown-body h3,
+.markdown-body h4,
+.markdown-body h5,
+.markdown-body h6 {
+  margin: 0.8em 0 0.4em;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.markdown-body h1 { font-size: 1.4em; }
+.markdown-body h2 { font-size: 1.25em; }
+.markdown-body h3 { font-size: 1.1em; }
+
+.markdown-body ul,
+.markdown-body ol {
+  margin: 0.4em 0;
+  padding-left: 1.6em;
+}
+
+.markdown-body li {
+  margin: 0.2em 0;
+}
+
+.markdown-body blockquote {
+  margin: 0.5em 0;
+  padding: 0.2em 0.8em;
+  border-left: 3px solid var(--border);
+  color: var(--text-dim);
+}
+
+.markdown-body hr {
+  margin: 0.8em 0;
+  border: none;
+  border-top: 1px solid var(--border);
+}
+
+.markdown-body a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.markdown-body a:hover {
+  text-decoration: underline;
+}
+
+.markdown-body strong {
+  font-weight: 600;
+}
+
+/* Inline code */
+.inline-code {
+  background: rgba(255, 255, 255, 0.08);
+  padding: 0.15em 0.4em;
+  border-radius: 4px;
+  font-family: "SF Mono", "Cascadia Code", Consolas, monospace;
+  font-size: 0.9em;
+}
+
+/* Tables (GFM) */
+.md-table-wrapper {
+  overflow-x: auto;
+  margin: 0.5em 0;
+}
+
+.markdown-body table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 13px;
+}
+
+.markdown-body th,
+.markdown-body td {
+  border: 1px solid var(--border);
+  padding: 6px 10px;
+  text-align: left;
+}
+
+.markdown-body th {
+  background: rgba(255, 255, 255, 0.04);
+  font-weight: 600;
+}
+
+/* ----------------------------------------------------------------
+   Code Block (Shiki)
+   ---------------------------------------------------------------- */
+.code-block {
+  margin: 0.5em 0;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+
+.code-block-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 10px;
+  background: rgba(255, 255, 255, 0.04);
+  border-bottom: 1px solid var(--border);
+}
+
+.code-block-lang {
+  font-size: 11px;
+  color: var(--text-dim);
+  font-family: "SF Mono", "Cascadia Code", Consolas, monospace;
+}
+
+.code-block-copy {
+  font-size: 11px;
+  color: var(--text-dim);
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-family: inherit;
+  padding: 2px 6px;
+  border-radius: 4px;
+  transition: color 0.2s, background 0.2s;
+}
+
+.code-block-copy:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.code-block-body {
+  padding: 10px 14px;
+  overflow-x: auto;
+  font-family: "SF Mono", "Cascadia Code", Consolas, monospace;
+  font-size: 13px;
+  line-height: 1.5;
+  background: #0d1117;
+}
+
+.code-block-body pre {
+  margin: 0;
+  background: transparent !important;
+}
+
+.code-block-body code {
+  font-family: inherit;
+  white-space: pre;
+}
+
+/* Shiki generates <pre><code> with inline styles; reset overflow */
+.code-block-body .shiki {
+  background: transparent !important;
+  padding: 0;
+  margin: 0;
+}
+
+/* ----------------------------------------------------------------
+   Tool Call Card
+   ---------------------------------------------------------------- */
+.tool-card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  font-size: 13px;
+  background: var(--bg-tool);
+}
+
+.tool-card.running {
+  border-color: var(--accent-yellow);
+}
+
+.tool-card.success {
+  border-color: var(--border);
+}
+
+.tool-card.error {
+  border-color: var(--accent);
+}
+
+.tool-card-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.15s;
+}
+
+.tool-card-header:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.tool-card-status {
+  font-size: 14px;
+  flex-shrink: 0;
+}
+
+.tool-card.running .tool-card-status {
+  color: var(--accent-yellow);
+  animation: spin 1s linear infinite;
+}
+
+.tool-card.success .tool-card-status {
+  color: var(--accent-green);
+}
+
+.tool-card.error .tool-card-status {
+  color: var(--accent);
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.tool-card-name {
+  font-weight: 600;
+  font-family: "SF Mono", "Cascadia Code", Consolas, monospace;
+  color: var(--text);
+}
+
+.tool-card-args-preview {
+  color: var(--text-dim);
+  font-family: "SF Mono", "Cascadia Code", Consolas, monospace;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
+
+.tool-card-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.tool-card-duration {
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.tool-card-chevron {
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.tool-card-body {
+  border-top: 1px solid var(--border);
+  padding: 8px 12px;
+}
+
+.tool-card-section {
+  margin-bottom: 8px;
+}
+
+.tool-card-section:last-child {
+  margin-bottom: 0;
+}
+
+.tool-card-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-dim);
+  margin-bottom: 4px;
+}
+
+.tool-card-label.error {
+  color: var(--accent);
+}
+
+.tool-card-pre {
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: "SF Mono", "Cascadia Code", Consolas, monospace;
+  font-size: 12px;
+  color: var(--text);
+  margin: 0;
+  max-height: 300px;
+  overflow-y: auto;
+  background: rgba(0, 0, 0, 0.2);
+  padding: 8px;
+  border-radius: 4px;
+}
+
+/* ----------------------------------------------------------------
+   Thinking Block
+   ---------------------------------------------------------------- */
+.thinking-block {
+  margin: 0.5em 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.thinking-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--text-dim);
+  background: rgba(255, 255, 255, 0.02);
+  user-select: none;
+}
+
+.thinking-header:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.thinking-icon {
+  font-size: 10px;
+}
+
+.thinking-content {
+  padding: 8px 12px;
+  font-size: 12px;
+  color: var(--text-dim);
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: "SF Mono", "Cascadia Code", Consolas, monospace;
+  border-top: 1px solid var(--border);
+  max-height: 400px;
+  overflow-y: auto;
+}
+
+/* Status block */
+.status-block {
+  margin: 0.5em 0;
+  padding: 8px 12px;
+  border-left: 3px solid var(--accent-green);
+  background: rgba(78, 204, 163, 0.05);
+  border-radius: 0 var(--radius) var(--radius) 0;
+}
+
+.status-block pre {
+  white-space: pre-wrap;
+  font-family: inherit;
+  font-size: 13px;
+  margin: 0;
+}
+
+/* Chat input */
+.chat-input {
+  display: flex;
+  gap: 8px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-sidebar);
+}
+
+.chat-input textarea {
+  flex: 1;
+  resize: none;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 13px;
+  outline: none;
+  transition: border-color 0.2s;
+}
+
+.chat-input textarea:focus {
+  border-color: var(--accent);
+}
+
+.chat-input textarea:disabled {
+  opacity: 0.5;
+}
+
+.chat-input button {
+  padding: 10px 20px;
+  background: var(--accent);
+  color: white;
+  border: none;
+  border-radius: var(--radius);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  transition: opacity 0.2s;
+}
+
+.chat-input button:hover:not(:disabled) {
+  opacity: 0.85;
+}
+
+.chat-input button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}

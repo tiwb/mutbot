@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mutbot"
+version = "0.0.1"
+description = "A Python AI Bot based on mutagent"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"
+authors = [
+    {name = "tiwb"},
+]
+keywords = ["ai", "agent", "llm", "runtime", "hot-reload"]
+dependencies = [
+    "mutagent>=0.1.0",
+    "fastapi>=0.100.0",
+    "uvicorn[standard]>=0.20.0",
+]
+classifiers = [
+    "Development Status :: 1 - Planning",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+[project.urls]
+Homepage = "https://github.com/tiwb/mutbot"
+Repository = "https://github.com/tiwb/mutbot"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["mutbot*"]
