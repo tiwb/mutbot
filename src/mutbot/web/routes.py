@@ -7,7 +7,7 @@ import logging
 from dataclasses import asdict
 from typing import Any
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
 
 from mutbot.web.connection import ConnectionManager
 
@@ -21,6 +21,11 @@ def _get_managers():
     """Lazy import of global managers from server module."""
     from mutbot.web.server import workspace_manager, session_manager
     return workspace_manager, session_manager
+
+
+def _get_log_store():
+    from mutbot.web.server import log_store
+    return log_store
 
 
 def _workspace_dict(ws) -> dict[str, Any]:
@@ -52,6 +57,36 @@ def _session_dict(s) -> dict[str, Any]:
 @router.get("/api/health")
 async def health():
     return {"status": "ok"}
+
+
+# ---------------------------------------------------------------------------
+# Log query endpoint
+# ---------------------------------------------------------------------------
+
+@router.get("/api/logs")
+async def query_logs(
+    pattern: str = Query("", description="Regex pattern to match against message"),
+    level: str = Query("DEBUG", description="Minimum log level (DEBUG/INFO/WARNING/ERROR)"),
+    limit: int = Query(50, description="Maximum number of entries to return", ge=1, le=500),
+):
+    """Query in-memory log entries (newest first)."""
+    store = _get_log_store()
+    if store is None:
+        return {"entries": [], "total": 0}
+    entries = store.query(pattern=pattern, level=level, limit=limit)
+    return {
+        "total": store.count(),
+        "returned": len(entries),
+        "entries": [
+            {
+                "timestamp": e.timestamp,
+                "level": e.level,
+                "logger": e.logger_name,
+                "message": e.message,
+            }
+            for e in entries
+        ],
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -123,6 +158,9 @@ async def stop_session(session_id: str):
 # WebSocket handler
 # ---------------------------------------------------------------------------
 
+fe_logger = logging.getLogger("mutbot.frontend")
+
+
 @router.websocket("/ws/session/{session_id}")
 async def websocket_session(websocket: WebSocket, session_id: str):
     _, sm = _get_managers()
@@ -154,6 +192,12 @@ async def websocket_session(websocket: WebSocket, session_id: str):
                 data = raw.get("data")
                 if text:
                     bridge.send_message(text, data)
+            elif msg_type == "log":
+                # Frontend log forwarding
+                level = raw.get("level", "debug")
+                message = raw.get("message", "")
+                log_fn = getattr(fe_logger, level, fe_logger.debug)
+                log_fn("[%s] %s", session_id[:8], message)
             elif msg_type == "stop":
                 sm.stop(session_id)
                 break

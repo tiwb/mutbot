@@ -8,6 +8,7 @@ import queue
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from mutagent.agent import Agent
@@ -33,7 +34,11 @@ class Session:
     bridge: AgentBridge | None = field(default=None, repr=False)
 
 
-def create_agent(agent_config: dict[str, Any] | None = None) -> Agent:
+def create_agent(
+    agent_config: dict[str, Any] | None = None,
+    log_dir: Path | None = None,
+    session_ts: str = "",
+) -> Agent:
     """Assemble a mutagent Agent from configuration.
 
     Loads Config from the standard location, builds LLMClient + ToolSet,
@@ -42,13 +47,14 @@ def create_agent(agent_config: dict[str, Any] | None = None) -> Agent:
     import importlib
     import os
     import sys
-    from pathlib import Path
+    from pathlib import Path as _Path
 
     from mutagent.main import App
     from mutagent.toolkits.module_toolkit import ModuleToolkit
     from mutagent.toolkits.log_toolkit import LogToolkit
     from mutagent.runtime.module_manager import ModuleManager
     from mutagent.runtime.log_store import LogStore, LogStoreHandler
+    from mutagent.runtime.api_recorder import ApiRecorder
 
     # Load config
     config = Config.load(".mutagent/config.json")
@@ -59,8 +65,8 @@ def create_agent(agent_config: dict[str, Any] | None = None) -> Agent:
 
     # Setup sys.path
     for mutagent_dir in [
-        str(Path.home() / ".mutagent"),
-        str(Path.cwd() / ".mutagent"),
+        str(_Path.home() / ".mutagent"),
+        str(_Path.cwd() / ".mutagent"),
     ]:
         if mutagent_dir not in sys.path:
             sys.path.insert(0, mutagent_dir)
@@ -80,7 +86,7 @@ def create_agent(agent_config: dict[str, Any] | None = None) -> Agent:
         raise RuntimeError(str(e)) from None
 
     # Build components
-    search_dirs = [Path.home() / ".mutagent", Path.cwd() / ".mutagent"]
+    search_dirs = [_Path.home() / ".mutagent", _Path.cwd() / ".mutagent"]
     module_manager = ModuleManager(search_dirs=search_dirs)
     module_tools = ModuleToolkit(module_manager=module_manager)
 
@@ -91,10 +97,17 @@ def create_agent(agent_config: dict[str, Any] | None = None) -> Agent:
     tool_set.add(module_tools)
     tool_set.add(log_tools)
 
+    # API call recorder (JSONL, shared log_dir with mutbot)
+    api_recorder = None
+    if log_dir and session_ts:
+        api_recorder = ApiRecorder(log_dir, mode="incremental", session_ts=session_ts)
+        logger.info("API recorder enabled (session_ts=%s)", session_ts)
+
     client = LLMClient(
         model=model.get("model_id", ""),
         api_key=model.get("auth_token", ""),
         base_url=model.get("base_url", ""),
+        api_recorder=api_recorder,
     )
 
     system_prompt = (agent_config or {}).get("system_prompt", "")
@@ -120,6 +133,9 @@ class SessionManager:
 
     def __init__(self) -> None:
         self._sessions: dict[str, Session] = {}
+        # Set by server.py lifespan for log/API recording
+        self.session_ts: str = ""
+        self.log_dir: Path | None = None
 
     def create(self, workspace_id: str, agent_config: dict[str, Any] | None = None) -> Session:
         now = datetime.now(timezone.utc).isoformat()
@@ -149,7 +165,10 @@ class SessionManager:
         if session.bridge is not None:
             return session.bridge
 
-        agent = create_agent()
+        agent = create_agent(
+            log_dir=self.log_dir,
+            session_ts=self.session_ts,
+        )
         session.agent = agent
 
         input_q: queue.Queue = queue.Queue()

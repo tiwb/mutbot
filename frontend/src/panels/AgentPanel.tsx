@@ -1,24 +1,40 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ReconnectingWebSocket } from "../lib/websocket";
+import { rlog, setLogSocket } from "../lib/remote-log";
 import MessageList, { type ChatMessage } from "../components/MessageList";
 import ChatInput from "../components/ChatInput";
 import type { ToolGroupData } from "../components/ToolCallCard";
+
+const DEBUG = true;
+
+// Session-level message cache — survives session switching (in-memory only)
+const messageCache = new Map<string, ChatMessage[]>();
+const pendingTextCache = new Map<string, string>();
 
 interface Props {
   sessionId: string;
 }
 
 export default function AgentPanel({ sessionId }: Props) {
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [messages, setMessages] = useState<ChatMessage[]>(
+    () => messageCache.get(sessionId) ?? [],
+  );
   const [connected, setConnected] = useState(false);
   const wsRef = useRef<ReconnectingWebSocket | null>(null);
-  const pendingTextRef = useRef("");
-  // Map tool_call_id → message id for matching exec_start with exec_end
+  const pendingTextRef = useRef(pendingTextCache.get(sessionId) ?? "");
+  const messagesRef = useRef<ChatMessage[]>(messages);
   const toolCallMapRef = useRef<Map<string, string>>(new Map());
 
+  // Keep messagesRef in sync with state (for cleanup to read latest)
+  messagesRef.current = messages;
+
   useEffect(() => {
-    setMessages([]);
-    pendingTextRef.current = "";
+    // Restore from cache (or keep initialState from useState)
+    const cached = messageCache.get(sessionId);
+    const cachedPending = pendingTextCache.get(sessionId) ?? "";
+    if (DEBUG) rlog.debug("init session", sessionId, "cached msgs =", cached?.length ?? 0);
+    setMessages(cached ?? []);
+    pendingTextRef.current = cachedPending;
     toolCallMapRef.current.clear();
 
     const protocol = location.protocol === "https:" ? "wss:" : "ws:";
@@ -28,27 +44,48 @@ export default function AgentPanel({ sessionId }: Props) {
       url,
       (data) => handleEvent(data),
       {
-        onOpen: () => setConnected(true),
-        onClose: () => setConnected(false),
+        onOpen: () => {
+          if (DEBUG) rlog.debug("WS open");
+          setConnected(true);
+        },
+        onClose: () => {
+          if (DEBUG) rlog.debug("WS close");
+          setConnected(false);
+        },
       },
     );
     wsRef.current = ws;
-    return () => ws.close();
+    setLogSocket(ws, sessionId);
+
+    return () => {
+      if (DEBUG) rlog.debug("cleanup session", sessionId, "saving", messagesRef.current.length, "msgs");
+      // Save current session state to cache before switching
+      messageCache.set(sessionId, messagesRef.current);
+      pendingTextCache.set(sessionId, pendingTextRef.current);
+      setLogSocket(null);
+      ws.close();
+    };
   }, [sessionId]);
 
   function handleEvent(data: Record<string, unknown>) {
     const eventType = data.type as string;
+    if (DEBUG) {
+      if (eventType === "text_delta") {
+        rlog.debug("evt text_delta", `"${(data.text as string).slice(0, 40)}"`);
+      } else {
+        rlog.debug("evt", eventType, JSON.stringify(data).slice(0, 150));
+      }
+    }
 
     if (eventType === "text_delta") {
-      pendingTextRef.current += data.text as string;
+      const text = data.text as string;
+      pendingTextRef.current += text;
+      const snapshot = pendingTextRef.current;
       setMessages((prev) => {
         const last = prev[prev.length - 1];
         if (last && last.role === "assistant" && last.type === "text") {
           const updated = [...prev];
-          updated[updated.length - 1] = {
-            ...last,
-            content: pendingTextRef.current,
-          };
+          updated[updated.length - 1] = { ...last, content: snapshot };
           return updated;
         }
         return [
@@ -57,7 +94,7 @@ export default function AgentPanel({ sessionId }: Props) {
             id: crypto.randomUUID(),
             role: "assistant" as const,
             type: "text" as const,
-            content: pendingTextRef.current,
+            content: snapshot,
           },
         ];
       });
@@ -110,11 +147,20 @@ export default function AgentPanel({ sessionId }: Props) {
         }
       }
     } else if (eventType === "response_done") {
-      // Reset pending text between LLM responses (e.g. between tool call rounds)
+      if (DEBUG) rlog.debug("response_done: pendingText was", pendingTextRef.current.length, "chars");
       pendingTextRef.current = "";
     } else if (eventType === "turn_done") {
       pendingTextRef.current = "";
+      if (DEBUG) {
+        setMessages((prev) => {
+          rlog.debug("turn_done: total msgs =", prev.length);
+          return prev;
+        });
+      }
+    } else if (eventType === "agent_done") {
+      if (DEBUG) rlog.info("agent_done: agent thread finished");
     } else if (eventType === "error") {
+      rlog.error("agent error:", data.error);
       setMessages((prev) => [
         ...prev,
         {
@@ -139,11 +185,14 @@ export default function AgentPanel({ sessionId }: Props) {
           },
         ]);
       }
+    } else {
+      if (DEBUG) rlog.debug("unhandled event:", eventType);
     }
   }
 
   const handleSend = useCallback((text: string) => {
     if (!text.trim()) return;
+    if (DEBUG) rlog.debug("send:", text.slice(0, 80));
     setMessages((prev) => [
       ...prev,
       {
@@ -162,6 +211,7 @@ export default function AgentPanel({ sessionId }: Props) {
       <div className="agent-header">
         <span className={`status-dot ${connected ? "connected" : ""}`} />
         <span>Session {sessionId.slice(0, 8)}</span>
+        {DEBUG && <span style={{ marginLeft: "auto", opacity: 0.5, fontSize: "0.8em" }}>msgs: {messages.length}</span>}
       </div>
       <MessageList messages={messages} />
       <ChatInput onSend={handleSend} disabled={!connected} />

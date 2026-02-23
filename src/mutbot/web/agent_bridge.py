@@ -96,16 +96,20 @@ class AgentBridge:
 
     async def _forward_events(self) -> None:
         """Read events from the internal queue and broadcast to all WS clients."""
+        event_count = 0
         try:
             while True:
                 data = await self._event_queue.get()
                 if data is None:
-                    # Agent finished — notify clients
+                    logger.info("Session %s: forwarder done after %d events", self.session_id, event_count)
                     await self.broadcast_fn(self.session_id, {"type": "agent_done"})
                     break
+                event_count += 1
+                etype = data.get("type", "?")
+                logger.debug("Session %s: forward #%d type=%s", self.session_id, event_count, etype)
                 await self.broadcast_fn(self.session_id, data)
         except asyncio.CancelledError:
-            pass
+            logger.info("Session %s: forwarder cancelled after %d events", self.session_id, event_count)
 
     def _run_agent(self) -> None:
         """Synchronous agent loop — runs in a worker thread."""
