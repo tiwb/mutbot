@@ -29,9 +29,11 @@ class Session:
     id: str
     workspace_id: str
     title: str
+    type: str = "agent"  # "agent" / "terminal" / "document"
     status: str = "active"  # "active" / "ended"
     created_at: str = ""
     updated_at: str = ""
+    config: dict[str, Any] | None = None  # type-specific config
     # Runtime (not serialized)
     agent: Agent | None = field(default=None, repr=False)
     bridge: AgentBridge | None = field(default=None, repr=False)
@@ -42,9 +44,11 @@ def _session_to_dict(s: Session, include_messages: bool = False) -> dict:
         "id": s.id,
         "workspace_id": s.workspace_id,
         "title": s.title,
+        "type": s.type,
         "status": s.status,
         "created_at": s.created_at,
         "updated_at": s.updated_at,
+        "config": s.config,
     }
     if include_messages and s.agent and s.agent.messages:
         d["messages"] = [serialize_message(m) for m in s.agent.messages]
@@ -180,6 +184,8 @@ class SessionManager:
         # Set by server.py lifespan for log/API recording
         self.session_ts: str = ""
         self.log_dir: Path | None = None
+        # Set by server.py lifespan for terminal session management
+        self.terminal_manager: Any = None
 
     def load_from_disk(self) -> None:
         """Load all sessions from .mutbot/sessions/*.json (metadata only, no agent)."""
@@ -188,9 +194,11 @@ class SessionManager:
                 id=data["id"],
                 workspace_id=data.get("workspace_id", ""),
                 title=data.get("title", ""),
+                type=data.get("type", "agent"),
                 status=data.get("status", "ended"),
                 created_at=data.get("created_at", ""),
                 updated_at=data.get("updated_at", ""),
+                config=data.get("config"),
             )
             self._sessions[session.id] = session
         if self._sessions:
@@ -223,14 +231,29 @@ class SessionManager:
     def get_session_events(self, session_id: str) -> list[dict]:
         return storage.load_session_events(session_id)
 
-    def create(self, workspace_id: str, agent_config: dict[str, Any] | None = None) -> Session:
+    def create(
+        self,
+        workspace_id: str,
+        session_type: str = "agent",
+        config: dict[str, Any] | None = None,
+        agent_config: dict[str, Any] | None = None,
+    ) -> Session:
         now = datetime.now(timezone.utc).isoformat()
+
+        # Default title based on type
+        type_counts = sum(1 for s in self._sessions.values() if s.type == session_type)
+        type_labels = {"agent": "Agent", "terminal": "Terminal", "document": "Document"}
+        label = type_labels.get(session_type, session_type.capitalize())
+        title = f"{label} {type_counts + 1}"
+
         session = Session(
             id=uuid.uuid4().hex[:12],
             workspace_id=workspace_id,
-            title=f"Session {len(self._sessions) + 1}",
+            title=title,
+            type=session_type,
             created_at=now,
             updated_at=now,
+            config=config,
         )
         self._sessions[session.id] = session
         self._persist(session)
@@ -243,7 +266,7 @@ class SessionManager:
         return [s for s in self._sessions.values() if s.workspace_id == workspace_id]
 
     def start(self, session_id: str, loop: asyncio.AbstractEventLoop, broadcast_fn=None) -> AgentBridge:
-        """Assemble Agent + bridge and start the agent thread.
+        """Assemble Agent + bridge and start the agent thread (agent sessions only).
 
         If the session has persisted messages, restore them into the new Agent.
 
@@ -251,6 +274,8 @@ class SessionManager:
             broadcast_fn: async callable(session_id, data) for event broadcasting.
         """
         session = self._sessions[session_id]
+        if session.type != "agent":
+            raise ValueError(f"Cannot start agent bridge for {session.type!r} session")
         if session.bridge is not None:
             return session.bridge
 
@@ -291,14 +316,25 @@ class SessionManager:
         session = self._sessions.get(session_id)
         if session is None:
             return
-        if session.bridge is not None:
-            await session.bridge.stop()
-            session.bridge = None
-        # Persist final state before clearing agent
-        self._persist(session)
-        session.agent = None
+
+        if session.type == "agent":
+            # Stop agent bridge
+            if session.bridge is not None:
+                await session.bridge.stop()
+                session.bridge = None
+            # Persist final state before clearing agent
+            self._persist(session)
+            session.agent = None
+        elif session.type == "terminal":
+            # Kill the associated PTY
+            tm = self.terminal_manager
+            if tm is not None and session.config:
+                terminal_id = session.config.get("terminal_id")
+                if terminal_id and tm.has(terminal_id):
+                    tm.kill(terminal_id)
+        # Document sessions have no runtime resources to clean up
+
         session.status = "ended"
         session.updated_at = datetime.now(timezone.utc).isoformat()
-        # Persist ended status
         self._persist(session)
-        logger.info("Session %s: stopped", session_id)
+        logger.info("Session %s (%s): stopped", session_id, session.type)

@@ -95,10 +95,19 @@ export async function fetchSessions(workspaceId: string) {
   return res.json();
 }
 
-export async function createSession(workspaceId: string) {
+export async function createSession(
+  workspaceId: string,
+  type: string = "agent",
+  config?: Record<string, unknown>,
+  extraBody?: Record<string, unknown>,
+) {
   const res = await authFetch(
     `${BASE}/api/workspaces/${workspaceId}/sessions`,
-    { method: "POST" },
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ type, config, ...extraBody }),
+    },
   );
   return res.json();
 }

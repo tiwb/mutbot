@@ -58,9 +58,11 @@ def _session_dict(s) -> dict[str, Any]:
         "id": s.id,
         "workspace_id": s.workspace_id,
         "title": s.title,
+        "type": s.type,
         "status": s.status,
         "created_at": s.created_at,
         "updated_at": s.updated_at,
+        "config": s.config,
     }
 
 
@@ -171,12 +173,30 @@ async def update_workspace(workspace_id: str, body: dict[str, Any]):
 # ---------------------------------------------------------------------------
 
 @router.post("/api/workspaces/{workspace_id}/sessions")
-async def create_session(workspace_id: str):
+async def create_session(workspace_id: str, body: dict[str, Any] | None = None):
     wm, sm = _get_managers()
     ws = wm.get(workspace_id)
     if ws is None:
-        return {"error": "workspace not found"}, 404
-    session = sm.create(workspace_id)
+        return JSONResponse({"error": "workspace not found"}, status_code=404)
+
+    body = body or {}
+    session_type = body.get("type", "agent")
+    config = body.get("config")
+
+    # For terminal sessions, create a PTY and store terminal_id in config
+    if session_type == "terminal":
+        tm = _get_terminal_manager()
+        if tm is None:
+            return JSONResponse({"error": "terminal manager not available"}, status_code=503)
+        shell_command = (config or {}).get("shell_command", "cmd.exe")
+        rows = body.get("rows", 24)
+        cols = body.get("cols", 80)
+        term = tm.create(workspace_id, rows, cols, cwd=ws.project_path)
+        config = config or {}
+        config["terminal_id"] = term.id
+        config.setdefault("shell_command", shell_command)
+
+    session = sm.create(workspace_id, session_type=session_type, config=config)
     ws.sessions.append(session.id)
     wm.update(ws)
     return _session_dict(session)

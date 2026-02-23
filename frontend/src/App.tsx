@@ -1,12 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   Layout,
   type Model,
   Actions,
   DockLocation,
+  type Action,
   type TabNode,
   type TabSetNode,
+  type BorderNode,
   type IJsonModel,
+  type ITabSetRenderValues,
 } from "flexlayout-react";
 import "flexlayout-react/style/dark.css";
 import {
@@ -17,12 +21,13 @@ import {
   checkAuthStatus,
   login,
   setAuthToken,
+  stopSession,
 } from "./lib/api";
 import {
   createModel,
   PANEL_AGENT_CHAT,
   PANEL_TERMINAL,
-  PANEL_LOG,
+  PANEL_CODE_EDITOR,
 } from "./lib/layout";
 import { panelFactory } from "./panels/PanelFactory";
 
@@ -37,7 +42,9 @@ interface Session {
   id: string;
   workspace_id: string;
   title: string;
+  type: string;
   status: string;
+  config?: Record<string, unknown> | null;
 }
 
 /** Find the active tabset, or fall back to the first tabset in the model. */
@@ -101,6 +108,125 @@ function LoginScreen({ onLogin }: { onLogin: () => void }) {
 }
 
 // ---------------------------------------------------------------------------
+// Add Session dropdown button (for tabset "+" button)
+// ---------------------------------------------------------------------------
+
+function AddSessionDropdown({
+  onAdd,
+}: {
+  onAdd: (type: "agent" | "terminal" | "document") => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const btnRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const [menuPos, setMenuPos] = useState<{ top: number; left: number }>({ top: 0, left: 0 });
+
+  // Compute menu position from button rect
+  const updateMenuPos = useCallback(() => {
+    if (!btnRef.current) return;
+    const rect = btnRef.current.getBoundingClientRect();
+    setMenuPos({ top: rect.bottom + 2, left: rect.right - 120 });
+  }, []);
+
+  // Close on outside click
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: PointerEvent) => {
+      const target = e.target as Node;
+      if (
+        btnRef.current?.contains(target) ||
+        menuRef.current?.contains(target)
+      ) {
+        return;
+      }
+      setOpen(false);
+    };
+    document.addEventListener("pointerdown", handler);
+    return () => document.removeEventListener("pointerdown", handler);
+  }, [open]);
+
+  const handleToggle = useCallback(
+    (e: React.PointerEvent) => {
+      e.stopPropagation();
+      e.preventDefault();
+      if (!open) updateMenuPos();
+      setOpen((v) => !v);
+    },
+    [open, updateMenuPos],
+  );
+
+  const handleSelect = useCallback(
+    (type: "agent" | "terminal" | "document") => {
+      setOpen(false);
+      onAdd(type);
+    },
+    [onAdd],
+  );
+
+  return (
+    <>
+      <button
+        ref={btnRef}
+        className="add-session-btn"
+        title="New Session"
+        onPointerDown={handleToggle}
+      >
+        +
+      </button>
+      {open &&
+        createPortal(
+          <div
+            ref={menuRef}
+            className="add-session-menu"
+            style={{ top: menuPos.top, left: menuPos.left }}
+          >
+            <button onPointerDown={(e) => e.stopPropagation()} onClick={() => handleSelect("agent")}>
+              Agent
+            </button>
+            <button onPointerDown={(e) => e.stopPropagation()} onClick={() => handleSelect("document")}>
+              Document
+            </button>
+            <button onPointerDown={(e) => e.stopPropagation()} onClick={() => handleSelect("terminal")}>
+              Terminal
+            </button>
+          </div>,
+          document.body,
+        )}
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Terminal close confirmation dialog
+// ---------------------------------------------------------------------------
+
+function ConfirmDialog({
+  message,
+  confirmLabel,
+  cancelLabel,
+  onConfirm,
+  onCancel,
+}: {
+  message: string;
+  confirmLabel: string;
+  cancelLabel: string;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  return (
+    <div className="confirm-overlay">
+      <div className="confirm-dialog">
+        <p>{message}</p>
+        <div className="confirm-actions">
+          <button className="confirm-btn-primary" onClick={onConfirm}>{confirmLabel}</button>
+          <button className="confirm-btn-secondary" onClick={onCancel}>{cancelLabel}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Main App
 // ---------------------------------------------------------------------------
 
@@ -114,6 +240,12 @@ export default function App() {
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const modelRef = useRef<Model | null>(null);
   const [, forceUpdate] = useState(0);
+
+  // Pending close confirmation state
+  const [pendingClose, setPendingClose] = useState<{
+    nodeId: string;
+    sessionId: string;
+  } | null>(null);
 
   // Initialize model once workspace is available
   if (!modelRef.current) {
@@ -157,12 +289,78 @@ export default function App() {
     });
   }, [authenticated]);
 
-  const handleNewSession = useCallback(async () => {
-    if (!workspace) return;
-    const session: Session = await createSession(workspace.id);
-    setSessions((prev) => [...prev, session]);
-    addAgentChatTab(session.id, session.title || `Session ${session.id.slice(0, 8)}`);
-  }, [workspace]);
+  // ------------------------------------------------------------------
+  // Session creation helpers
+  // ------------------------------------------------------------------
+
+  const addTabForSession = useCallback(
+    (session: Session, tabsetNode?: TabSetNode) => {
+      const model = modelRef.current;
+      if (!model) return;
+      const tabset = tabsetNode ?? getTargetTabset(model);
+      if (!tabset) return;
+
+      let component: string;
+      let tabConfig: Record<string, unknown>;
+
+      switch (session.type) {
+        case "terminal":
+          component = PANEL_TERMINAL;
+          tabConfig = {
+            sessionId: session.id,
+            terminalId: session.config?.terminal_id as string | undefined,
+            workspaceId: session.workspace_id,
+          };
+          break;
+        case "document":
+          component = PANEL_CODE_EDITOR;
+          tabConfig = {
+            sessionId: session.id,
+            filePath: session.config?.file_path as string | undefined,
+            workspaceId: session.workspace_id,
+          };
+          break;
+        default: // "agent"
+          component = PANEL_AGENT_CHAT;
+          tabConfig = { sessionId: session.id };
+          break;
+      }
+
+      model.doAction(
+        Actions.addNode(
+          {
+            type: "tab",
+            name: session.title,
+            component,
+            config: tabConfig,
+          },
+          tabset.getId(),
+          DockLocation.CENTER,
+          -1,
+          true,
+        ),
+      );
+      setActiveSessionId(session.id);
+    },
+    [],
+  );
+
+  const handleCreateSession = useCallback(
+    async (type: "agent" | "terminal" | "document", tabsetNode?: TabSetNode) => {
+      if (!workspace) return;
+      const config = type === "document"
+        ? { file_path: `untitled-${Date.now()}.md` }
+        : undefined;
+      const session: Session = await createSession(workspace.id, type, config);
+      setSessions((prev) => [...prev, session]);
+      addTabForSession(session, tabsetNode);
+    },
+    [workspace, addTabForSession],
+  );
+
+  // ------------------------------------------------------------------
+  // Session selection from list
+  // ------------------------------------------------------------------
 
   const handleSelectSession = useCallback(
     (id: string) => {
@@ -170,13 +368,24 @@ export default function App() {
       const model = modelRef.current;
       if (!model) return;
 
+      const session = sessions.find((s) => s.id === id);
+      if (!session) return;
+
+      // Determine which panel component to look for
+      const componentMap: Record<string, string> = {
+        agent: PANEL_AGENT_CHAT,
+        terminal: PANEL_TERMINAL,
+        document: PANEL_CODE_EDITOR,
+      };
+      const targetComponent = componentMap[session.type] || PANEL_AGENT_CHAT;
+
       // Check if tab for this session already exists
       let existingNodeId: string | null = null;
       model.visitNodes((node) => {
         if (node.getType() === "tab") {
           const tabNode = node as TabNode;
           if (
-            tabNode.getComponent() === PANEL_AGENT_CHAT &&
+            tabNode.getComponent() === targetComponent &&
             tabNode.getConfig()?.sessionId === id
           ) {
             existingNodeId = node.getId();
@@ -187,92 +396,109 @@ export default function App() {
       if (existingNodeId) {
         model.doAction(Actions.selectTab(existingNodeId));
       } else {
-        const session = sessions.find((s) => s.id === id);
-        const name = session?.title || `Session ${id.slice(0, 8)}`;
-        addAgentChatTab(id, name);
+        // For ended terminal sessions, create new PTY with same shell_command
+        if (session.type === "terminal" && session.status === "ended" && workspace) {
+          const shellCommand = (session.config?.shell_command as string) || "cmd.exe";
+          createSession(workspace.id, "terminal", { shell_command: shellCommand }).then(
+            (newSession: Session) => {
+              setSessions((prev) => [...prev, newSession]);
+              addTabForSession(newSession);
+            },
+          );
+          return;
+        }
+        addTabForSession(session);
       }
     },
-    [sessions],
+    [sessions, workspace, addTabForSession],
   );
 
-  function addAgentChatTab(sessionId: string, name: string) {
-    const model = modelRef.current;
-    if (!model) return;
-    const tabset = getTargetTabset(model);
-    if (!tabset) return;
-    model.doAction(
-      Actions.addNode(
-        {
-          type: "tab",
-          name,
-          component: PANEL_AGENT_CHAT,
-          config: { sessionId },
-        },
-        tabset.getId(),
-        DockLocation.CENTER,
-        -1,
-        true,
-      ),
-    );
-    setActiveSessionId(sessionId);
-  }
+  // ------------------------------------------------------------------
+  // Tab close handling
+  // ------------------------------------------------------------------
 
-  const handleAddTerminal = useCallback(() => {
-    const model = modelRef.current;
-    if (!model || !workspace) return;
-    const tabset = getTargetTabset(model);
-    if (!tabset) return;
-    model.doAction(
-      Actions.addNode(
-        {
-          type: "tab",
-          name: "Terminal",
-          component: PANEL_TERMINAL,
-          config: { workspaceId: workspace.id },
-        },
-        tabset.getId(),
-        DockLocation.CENTER,
-        -1,
-        true,
-      ),
-    );
-  }, [workspace]);
+  const handleAction = useCallback(
+    (action: Action): Action | undefined => {
+      const model = modelRef.current;
+      if (!model) return action;
 
-  const handleAddLogs = useCallback(() => {
-    const model = modelRef.current;
-    if (!model) return;
+      // Intercept tab close actions
+      if (action.type === Actions.DELETE_TAB) {
+        const nodeId = action.data?.node;
+        if (!nodeId) return action;
 
-    // Check if log tab already exists
-    let existingNodeId: string | null = null;
-    model.visitNodes((node) => {
-      if (node.getType() === "tab") {
-        const tabNode = node as TabNode;
-        if (tabNode.getComponent() === PANEL_LOG) {
-          existingNodeId = node.getId();
+        let tabNode: TabNode | null = null;
+        model.visitNodes((node) => {
+          if (node.getId() === nodeId && node.getType() === "tab") {
+            tabNode = node as TabNode;
+          }
+        });
+
+        if (!tabNode) return action;
+        const config = (tabNode as TabNode).getConfig();
+        const component = (tabNode as TabNode).getComponent();
+        const sessionId = config?.sessionId as string | undefined;
+
+        if (!sessionId) return action; // Not a session tab, allow close
+
+        if (component === PANEL_TERMINAL) {
+          // Terminal: show confirmation dialog
+          setPendingClose({ nodeId, sessionId });
+          return undefined; // Block the close action
         }
+
+        if (component === PANEL_AGENT_CHAT) {
+          // Agent: auto-end session on close
+          stopSession(sessionId).then(() => {
+            setSessions((prev) =>
+              prev.map((s) => (s.id === sessionId ? { ...s, status: "ended" } : s)),
+            );
+          });
+          return action; // Allow close
+        }
+
+        // Document: just close the tab, session stays active
+        return action;
       }
+
+      return action;
+    },
+    [],
+  );
+
+  const handleTerminalCloseConfirm = useCallback(() => {
+    if (!pendingClose) return;
+    const { nodeId, sessionId } = pendingClose;
+
+    // End session + close tab
+    stopSession(sessionId).then(() => {
+      setSessions((prev) =>
+        prev.map((s) => (s.id === sessionId ? { ...s, status: "ended" } : s)),
+      );
     });
 
-    if (existingNodeId) {
-      model.doAction(Actions.selectTab(existingNodeId));
-    } else {
-      const tabset = getTargetTabset(model);
-      if (!tabset) return;
-      model.doAction(
-        Actions.addNode(
-          {
-            type: "tab",
-            name: "Logs",
-            component: PANEL_LOG,
-          },
-          tabset.getId(),
-          DockLocation.CENTER,
-          -1,
-          true,
-        ),
-      );
+    const model = modelRef.current;
+    if (model) {
+      model.doAction(Actions.deleteTab(nodeId));
     }
-  }, []);
+    setPendingClose(null);
+  }, [pendingClose]);
+
+  const handleTerminalCloseCancel = useCallback(() => {
+    if (!pendingClose) return;
+    const { nodeId } = pendingClose;
+
+    // Just close the tab, keep session active
+    const model = modelRef.current;
+    if (model) {
+      model.doAction(Actions.deleteTab(nodeId));
+    }
+    setPendingClose(null);
+  }, [pendingClose]);
+
+  // ------------------------------------------------------------------
+  // Layout callbacks
+  // ------------------------------------------------------------------
 
   const handleModelChange = useCallback(
     (model: Model) => {
@@ -292,6 +518,34 @@ export default function App() {
     [],
   );
 
+  // ------------------------------------------------------------------
+  // Tabset "+" button rendering
+  // ------------------------------------------------------------------
+
+  const onRenderTabSet = useCallback(
+    (
+      tabSetNode: TabSetNode | BorderNode,
+      renderValues: ITabSetRenderValues,
+    ) => {
+      // Don't add "+" button to border panels (Session list border)
+      if (tabSetNode.getType() === "border") return;
+
+      renderValues.stickyButtons.push(
+        <AddSessionDropdown
+          key="add-session"
+          onAdd={(type) =>
+            handleCreateSession(type, tabSetNode as TabSetNode)
+          }
+        />,
+      );
+    },
+    [handleCreateSession],
+  );
+
+  // ------------------------------------------------------------------
+  // Factory
+  // ------------------------------------------------------------------
+
   const factory = useCallback(
     (node: TabNode) => {
       return panelFactory(node, {
@@ -299,11 +553,10 @@ export default function App() {
         activeSessionId,
         workspaceId: workspace?.id ?? null,
         onSelectSession: handleSelectSession,
-        onNewSession: handleNewSession,
         onUpdateTabConfig: handleUpdateTabConfig,
       });
     },
-    [sessions, activeSessionId, workspace, handleSelectSession, handleNewSession, handleUpdateTabConfig],
+    [sessions, activeSessionId, workspace, handleSelectSession, handleUpdateTabConfig],
   );
 
   // Show nothing while checking auth
@@ -320,23 +573,26 @@ export default function App() {
 
   return (
     <div className="app-root">
-      <div className="app-toolbar">
-        <button className="toolbar-btn" onClick={handleAddTerminal}>
-          Terminal
-        </button>
-        <button className="toolbar-btn" onClick={handleAddLogs}>
-          Logs
-        </button>
-      </div>
       <div className="app-layout">
         {model && (
           <Layout
             model={model}
             factory={factory}
             onModelChange={handleModelChange}
+            onRenderTabSet={onRenderTabSet}
+            onAction={handleAction}
           />
         )}
       </div>
+      {pendingClose && (
+        <ConfirmDialog
+          message="End terminal session?"
+          confirmLabel="End Session"
+          cancelLabel="Close Panel Only"
+          onConfirm={handleTerminalCloseConfirm}
+          onCancel={handleTerminalCloseCancel}
+        />
+      )}
     </div>
   );
 }

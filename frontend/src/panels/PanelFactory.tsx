@@ -15,11 +15,10 @@ const CodeEditorPanel = React.lazy(() => import("./CodeEditorPanel"));
 const LogPanel = React.lazy(() => import("./LogPanel"));
 
 export interface PanelContext {
-  sessions: { id: string; title: string; status: string }[];
+  sessions: { id: string; title: string; type: string; status: string; config?: Record<string, unknown> | null }[];
   activeSessionId: string | null;
   workspaceId: string | null;
   onSelectSession: (id: string) => void;
-  onNewSession: () => void;
   onUpdateTabConfig?: (nodeId: string, config: Record<string, unknown>) => void;
 }
 
@@ -37,7 +36,6 @@ export function panelFactory(node: TabNode, ctx: PanelContext) {
           sessions={ctx.sessions}
           activeSessionId={ctx.activeSessionId}
           onSelect={ctx.onSelectSession}
-          onNewSession={ctx.onNewSession}
         />
       );
 

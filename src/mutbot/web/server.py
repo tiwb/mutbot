@@ -81,6 +81,8 @@ async def lifespan(app: FastAPI):
     # Pass session_ts and log_dir to SessionManager for API recording
     session_manager.session_ts = session_ts
     session_manager.log_dir = log_dir
+    # Wire terminal_manager for Terminal Session lifecycle
+    session_manager.terminal_manager = terminal_manager
 
     yield
 
