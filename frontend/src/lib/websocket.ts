@@ -9,6 +9,7 @@ export class ReconnectingWebSocket {
   private onMessage: EventHandler;
   private onOpen?: () => void;
   private onClose?: () => void;
+  private tokenFn?: () => string | null;
   private retryCount = 0;
   private maxRetries = 10;
   private closed = false;
@@ -17,18 +18,34 @@ export class ReconnectingWebSocket {
   constructor(
     url: string,
     onMessage: EventHandler,
-    opts?: { onOpen?: () => void; onClose?: () => void },
+    opts?: {
+      onOpen?: () => void;
+      onClose?: () => void;
+      tokenFn?: () => string | null;
+    },
   ) {
     this.url = url;
     this.onMessage = onMessage;
     this.onOpen = opts?.onOpen;
     this.onClose = opts?.onClose;
+    this.tokenFn = opts?.tokenFn;
     this.connect();
   }
 
   private connect() {
     if (this.closed) return;
-    this.ws = new WebSocket(this.url);
+
+    // Append auth token as query param when available
+    let connectUrl = this.url;
+    if (this.tokenFn) {
+      const token = this.tokenFn();
+      if (token) {
+        const sep = connectUrl.includes("?") ? "&" : "?";
+        connectUrl = `${connectUrl}${sep}token=${encodeURIComponent(token)}`;
+      }
+    }
+
+    this.ws = new WebSocket(connectUrl);
 
     this.ws.onopen = () => {
       this.retryCount = 0;

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ReconnectingWebSocket } from "../lib/websocket";
+import { fetchSessionEvents, getAuthToken } from "../lib/api";
 import { rlog, setLogSocket } from "../lib/remote-log";
 import MessageList, { type ChatMessage } from "../components/MessageList";
 import ChatInput from "../components/ChatInput";
@@ -20,59 +21,23 @@ export default function AgentPanel({ sessionId }: Props) {
     () => messageCache.get(sessionId) ?? [],
   );
   const [connected, setConnected] = useState(false);
+  const [connectionCount, setConnectionCount] = useState(0);
   const wsRef = useRef<ReconnectingWebSocket | null>(null);
   const pendingTextRef = useRef(pendingTextCache.get(sessionId) ?? "");
   const messagesRef = useRef<ChatMessage[]>(messages);
   const toolCallMapRef = useRef<Map<string, string>>(new Map());
+  const lastSentTextRef = useRef<string>("");
+  const replayedRef = useRef<Set<string>>(new Set());
 
   // Keep messagesRef in sync with state (for cleanup to read latest)
   messagesRef.current = messages;
-
-  useEffect(() => {
-    // Restore from cache (or keep initialState from useState)
-    const cached = messageCache.get(sessionId);
-    const cachedPending = pendingTextCache.get(sessionId) ?? "";
-    if (DEBUG) rlog.debug("init session", sessionId, "cached msgs =", cached?.length ?? 0);
-    setMessages(cached ?? []);
-    pendingTextRef.current = cachedPending;
-    toolCallMapRef.current.clear();
-
-    const protocol = location.protocol === "https:" ? "wss:" : "ws:";
-    const url = `${protocol}//${location.host}/ws/session/${sessionId}`;
-
-    const ws = new ReconnectingWebSocket(
-      url,
-      (data) => handleEvent(data),
-      {
-        onOpen: () => {
-          if (DEBUG) rlog.debug("WS open");
-          setConnected(true);
-        },
-        onClose: () => {
-          if (DEBUG) rlog.debug("WS close");
-          setConnected(false);
-        },
-      },
-    );
-    wsRef.current = ws;
-    setLogSocket(ws, sessionId);
-
-    return () => {
-      if (DEBUG) rlog.debug("cleanup session", sessionId, "saving", messagesRef.current.length, "msgs");
-      // Save current session state to cache before switching
-      messageCache.set(sessionId, messagesRef.current);
-      pendingTextCache.set(sessionId, pendingTextRef.current);
-      setLogSocket(null);
-      ws.close();
-    };
-  }, [sessionId]);
 
   function handleEvent(data: Record<string, unknown>) {
     const eventType = data.type as string;
     if (DEBUG) {
       if (eventType === "text_delta") {
         rlog.debug("evt text_delta", `"${(data.text as string).slice(0, 40)}"`);
-      } else {
+      } else if (eventType !== "connection_count") {
         rlog.debug("evt", eventType, JSON.stringify(data).slice(0, 150));
       }
     }
@@ -185,14 +150,93 @@ export default function AgentPanel({ sessionId }: Props) {
           },
         ]);
       }
+    } else if (eventType === "user_message") {
+      // User message from another client (or replayed from history)
+      const text = data.text as string;
+      // Dedup: skip if this matches the last message we sent ourselves
+      if (text === lastSentTextRef.current) {
+        lastSentTextRef.current = "";
+        return;
+      }
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: crypto.randomUUID(),
+          role: "user" as const,
+          type: "text" as const,
+          content: text,
+        },
+      ]);
+    } else if (eventType === "connection_count") {
+      setConnectionCount(data.count as number);
     } else {
       if (DEBUG) rlog.debug("unhandled event:", eventType);
     }
   }
 
+  useEffect(() => {
+    // Restore from cache (or keep initialState from useState)
+    const cached = messageCache.get(sessionId);
+    const cachedPending = pendingTextCache.get(sessionId) ?? "";
+    if (DEBUG) rlog.debug("init session", sessionId, "cached msgs =", cached?.length ?? 0);
+    setMessages(cached ?? []);
+    pendingTextRef.current = cachedPending;
+    toolCallMapRef.current.clear();
+    lastSentTextRef.current = "";
+
+    // Track whether this session was already replayed from cache
+    const hadCache = !!cached && cached.length > 0;
+
+    const protocol = location.protocol === "https:" ? "wss:" : "ws:";
+    const url = `${protocol}//${location.host}/ws/session/${sessionId}`;
+
+    const ws = new ReconnectingWebSocket(
+      url,
+      (data) => handleEvent(data),
+      {
+        onOpen: () => {
+          if (DEBUG) rlog.debug("WS open");
+          setConnected(true);
+
+          // If no cached messages, load history from server
+          if (!hadCache && !replayedRef.current.has(sessionId)) {
+            replayedRef.current.add(sessionId);
+            fetchSessionEvents(sessionId).then((result) => {
+              if (result.events && result.events.length > 0) {
+                if (DEBUG) rlog.debug("Replaying", result.events.length, "events from history");
+                for (const event of result.events) {
+                  handleEvent(event);
+                }
+              }
+            }).catch((err) => {
+              if (DEBUG) rlog.error("Failed to fetch session events:", String(err));
+            });
+          }
+        },
+        onClose: () => {
+          if (DEBUG) rlog.debug("WS close");
+          setConnected(false);
+        },
+        tokenFn: getAuthToken,
+      },
+    );
+    wsRef.current = ws;
+    setLogSocket(ws, sessionId);
+
+    return () => {
+      if (DEBUG) rlog.debug("cleanup session", sessionId, "saving", messagesRef.current.length, "msgs");
+      // Save current session state to cache before switching
+      messageCache.set(sessionId, messagesRef.current);
+      pendingTextCache.set(sessionId, pendingTextRef.current);
+      setLogSocket(null);
+      ws.close();
+    };
+  }, [sessionId]);
+
   const handleSend = useCallback((text: string) => {
     if (!text.trim()) return;
     if (DEBUG) rlog.debug("send:", text.slice(0, 80));
+    lastSentTextRef.current = text;
     setMessages((prev) => [
       ...prev,
       {
@@ -211,6 +255,14 @@ export default function AgentPanel({ sessionId }: Props) {
       <div className="agent-header">
         <span className={`status-dot ${connected ? "connected" : ""}`} />
         <span>Session {sessionId.slice(0, 8)}</span>
+        {connectionCount > 1 && (
+          <span
+            style={{ marginLeft: 8, opacity: 0.6, fontSize: "0.8em" }}
+            title={`${connectionCount} clients connected`}
+          >
+            ({connectionCount})
+          </span>
+        )}
         {DEBUG && <span style={{ marginLeft: "auto", opacity: 0.5, fontSize: "0.8em" }}>msgs: {messages.length}</span>}
       </div>
       <MessageList messages={messages} />

@@ -75,12 +75,14 @@ class AgentBridge:
         web_userio: WebUserIO,
         loop: asyncio.AbstractEventLoop,
         broadcast_fn: BroadcastFn,
+        event_recorder: Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
         self.session_id = session_id
         self.agent = agent
         self.web_userio = web_userio
         self.loop = loop
         self.broadcast_fn = broadcast_fn
+        self.event_recorder = event_recorder
         self._event_queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
         self._agent_task: asyncio.Task | None = None
         self._forwarder_task: asyncio.Task | None = None
@@ -104,6 +106,12 @@ class AgentBridge:
                     logger.info("Session %s: forwarder done after %d events", self.session_id, event_count)
                     await self.broadcast_fn(self.session_id, {"type": "agent_done"})
                     break
+                # Record event to disk before broadcasting
+                if self.event_recorder:
+                    try:
+                        self.event_recorder(data)
+                    except Exception:
+                        logger.exception("Event recording failed for session %s", self.session_id)
                 event_count += 1
                 etype = data.get("type", "?")
                 logger.debug("Session %s: forward #%d type=%s", self.session_id, event_count, etype)
@@ -129,6 +137,15 @@ class AgentBridge:
         """Feed a user message into the Agent."""
         event = InputEvent(type="user_message", text=text, data=data or {})
         self.web_userio.input_queue.put(event)
+        # Record user message event to disk
+        user_event = {"type": "user_message", "text": text, "data": data or {}}
+        if self.event_recorder:
+            try:
+                self.event_recorder(user_event)
+            except Exception:
+                logger.exception("User event recording failed for session %s", self.session_id)
+        # Broadcast user message to all connected clients
+        self.loop.call_soon_threadsafe(self._event_queue.put_nowait, user_event)
 
     def stop(self) -> None:
         """Graceful shutdown: send sentinel and cancel tasks."""

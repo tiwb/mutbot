@@ -14,6 +14,9 @@ import {
   createSession,
   fetchSessions,
   updateWorkspaceLayout,
+  checkAuthStatus,
+  login,
+  setAuthToken,
 } from "./lib/api";
 import {
   createModel,
@@ -42,7 +45,70 @@ function getTargetTabset(model: Model): TabSetNode | undefined {
   return model.getActiveTabset() ?? model.getFirstTabSet();
 }
 
+// ---------------------------------------------------------------------------
+// Login screen
+// ---------------------------------------------------------------------------
+
+function LoginScreen({ onLogin }: { onLogin: () => void }) {
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError("");
+    setLoading(true);
+    try {
+      const result = await login(username, password);
+      if (result.token) {
+        setAuthToken(result.token);
+        onLogin();
+      } else if (result.error) {
+        setError(result.error);
+      }
+    } catch {
+      setError("Login failed");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="login-screen">
+      <form className="login-form" onSubmit={handleSubmit}>
+        <h2>MutBot Login</h2>
+        {error && <div className="login-error">{error}</div>}
+        <input
+          type="text"
+          placeholder="Username"
+          value={username}
+          onChange={(e) => setUsername(e.target.value)}
+          autoFocus
+        />
+        <input
+          type="password"
+          placeholder="Password"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+        />
+        <button type="submit" disabled={loading}>
+          {loading ? "Logging in..." : "Login"}
+        </button>
+      </form>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Main App
+// ---------------------------------------------------------------------------
+
 export default function App() {
+  const [authChecked, setAuthChecked] = useState(false);
+  const [authRequired, setAuthRequired] = useState(false);
+  const [authenticated, setAuthenticated] = useState(false);
+
   const [workspace, setWorkspace] = useState<Workspace | null>(null);
   const [sessions, setSessions] = useState<Session[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
@@ -54,8 +120,26 @@ export default function App() {
     modelRef.current = createModel();
   }
 
-  // Load default workspace on mount
+  // Check auth status on mount
   useEffect(() => {
+    checkAuthStatus()
+      .then((status) => {
+        setAuthRequired(status.auth_required);
+        if (!status.auth_required) {
+          setAuthenticated(true);
+        }
+        setAuthChecked(true);
+      })
+      .catch(() => {
+        // If we can't reach the server, proceed without auth
+        setAuthChecked(true);
+        setAuthenticated(true);
+      });
+  }, []);
+
+  // Load default workspace once authenticated
+  useEffect(() => {
+    if (!authenticated) return;
     fetchWorkspaces().then((wss: Workspace[]) => {
       if (wss.length > 0) {
         const ws = wss[0]!;
@@ -71,7 +155,7 @@ export default function App() {
         fetchSessions(ws.id).then(setSessions);
       }
     });
-  }, []);
+  }, [authenticated]);
 
   const handleNewSession = useCallback(async () => {
     if (!workspace) return;
@@ -211,6 +295,16 @@ export default function App() {
     },
     [sessions, activeSessionId, workspace, handleSelectSession, handleNewSession],
   );
+
+  // Show nothing while checking auth
+  if (!authChecked) {
+    return null;
+  }
+
+  // Show login screen if auth is required and not yet authenticated
+  if (authRequired && !authenticated) {
+    return <LoginScreen onLogin={() => setAuthenticated(true)} />;
+  }
 
   const model = modelRef.current;
 

@@ -36,6 +36,11 @@ def _get_terminal_manager():
     return terminal_manager
 
 
+def _get_auth_manager():
+    from mutbot.web.server import auth_manager
+    return auth_manager
+
+
 def _workspace_dict(ws) -> dict[str, Any]:
     return {
         "id": ws.id,
@@ -66,6 +71,29 @@ def _session_dict(s) -> dict[str, Any]:
 @router.get("/api/health")
 async def health():
     return {"status": "ok"}
+
+
+# ---------------------------------------------------------------------------
+# Auth endpoints
+# ---------------------------------------------------------------------------
+
+@router.get("/api/auth/status")
+async def auth_status():
+    am = _get_auth_manager()
+    return {"auth_required": am.enabled if am else False}
+
+
+@router.post("/api/auth/login")
+async def auth_login(body: dict[str, Any]):
+    am = _get_auth_manager()
+    if am is None or not am.enabled:
+        return {"token": "", "message": "auth not required"}
+    username = body.get("username", "")
+    password = body.get("password", "")
+    token = am.verify_credentials(username, password)
+    if token is None:
+        return JSONResponse({"error": "invalid credentials"}, status_code=401)
+    return {"token": token, "username": username}
 
 
 # ---------------------------------------------------------------------------
@@ -134,6 +162,7 @@ async def update_workspace(workspace_id: str, body: dict[str, Any]):
         return {"error": "workspace not found"}, 404
     if "layout" in body:
         ws.layout = body["layout"]
+    wm.update(ws)
     return _workspace_dict(ws)
 
 
@@ -149,6 +178,7 @@ async def create_session(workspace_id: str):
         return {"error": "workspace not found"}, 404
     session = sm.create(workspace_id)
     ws.sessions.append(session.id)
+    wm.update(ws)
     return _session_dict(session)
 
 
@@ -167,6 +197,17 @@ async def get_session(session_id: str):
     return _session_dict(session)
 
 
+@router.get("/api/sessions/{session_id}/events")
+async def get_session_events(session_id: str):
+    """Return persisted events for frontend replay."""
+    _, sm = _get_managers()
+    session = sm.get(session_id)
+    if session is None:
+        return JSONResponse({"error": "session not found"}, status_code=404)
+    events = sm.get_session_events(session_id)
+    return {"session_id": session_id, "events": events}
+
+
 @router.delete("/api/sessions/{session_id}")
 async def stop_session(session_id: str):
     _, sm = _get_managers()
@@ -181,6 +222,14 @@ async def stop_session(session_id: str):
 fe_logger = logging.getLogger("mutbot.frontend")
 
 
+async def _broadcast_connection_count(session_id: str) -> None:
+    """Broadcast current connection count to all clients of a session."""
+    count = len(connection_manager.get_connections(session_id))
+    await connection_manager.broadcast(
+        session_id, {"type": "connection_count", "count": count}
+    )
+
+
 @router.websocket("/ws/session/{session_id}")
 async def websocket_session(websocket: WebSocket, session_id: str):
     _, sm = _get_managers()
@@ -191,6 +240,9 @@ async def websocket_session(websocket: WebSocket, session_id: str):
 
     await connection_manager.connect(session_id, websocket)
     logger.info("WS connected: session=%s", session_id)
+
+    # Broadcast updated connection count
+    await _broadcast_connection_count(session_id)
 
     # Start agent bridge if not running (forwarder is managed by the bridge)
     loop = asyncio.get_running_loop()
@@ -227,6 +279,11 @@ async def websocket_session(websocket: WebSocket, session_id: str):
         logger.exception("WS error: session=%s", session_id)
     finally:
         connection_manager.disconnect(session_id, websocket)
+        # Broadcast updated connection count after disconnect
+        try:
+            await _broadcast_connection_count(session_id)
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------

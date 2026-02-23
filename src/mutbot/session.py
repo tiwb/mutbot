@@ -1,4 +1,4 @@
-"""Session manager — session lifecycle and Agent assembly."""
+"""Session manager — session lifecycle, Agent assembly, and persistence."""
 
 from __future__ import annotations
 
@@ -14,9 +14,12 @@ from typing import Any
 from mutagent.agent import Agent
 from mutagent.client import LLMClient
 from mutagent.config import Config
+from mutagent.messages import Message, ToolCall, ToolResult
 from mutagent.tools import ToolSet
 
+from mutbot import storage
 from mutbot.web.agent_bridge import AgentBridge, WebUserIO
+from mutbot.web.serializers import serialize_message
 
 logger = logging.getLogger(__name__)
 
@@ -34,15 +37,56 @@ class Session:
     bridge: AgentBridge | None = field(default=None, repr=False)
 
 
+def _session_to_dict(s: Session, include_messages: bool = False) -> dict:
+    d = {
+        "id": s.id,
+        "workspace_id": s.workspace_id,
+        "title": s.title,
+        "status": s.status,
+        "created_at": s.created_at,
+        "updated_at": s.updated_at,
+    }
+    if include_messages and s.agent and s.agent.messages:
+        d["messages"] = [serialize_message(m) for m in s.agent.messages]
+    return d
+
+
+def _deserialize_message(d: dict) -> Message:
+    """Reconstruct a Message from a serialized dict."""
+    tool_calls = [
+        ToolCall(id=tc["id"], name=tc["name"], arguments=tc.get("arguments", {}))
+        for tc in d.get("tool_calls", [])
+    ]
+    tool_results = [
+        ToolResult(
+            tool_call_id=tr["tool_call_id"],
+            content=tr.get("content", ""),
+            is_error=tr.get("is_error", False),
+        )
+        for tr in d.get("tool_results", [])
+    ]
+    return Message(
+        role=d["role"],
+        content=d.get("content", ""),
+        tool_calls=tool_calls,
+        tool_results=tool_results,
+    )
+
+
 def create_agent(
     agent_config: dict[str, Any] | None = None,
     log_dir: Path | None = None,
     session_ts: str = "",
+    messages: list[Message] | None = None,
 ) -> Agent:
     """Assemble a mutagent Agent from configuration.
 
     Loads Config from the standard location, builds LLMClient + ToolSet,
     and returns a ready-to-run Agent.
+
+    Args:
+        messages: If provided, restore these messages into the new Agent
+                  (for session resumption after restart).
     """
     import importlib
     import os
@@ -122,20 +166,62 @@ def create_agent(
         client=client,
         tool_set=tool_set,
         system_prompt=system_prompt,
-        messages=[],
+        messages=messages if messages is not None else [],
     )
     tool_set.agent = agent
     return agent
 
 
 class SessionManager:
-    """In-memory session registry with Agent lifecycle management."""
+    """Session registry with Agent lifecycle management and persistence."""
 
     def __init__(self) -> None:
         self._sessions: dict[str, Session] = {}
         # Set by server.py lifespan for log/API recording
         self.session_ts: str = ""
         self.log_dir: Path | None = None
+
+    def load_from_disk(self) -> None:
+        """Load all sessions from .mutbot/sessions/*.json (metadata only, no agent)."""
+        for data in storage.load_all_sessions():
+            session = Session(
+                id=data["id"],
+                workspace_id=data.get("workspace_id", ""),
+                title=data.get("title", ""),
+                status=data.get("status", "ended"),
+                created_at=data.get("created_at", ""),
+                updated_at=data.get("updated_at", ""),
+            )
+            self._sessions[session.id] = session
+        if self._sessions:
+            logger.info("Loaded %d session(s) from disk", len(self._sessions))
+
+    def _persist(self, session: Session) -> None:
+        """Save session metadata + messages to disk."""
+        data = _session_to_dict(session, include_messages=True)
+        storage.save_session_metadata(data)
+
+    def _load_agent_messages(self, session_id: str) -> list[Message]:
+        """Load saved messages from session JSON on disk."""
+        data = storage.load_session_metadata(session_id)
+        if not data or "messages" not in data:
+            return []
+        return [_deserialize_message(m) for m in data["messages"]]
+
+    def record_event(self, session_id: str, event_data: dict) -> None:
+        """Append an event to the session's JSONL log.
+
+        Also persists session metadata on response_done/turn_done.
+        """
+        storage.append_session_event(session_id, event_data)
+        etype = event_data.get("type", "")
+        if etype in ("response_done", "turn_done"):
+            session = self._sessions.get(session_id)
+            if session:
+                self._persist(session)
+
+    def get_session_events(self, session_id: str) -> list[dict]:
+        return storage.load_session_events(session_id)
 
     def create(self, workspace_id: str, agent_config: dict[str, Any] | None = None) -> Session:
         now = datetime.now(timezone.utc).isoformat()
@@ -147,6 +233,7 @@ class SessionManager:
             updated_at=now,
         )
         self._sessions[session.id] = session
+        self._persist(session)
         return session
 
     def get(self, session_id: str) -> Session | None:
@@ -158,6 +245,8 @@ class SessionManager:
     def start(self, session_id: str, loop: asyncio.AbstractEventLoop, broadcast_fn=None) -> AgentBridge:
         """Assemble Agent + bridge and start the agent thread.
 
+        If the session has persisted messages, restore them into the new Agent.
+
         Args:
             broadcast_fn: async callable(session_id, data) for event broadcasting.
         """
@@ -165,9 +254,15 @@ class SessionManager:
         if session.bridge is not None:
             return session.bridge
 
+        # Restore messages from disk if available
+        saved_messages = self._load_agent_messages(session_id)
+        if saved_messages:
+            logger.info("Session %s: restoring %d messages", session_id, len(saved_messages))
+
         agent = create_agent(
             log_dir=self.log_dir,
             session_ts=self.session_ts,
+            messages=saved_messages if saved_messages else None,
         )
         session.agent = agent
 
@@ -176,8 +271,17 @@ class SessionManager:
         def _event_callback(data):
             loop.call_soon_threadsafe(bridge._event_queue.put_nowait, data)
 
+        # Create event recorder bound to this session
+        sm = self
+
+        def _event_recorder(data):
+            sm.record_event(session_id, data)
+
         web_userio = WebUserIO(input_queue=input_q, event_callback=_event_callback)
-        bridge = AgentBridge(session_id, agent, web_userio, loop, broadcast_fn)
+        bridge = AgentBridge(
+            session_id, agent, web_userio, loop, broadcast_fn,
+            event_recorder=_event_recorder,
+        )
         session.bridge = bridge
         bridge.start()
         logger.info("Session %s: agent started", session_id)
@@ -190,7 +294,11 @@ class SessionManager:
         if session.bridge is not None:
             session.bridge.stop()
             session.bridge = None
+        # Persist final state before clearing agent
+        self._persist(session)
         session.agent = None
         session.status = "ended"
         session.updated_at = datetime.now(timezone.utc).isoformat()
+        # Persist ended status
+        self._persist(session)
         logger.info("Session %s: stopped", session_id)
