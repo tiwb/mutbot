@@ -211,7 +211,7 @@ async def get_session_events(session_id: str):
 @router.delete("/api/sessions/{session_id}")
 async def stop_session(session_id: str):
     _, sm = _get_managers()
-    sm.stop(session_id)
+    await sm.stop(session_id)
     return {"status": "stopped"}
 
 
@@ -271,7 +271,7 @@ async def websocket_session(websocket: WebSocket, session_id: str):
                 log_fn = getattr(fe_logger, level, fe_logger.debug)
                 log_fn("[%s] %s", session_id[:8], message)
             elif msg_type == "stop":
-                sm.stop(session_id)
+                await sm.stop(session_id)
                 break
     except WebSocketDisconnect:
         logger.info("WS disconnected: session=%s", session_id)
@@ -344,6 +344,7 @@ async def websocket_terminal(websocket: WebSocket, term_id: str):
     - Client→Server: 0x00 + input bytes
     - Server→Client: 0x01 + output bytes
     - Client→Server: 0x02 + 2B rows (big-endian) + 2B cols (big-endian)
+    - Server→Client: 0x03   scrollback replay complete
 
     PTY survives WebSocket disconnects.  The client can reconnect and
     receive the scrollback buffer to restore the screen.
@@ -361,10 +362,18 @@ async def websocket_terminal(websocket: WebSocket, term_id: str):
     # thread doesn't arrive before the historical replay.
     scrollback = tm.get_scrollback(term_id)
     if scrollback:
+        # Prepend attribute reset to handle truncated escape sequences
+        # at the scrollback buffer boundary.
         try:
-            await websocket.send_bytes(b"\x01" + scrollback)
+            await websocket.send_bytes(b"\x01\x1b[0m" + scrollback)
         except Exception:
             logger.debug("Failed to send scrollback for term=%s", term_id)
+
+    # Signal scrollback replay is complete — client can unmute input
+    try:
+        await websocket.send_bytes(b"\x03")
+    except Exception:
+        pass
 
     # Now attach as I/O channel for live output
     tm.attach(term_id, websocket, loop)

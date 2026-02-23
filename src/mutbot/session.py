@@ -287,12 +287,12 @@ class SessionManager:
         logger.info("Session %s: agent started", session_id)
         return bridge
 
-    def stop(self, session_id: str) -> None:
+    async def stop(self, session_id: str) -> None:
         session = self._sessions.get(session_id)
         if session is None:
             return
         if session.bridge is not None:
-            session.bridge.stop()
+            await session.bridge.stop()
             session.bridge = None
         # Persist final state before clearing agent
         self._persist(session)

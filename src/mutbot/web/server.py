@@ -89,7 +89,7 @@ async def lifespan(app: FastAPI):
         terminal_manager.kill_all()
     if session_manager is not None:
         for sid in list(session_manager._sessions):
-            session_manager.stop(sid)
+            await session_manager.stop(sid)
 
 
 # ---------------------------------------------------------------------------

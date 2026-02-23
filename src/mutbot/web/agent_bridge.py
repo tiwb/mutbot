@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import queue
+import threading
 from typing import Any, Callable, Awaitable
 
 from mutagent.messages import Content, InputEvent, StreamEvent
@@ -36,11 +37,21 @@ class WebUserIO:
     ) -> None:
         self.input_queue = input_queue
         self.event_callback = event_callback
+        self._stop_event = threading.Event()
+
+    def request_stop(self) -> None:
+        """Signal the input stream to stop."""
+        self._stop_event.set()
 
     def input_stream(self):
         """Blocking generator that yields InputEvent objects."""
         while True:
-            item = self.input_queue.get()
+            try:
+                item = self.input_queue.get(timeout=0.5)
+            except queue.Empty:
+                if self._stop_event.is_set():
+                    return
+                continue
             if item is None:
                 # Sentinel: stop iteration
                 return
@@ -65,7 +76,7 @@ class AgentBridge:
         bridge = AgentBridge(session_id, agent, web_userio, loop, broadcast_fn)
         bridge.start()           # launches agent thread + event forwarder
         bridge.send_message(text) # feed user input
-        bridge.stop()            # graceful shutdown
+        await bridge.stop()      # graceful shutdown
     """
 
     def __init__(
@@ -147,10 +158,24 @@ class AgentBridge:
         # Broadcast user message to all connected clients
         self.loop.call_soon_threadsafe(self._event_queue.put_nowait, user_event)
 
-    def stop(self) -> None:
-        """Graceful shutdown: send sentinel and cancel tasks."""
+    async def stop(self) -> None:
+        """Graceful shutdown: signal stop, cancel tasks, await completion."""
+        # Signal the input stream to exit
+        self.web_userio.request_stop()
         self.web_userio.input_queue.put(None)
+
+        tasks: list[asyncio.Task] = []
         if self._forwarder_task and not self._forwarder_task.done():
             self._forwarder_task.cancel()
+            tasks.append(self._forwarder_task)
         if self._agent_task and not self._agent_task.done():
             self._agent_task.cancel()
+            tasks.append(self._agent_task)
+
+        if tasks:
+            done, pending = await asyncio.wait(tasks, timeout=3)
+            if pending:
+                logger.warning(
+                    "Session %s: %d task(s) did not finish within timeout",
+                    self.session_id, len(pending),
+                )

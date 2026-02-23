@@ -33,7 +33,6 @@ export default function TerminalPanel({ terminalId: initialId, workspaceId, node
   const wsRef = useRef<WebSocket | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const termIdRef = useRef<string | null>(initialId ?? null);
-  const destroyedRef = useRef(false);
   // Track whether this panel "owns" the terminal (created it)
   // so cleanup can decide whether to delete the PTY.
   const ownsTermRef = useRef(!initialId);
@@ -41,7 +40,10 @@ export default function TerminalPanel({ terminalId: initialId, workspaceId, node
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
-    destroyedRef.current = false;
+
+    // Per-invocation flag — survives React StrictMode's unmount/remount
+    // cycle without being reset by the next mount (unlike destroyedRef).
+    let active = true;
 
     const term = new Terminal({
       theme: {
@@ -79,6 +81,10 @@ export default function TerminalPanel({ terminalId: initialId, workspaceId, node
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
     let retryCount = 0;
     const maxRetries = 10;
+    // Mute terminal input during scrollback replay to prevent
+    // xterm.js from echoing responses to terminal query sequences
+    // (e.g. \e[6n cursor position report) back as user input.
+    let inputMuted = true;
 
     function sendResize(r: number, c: number) {
       if (ws && ws.readyState === WebSocket.OPEN) {
@@ -92,7 +98,10 @@ export default function TerminalPanel({ terminalId: initialId, workspaceId, node
     }
 
     function connectWs(termId: string) {
-      if (destroyedRef.current) return;
+      if (!active) return;
+
+      // Mute input until scrollback replay is complete
+      inputMuted = true;
 
       const url = buildWsUrl(termId);
       ws = new WebSocket(url);
@@ -100,27 +109,33 @@ export default function TerminalPanel({ terminalId: initialId, workspaceId, node
       wsRef.current = ws;
 
       ws.onopen = () => {
+        if (!active) { ws?.close(); return; }
         retryCount = 0;
-        // Delay resize until after scrollback replay arrives,
-        // so the shell's resize response doesn't produce artifacts.
-        setTimeout(() => {
+      };
+
+      ws.onmessage = (event) => {
+        if (!active) return;
+        const data = event.data as ArrayBuffer;
+        const bytes = new Uint8Array(data);
+        if (bytes.length === 0) return;
+
+        if (bytes[0] === 0x03) {
+          // Scrollback replay complete — unmute input, send resize
+          inputMuted = false;
           sendResize(
             termRef.current?.rows ?? rows,
             termRef.current?.cols ?? cols,
           );
-        }, 100);
-      };
+          return;
+        }
 
-      ws.onmessage = (event) => {
-        const data = event.data as ArrayBuffer;
-        const bytes = new Uint8Array(data);
-        if (bytes.length > 0 && bytes[0] === 0x01) {
+        if (bytes[0] === 0x01) {
           term.write(bytes.slice(1));
         }
       };
 
       ws.onclose = (event) => {
-        if (destroyedRef.current) return;
+        if (!active) return;
         if (event.code === 4004) {
           // Terminal not found — create a new one
           term.write("\r\n\x1b[33m[Terminal expired, creating new...]\x1b[0m\r\n");
@@ -134,7 +149,7 @@ export default function TerminalPanel({ terminalId: initialId, workspaceId, node
           const delay = Math.min(1000 * 2 ** retryCount, 15000);
           retryCount++;
           reconnectTimer = setTimeout(() => {
-            if (!destroyedRef.current && termIdRef.current) {
+            if (active && termIdRef.current) {
               connectWs(termIdRef.current);
             }
           }, delay);
@@ -149,11 +164,11 @@ export default function TerminalPanel({ terminalId: initialId, workspaceId, node
     }
 
     async function init() {
-      if (destroyedRef.current) return;
+      if (!active) return;
       let termId = termIdRef.current;
       if (!termId) {
         const result = await apiCreateTerminal(workspaceId, rows, cols);
-        if (destroyedRef.current) return;
+        if (!active) return;
         termId = result.id;
         termIdRef.current = termId;
         ownsTermRef.current = true;
@@ -165,8 +180,9 @@ export default function TerminalPanel({ terminalId: initialId, workspaceId, node
       connectWs(termId!);
     }
 
-    // Terminal input → WebSocket
+    // Terminal input → WebSocket (muted during scrollback replay)
     const inputDisposable = term.onData((data) => {
+      if (inputMuted) return;
       if (ws && ws.readyState === WebSocket.OPEN) {
         const encoder = new TextEncoder();
         const encoded = encoder.encode(data);
@@ -189,11 +205,14 @@ export default function TerminalPanel({ terminalId: initialId, workspaceId, node
     init();
 
     return () => {
-      destroyedRef.current = true;
+      active = false;
       if (reconnectTimer) clearTimeout(reconnectTimer);
       inputDisposable.dispose();
       resizeObserver.disconnect();
+      // Close via both local var and ref — the WS may have been
+      // created after cleanup was scheduled (async race).
       ws?.close();
+      wsRef.current?.close();
       wsRef.current = null;
       term.dispose();
       termRef.current = null;
