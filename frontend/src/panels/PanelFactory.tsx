@@ -14,12 +14,13 @@ const TerminalPanel = React.lazy(() => import("./TerminalPanel"));
 const CodeEditorPanel = React.lazy(() => import("./CodeEditorPanel"));
 const LogPanel = React.lazy(() => import("./LogPanel"));
 
-interface PanelContext {
+export interface PanelContext {
   sessions: { id: string; title: string; status: string }[];
   activeSessionId: string | null;
   workspaceId: string | null;
   onSelectSession: (id: string) => void;
   onNewSession: () => void;
+  onUpdateTabConfig?: (nodeId: string, config: Record<string, unknown>) => void;
 }
 
 function Loading() {
@@ -55,6 +56,8 @@ export function panelFactory(node: TabNode, ctx: PanelContext) {
           <TerminalPanel
             terminalId={termConfig?.terminalId}
             workspaceId={termConfig?.workspaceId ?? ctx.workspaceId ?? ""}
+            nodeId={node.getId()}
+            onTerminalCreated={ctx.onUpdateTabConfig}
           />
         </Suspense>
       );

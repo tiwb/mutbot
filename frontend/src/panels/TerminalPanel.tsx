@@ -3,23 +3,45 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import "@xterm/xterm/css/xterm.css";
-import { createTerminal as apiCreateTerminal } from "../lib/api";
+import {
+  createTerminal as apiCreateTerminal,
+  deleteTerminal as apiDeleteTerminal,
+  getAuthToken,
+} from "../lib/api";
 
 interface Props {
   terminalId?: string;
   workspaceId: string;
+  nodeId?: string;
+  onTerminalCreated?: (nodeId: string, config: Record<string, unknown>) => void;
 }
 
-export default function TerminalPanel({ terminalId: initialId, workspaceId }: Props) {
+/** Build WS URL with optional auth token. */
+function buildWsUrl(termId: string): string {
+  const protocol = location.protocol === "https:" ? "wss:" : "ws:";
+  let url = `${protocol}//${location.host}/ws/terminal/${termId}`;
+  const token = getAuthToken();
+  if (token) {
+    url += `?token=${encodeURIComponent(token)}`;
+  }
+  return url;
+}
+
+export default function TerminalPanel({ terminalId: initialId, workspaceId, nodeId, onTerminalCreated }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const termIdRef = useRef<string | null>(initialId ?? null);
+  const destroyedRef = useRef(false);
+  // Track whether this panel "owns" the terminal (created it)
+  // so cleanup can decide whether to delete the PTY.
+  const ownsTermRef = useRef(!initialId);
 
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
+    destroyedRef.current = false;
 
     const term = new Terminal({
       theme: {
@@ -50,48 +72,13 @@ export default function TerminalPanel({ terminalId: initialId, workspaceId }: Pr
     termRef.current = term;
     fitRef.current = fitAddon;
 
-    // Create terminal session via REST then connect WebSocket
     const rows = term.rows;
     const cols = term.cols;
 
     let ws: WebSocket | null = null;
-    let destroyed = false;
-
-    async function init() {
-      let termId = termIdRef.current;
-      if (!termId) {
-        const result = await apiCreateTerminal(workspaceId, rows, cols);
-        if (destroyed) return;
-        termId = result.id;
-        termIdRef.current = termId;
-      }
-
-      const protocol = location.protocol === "https:" ? "wss:" : "ws:";
-      const url = `${protocol}//${location.host}/ws/terminal/${termId}`;
-      ws = new WebSocket(url);
-      ws.binaryType = "arraybuffer";
-      wsRef.current = ws;
-
-      ws.onopen = () => {
-        // Send initial resize
-        sendResize(rows, cols);
-      };
-
-      ws.onmessage = (event) => {
-        const data = event.data as ArrayBuffer;
-        const bytes = new Uint8Array(data);
-        if (bytes.length > 0 && bytes[0] === 0x01) {
-          // PTY output
-          term.write(bytes.slice(1));
-        }
-      };
-
-      ws.onclose = () => {
-        if (!destroyed) {
-          term.write("\r\n\x1b[31m[Terminal disconnected]\x1b[0m\r\n");
-        }
-      };
-    }
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    let retryCount = 0;
+    const maxRetries = 10;
 
     function sendResize(r: number, c: number) {
       if (ws && ws.readyState === WebSocket.OPEN) {
@@ -102,6 +89,80 @@ export default function TerminalPanel({ terminalId: initialId, workspaceId }: Pr
         view.setUint16(3, c, false);
         ws.send(buf);
       }
+    }
+
+    function connectWs(termId: string) {
+      if (destroyedRef.current) return;
+
+      const url = buildWsUrl(termId);
+      ws = new WebSocket(url);
+      ws.binaryType = "arraybuffer";
+      wsRef.current = ws;
+
+      ws.onopen = () => {
+        retryCount = 0;
+        // Delay resize until after scrollback replay arrives,
+        // so the shell's resize response doesn't produce artifacts.
+        setTimeout(() => {
+          sendResize(
+            termRef.current?.rows ?? rows,
+            termRef.current?.cols ?? cols,
+          );
+        }, 100);
+      };
+
+      ws.onmessage = (event) => {
+        const data = event.data as ArrayBuffer;
+        const bytes = new Uint8Array(data);
+        if (bytes.length > 0 && bytes[0] === 0x01) {
+          term.write(bytes.slice(1));
+        }
+      };
+
+      ws.onclose = (event) => {
+        if (destroyedRef.current) return;
+        if (event.code === 4004) {
+          // Terminal not found — create a new one
+          term.write("\r\n\x1b[33m[Terminal expired, creating new...]\x1b[0m\r\n");
+          termIdRef.current = null;
+          ownsTermRef.current = true;
+          init();
+          return;
+        }
+        // Auto-reconnect with backoff
+        if (retryCount < maxRetries) {
+          const delay = Math.min(1000 * 2 ** retryCount, 15000);
+          retryCount++;
+          reconnectTimer = setTimeout(() => {
+            if (!destroyedRef.current && termIdRef.current) {
+              connectWs(termIdRef.current);
+            }
+          }, delay);
+        } else {
+          term.write("\r\n\x1b[31m[Terminal disconnected]\x1b[0m\r\n");
+        }
+      };
+
+      ws.onerror = () => {
+        ws?.close();
+      };
+    }
+
+    async function init() {
+      if (destroyedRef.current) return;
+      let termId = termIdRef.current;
+      if (!termId) {
+        const result = await apiCreateTerminal(workspaceId, rows, cols);
+        if (destroyedRef.current) return;
+        termId = result.id;
+        termIdRef.current = termId;
+        ownsTermRef.current = true;
+        // Persist terminal ID into the flexlayout tab config
+        if (nodeId && onTerminalCreated) {
+          onTerminalCreated(nodeId, { terminalId: termId, workspaceId });
+        }
+      }
+      connectWs(termId!);
     }
 
     // Terminal input → WebSocket
@@ -128,13 +189,20 @@ export default function TerminalPanel({ terminalId: initialId, workspaceId }: Pr
     init();
 
     return () => {
-      destroyed = true;
+      destroyedRef.current = true;
+      if (reconnectTimer) clearTimeout(reconnectTimer);
       inputDisposable.dispose();
       resizeObserver.disconnect();
       ws?.close();
       wsRef.current = null;
       term.dispose();
       termRef.current = null;
+
+      // If this panel owns the terminal, kill the PTY on unmount
+      const tid = termIdRef.current;
+      if (tid && ownsTermRef.current) {
+        apiDeleteTerminal(tid).catch(() => {});
+      }
     };
   }, [workspaceId, initialId]);
 

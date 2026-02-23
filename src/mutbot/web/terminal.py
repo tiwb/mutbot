@@ -1,7 +1,13 @@
-"""Cross-platform PTY terminal manager."""
+"""Cross-platform PTY terminal manager with lifecycle decoupling.
+
+PTY processes survive WebSocket disconnects.  Clients attach/detach
+as I/O channels; the PTY is only killed by an explicit ``kill()`` call
+(DELETE API or server shutdown).
+"""
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import sys
@@ -10,9 +16,14 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
+from fastapi import WebSocket
+
 logger = logging.getLogger(__name__)
 
 IS_WINDOWS = sys.platform == "win32"
+
+# Scrollback buffer: keep the last 64 KB of PTY output for reconnection
+SCROLLBACK_MAX = 64 * 1024
 
 
 @dataclass
@@ -25,13 +36,29 @@ class TerminalSession:
     reader_thread: threading.Thread | None = None
     alive: bool = True
     _fd: int | None = field(default=None, repr=False)
+    # Scrollback buffer for reconnection replay
+    _scrollback: bytearray = field(default_factory=bytearray, repr=False)
+    _scrollback_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
 
 class TerminalManager:
-    """Manage PTY terminal sessions."""
+    """Manage PTY terminal sessions with multi-client support.
+
+    PTY lifetime is decoupled from WebSocket connections:
+    - ``create()`` spawns a PTY and starts the reader thread.
+    - ``attach()`` registers a WebSocket as an I/O channel.
+    - ``detach()`` removes a WebSocket without killing the PTY.
+    - ``kill()`` explicitly destroys the PTY process.
+    """
 
     def __init__(self) -> None:
         self._sessions: dict[str, TerminalSession] = {}
+        # Multi-client: term_id → set of (WebSocket, event_loop) pairs
+        self._connections: dict[str, set[tuple[WebSocket, asyncio.AbstractEventLoop]]] = {}
+
+    # ------------------------------------------------------------------
+    # Session lifecycle
+    # ------------------------------------------------------------------
 
     def create(self, workspace_id: str, rows: int, cols: int, cwd: str | None = None) -> TerminalSession:
         term_id = uuid.uuid4().hex[:12]
@@ -51,6 +78,9 @@ class TerminalManager:
 
         self._sessions[term_id] = session
         logger.info("Terminal created: id=%s, workspace=%s, cwd=%s", term_id, workspace_id, work_dir)
+
+        # Start reader immediately (writes to scrollback + broadcasts)
+        self._start_reader(session)
         return session
 
     def _spawn_windows(self, session: TerminalSession, cwd: str) -> None:
@@ -85,13 +115,50 @@ class TerminalManager:
         session.process = proc
         session._fd = master_fd
 
-    def has(self, term_id: str) -> bool:
-        return term_id in self._sessions
+    # ------------------------------------------------------------------
+    # Connection management (attach / detach)
+    # ------------------------------------------------------------------
 
-    def start_reader(self, term_id: str, loop: Any, on_output: Callable[[bytes], None]) -> None:
+    def attach(self, term_id: str, ws: WebSocket, loop: asyncio.AbstractEventLoop) -> None:
+        """Register a WebSocket as an I/O channel for this terminal."""
+        self._connections.setdefault(term_id, set()).add((ws, loop))
+        count = len(self._connections[term_id])
+        logger.info("Terminal %s: attached client (total=%d)", term_id, count)
+
+    def detach(self, term_id: str, ws: WebSocket) -> None:
+        """Remove a WebSocket without killing the PTY."""
+        conns = self._connections.get(term_id)
+        if conns:
+            conns.discard(next(((w, l) for w, l in conns if w is ws), (None, None)))  # type: ignore[arg-type]
+            # Clean up properly
+            to_remove = {pair for pair in conns if pair[0] is ws}
+            conns -= to_remove
+            if not conns:
+                del self._connections[term_id]
+        count = len(self._connections.get(term_id, set()))
+        logger.info("Terminal %s: detached client (remaining=%d)", term_id, count)
+
+    def get_scrollback(self, term_id: str) -> bytes:
+        """Return the scrollback buffer contents for replay on reconnect."""
         session = self._sessions.get(term_id)
-        if session is None or session.reader_thread is not None:
+        if session is None:
+            return b""
+        with session._scrollback_lock:
+            return bytes(session._scrollback)
+
+    def connection_count(self, term_id: str) -> int:
+        return len(self._connections.get(term_id, set()))
+
+    # ------------------------------------------------------------------
+    # Reader thread (PTY output → scrollback + broadcast)
+    # ------------------------------------------------------------------
+
+    def _start_reader(self, session: TerminalSession) -> None:
+        """Start the background reader thread for a terminal session."""
+        if session.reader_thread is not None:
             return
+
+        term_id = session.id
 
         def reader():
             try:
@@ -104,7 +171,7 @@ class TerminalManager:
                                 break
                             if isinstance(data, str):
                                 data = data.encode("utf-8", errors="replace")
-                            loop.call_soon_threadsafe(on_output, data)
+                            self._on_pty_output(session, data)
                         except EOFError:
                             break
                         except Exception:
@@ -119,7 +186,7 @@ class TerminalManager:
                             data = os.read(fd, 4096)
                             if not data:
                                 break
-                            loop.call_soon_threadsafe(on_output, data)
+                            self._on_pty_output(session, data)
                         except OSError:
                             break
             finally:
@@ -129,6 +196,47 @@ class TerminalManager:
         t = threading.Thread(target=reader, daemon=True, name=f"term-reader-{term_id}")
         session.reader_thread = t
         t.start()
+
+    def _on_pty_output(self, session: TerminalSession, data: bytes) -> None:
+        """Handle PTY output: append to scrollback and broadcast to all clients."""
+        # Append to scrollback buffer
+        with session._scrollback_lock:
+            session._scrollback.extend(data)
+            # Trim to max size
+            overflow = len(session._scrollback) - SCROLLBACK_MAX
+            if overflow > 0:
+                del session._scrollback[:overflow]
+
+        # Broadcast to all connected WebSocket clients
+        conns = self._connections.get(session.id)
+        if not conns:
+            return
+        payload = b"\x01" + data
+        dead: list[tuple[WebSocket, asyncio.AbstractEventLoop]] = []
+        for ws, loop in list(conns):
+            try:
+                asyncio.run_coroutine_threadsafe(ws.send_bytes(payload), loop)
+            except Exception:
+                dead.append((ws, loop))
+        for pair in dead:
+            conns.discard(pair)
+
+    # ------------------------------------------------------------------
+    # Query
+    # ------------------------------------------------------------------
+
+    def has(self, term_id: str) -> bool:
+        return term_id in self._sessions
+
+    def get(self, term_id: str) -> TerminalSession | None:
+        return self._sessions.get(term_id)
+
+    def list_by_workspace(self, workspace_id: str) -> list[TerminalSession]:
+        return [s for s in self._sessions.values() if s.workspace_id == workspace_id]
+
+    # ------------------------------------------------------------------
+    # I/O: write + resize (unchanged API)
+    # ------------------------------------------------------------------
 
     def write(self, term_id: str, data: bytes) -> None:
         session = self._sessions.get(term_id)
@@ -178,12 +286,18 @@ class TerminalManager:
                 except Exception:
                     logger.debug("Terminal resize failed: %s", term_id)
 
+    # ------------------------------------------------------------------
+    # Destroy
+    # ------------------------------------------------------------------
+
     def kill(self, term_id: str) -> None:
         session = self._sessions.pop(term_id, None)
         if session is None:
             return
 
         session.alive = False
+        # Clean up connections
+        self._connections.pop(term_id, None)
         logger.info("Killing terminal: %s", term_id)
 
         if IS_WINDOWS:

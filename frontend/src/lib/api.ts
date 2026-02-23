@@ -137,6 +137,20 @@ export async function createTerminal(
   return res.json();
 }
 
+export async function fetchTerminals(workspaceId: string) {
+  const res = await authFetch(
+    `${BASE}/api/workspaces/${workspaceId}/terminals`,
+  );
+  return res.json();
+}
+
+export async function deleteTerminal(termId: string) {
+  const res = await authFetch(`${BASE}/api/terminals/${termId}`, {
+    method: "DELETE",
+  });
+  return res.json();
+}
+
 // ---------------------------------------------------------------------------
 // File API
 // ---------------------------------------------------------------------------

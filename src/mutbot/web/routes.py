@@ -290,6 +290,16 @@ async def websocket_session(websocket: WebSocket, session_id: str):
 # Terminal endpoints
 # ---------------------------------------------------------------------------
 
+def _terminal_dict(t) -> dict[str, Any]:
+    return {
+        "id": t.id,
+        "workspace_id": t.workspace_id,
+        "rows": t.rows,
+        "cols": t.cols,
+        "alive": t.alive,
+    }
+
+
 @router.post("/api/workspaces/{workspace_id}/terminals")
 async def create_terminal_endpoint(workspace_id: str, body: dict[str, Any]):
     wm, _ = _get_managers()
@@ -302,7 +312,28 @@ async def create_terminal_endpoint(workspace_id: str, body: dict[str, Any]):
     rows = body.get("rows", 24)
     cols = body.get("cols", 80)
     term = tm.create(workspace_id, rows, cols, cwd=ws.project_path)
-    return {"id": term.id, "workspace_id": term.workspace_id}
+    return _terminal_dict(term)
+
+
+@router.get("/api/workspaces/{workspace_id}/terminals")
+async def list_terminals(workspace_id: str):
+    wm, _ = _get_managers()
+    ws = wm.get(workspace_id)
+    if ws is None:
+        return JSONResponse({"error": "workspace not found"}, status_code=404)
+    tm = _get_terminal_manager()
+    if tm is None:
+        return []
+    return [_terminal_dict(t) for t in tm.list_by_workspace(workspace_id)]
+
+
+@router.delete("/api/terminals/{term_id}")
+async def delete_terminal(term_id: str):
+    tm = _get_terminal_manager()
+    if tm is None or not tm.has(term_id):
+        return JSONResponse({"error": "terminal not found"}, status_code=404)
+    tm.kill(term_id)
+    return {"status": "killed"}
 
 
 @router.websocket("/ws/terminal/{term_id}")
@@ -313,25 +344,30 @@ async def websocket_terminal(websocket: WebSocket, term_id: str):
     - Client→Server: 0x00 + input bytes
     - Server→Client: 0x01 + output bytes
     - Client→Server: 0x02 + 2B rows (big-endian) + 2B cols (big-endian)
+
+    PTY survives WebSocket disconnects.  The client can reconnect and
+    receive the scrollback buffer to restore the screen.
     """
     tm = _get_terminal_manager()
+    await websocket.accept()
     if tm is None or not tm.has(term_id):
         await websocket.close(code=4004, reason="terminal not found")
         return
-
-    await websocket.accept()
     logger.info("Terminal WS connected: term=%s", term_id)
 
     loop = asyncio.get_running_loop()
 
-    def on_output(data: bytes):
-        """Called from reader thread when PTY produces output."""
-        payload = b"\x01" + data
-        asyncio.run_coroutine_threadsafe(
-            websocket.send_bytes(payload), loop
-        )
+    # Send scrollback BEFORE attaching, so live output from the reader
+    # thread doesn't arrive before the historical replay.
+    scrollback = tm.get_scrollback(term_id)
+    if scrollback:
+        try:
+            await websocket.send_bytes(b"\x01" + scrollback)
+        except Exception:
+            logger.debug("Failed to send scrollback for term=%s", term_id)
 
-    tm.start_reader(term_id, loop, on_output)
+    # Now attach as I/O channel for live output
+    tm.attach(term_id, websocket, loop)
 
     try:
         while True:
@@ -352,7 +388,8 @@ async def websocket_terminal(websocket: WebSocket, term_id: str):
     except Exception:
         logger.exception("Terminal WS error: term=%s", term_id)
     finally:
-        tm.kill(term_id)
+        # Detach only — PTY stays alive for reconnection
+        tm.detach(term_id, websocket)
 
 
 # ---------------------------------------------------------------------------

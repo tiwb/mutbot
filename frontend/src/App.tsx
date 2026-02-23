@@ -283,6 +283,15 @@ export default function App() {
     [workspace],
   );
 
+  const handleUpdateTabConfig = useCallback(
+    (nodeId: string, config: Record<string, unknown>) => {
+      const model = modelRef.current;
+      if (!model) return;
+      model.doAction(Actions.updateNodeAttributes(nodeId, { config }));
+    },
+    [],
+  );
+
   const factory = useCallback(
     (node: TabNode) => {
       return panelFactory(node, {
@@ -291,9 +300,10 @@ export default function App() {
         workspaceId: workspace?.id ?? null,
         onSelectSession: handleSelectSession,
         onNewSession: handleNewSession,
+        onUpdateTabConfig: handleUpdateTabConfig,
       });
     },
-    [sessions, activeSessionId, workspace, handleSelectSession, handleNewSession],
+    [sessions, activeSessionId, workspace, handleSelectSession, handleNewSession, handleUpdateTabConfig],
   );
 
   // Show nothing while checking auth

@@ -1,6 +1,6 @@
 # 终端会话生命周期管理
 
-**状态**：⏸️ 待开始
+**状态**：✅ 已完成
 **日期**：2026-02-23
 **类型**：问题修复 / 功能增强
 
@@ -121,25 +121,25 @@ DELETE /api/terminals/{term_id}                  — 显式销毁终端
 
 ## 5. 实施步骤
 
-- [ ] **Step 1**: 后端终端生命周期解耦
-  - [ ] TerminalSession 增加 scrollback 环形缓冲
-  - [ ] TerminalManager 增加多连接管理（`attach`/`detach`）
-  - [ ] reader 线程输出同时写入 scrollback 和所有连接
-  - [ ] `list_by_workspace()` 查询活跃终端
-  - 状态：⏸️ 待开始
+- [x] **Step 1**: 后端终端生命周期解耦
+  - [x] TerminalSession 增加 scrollback 环形缓冲
+  - [x] TerminalManager 增加多连接管理（`attach`/`detach`）
+  - [x] reader 线程输出同时写入 scrollback 和所有连接
+  - [x] `list_by_workspace()` 查询活跃终端
+  - 状态：✅ 已完成 (2026-02-23)
 
-- [ ] **Step 2**: 路由层适配
-  - [ ] WS 断开时 `detach()` 替代 `kill()`
-  - [ ] WS 连接时发送 scrollback 缓冲内容
-  - [ ] `GET /api/workspaces/{wid}/terminals` 列出终端
-  - [ ] `DELETE /api/terminals/{term_id}` 显式销毁
-  - 状态：⏸️ 待开始
+- [x] **Step 2**: 路由层适配
+  - [x] WS 断开时 `detach()` 替代 `kill()`
+  - [x] WS 连接时发送 scrollback 缓冲内容
+  - [x] `GET /api/workspaces/{wid}/terminals` 列出终端
+  - [x] `DELETE /api/terminals/{term_id}` 显式销毁
+  - 状态：✅ 已完成 (2026-02-23)
 
-- [ ] **Step 3**: 前端终端面板改进
-  - [ ] 支持重连已有终端（连接失败则自动新建）
-  - [ ] 面板关闭时调用 DELETE API
-  - [ ] WebSocket 断开时尝试重连
-  - 状态：⏸️ 待开始
+- [x] **Step 3**: 前端终端面板改进
+  - [x] 支持重连已有终端（连接失败则自动新建）
+  - [x] 面板关闭时调用 DELETE API
+  - [x] WebSocket 断开时尝试重连（指数退避，最多 10 次）
+  - 状态：✅ 已完成 (2026-02-23)
 
 ## 6. 验证
 
