@@ -18,22 +18,27 @@ export default function SessionListPanel({
   onNewSession,
 }: Props) {
   return (
-    <div className="session-list">
-      <button className="btn-new-session" onClick={onNewSession}>
-        + New Session
-      </button>
-      <ul>
-        {sessions.map((s) => (
-          <li
-            key={s.id}
-            className={`session-item ${s.id === activeSessionId ? "active" : ""} ${s.status === "ended" ? "ended" : ""}`}
-            onClick={() => onSelect(s.id)}
-          >
-            <span className="session-title">{s.title}</span>
-            <span className={`session-status ${s.status}`}>{s.status}</span>
-          </li>
-        ))}
-      </ul>
+    <div className="session-list-container">
+      <div className="sidebar-header">
+        <h1>MutBot</h1>
+      </div>
+      <div className="session-list">
+        <button className="btn-new-session" onClick={onNewSession}>
+          + New Session
+        </button>
+        <ul>
+          {sessions.map((s) => (
+            <li
+              key={s.id}
+              className={`session-item ${s.id === activeSessionId ? "active" : ""} ${s.status === "ended" ? "ended" : ""}`}
+              onClick={() => onSelect(s.id)}
+            >
+              <span className="session-title">{s.title}</span>
+              <span className={`session-status ${s.status}`}>{s.status}</span>
+            </li>
+          ))}
+        </ul>
+      </div>
     </div>
   );
 }

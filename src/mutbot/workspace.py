@@ -14,6 +14,7 @@ class Workspace:
     name: str
     project_path: str
     sessions: list[str] = field(default_factory=list)
+    layout: dict | None = None
     created_at: str = ""
     updated_at: str = ""
 

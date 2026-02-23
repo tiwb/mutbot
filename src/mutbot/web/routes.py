@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from dataclasses import asdict
+from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
+from fastapi.responses import JSONResponse
 
 from mutbot.web.connection import ConnectionManager
 
@@ -28,12 +31,18 @@ def _get_log_store():
     return log_store
 
 
+def _get_terminal_manager():
+    from mutbot.web.server import terminal_manager
+    return terminal_manager
+
+
 def _workspace_dict(ws) -> dict[str, Any]:
     return {
         "id": ws.id,
         "name": ws.name,
         "project_path": ws.project_path,
         "sessions": ws.sessions,
+        "layout": ws.layout,
         "created_at": ws.created_at,
         "updated_at": ws.updated_at,
     }
@@ -114,6 +123,17 @@ async def get_workspace(workspace_id: str):
     ws = wm.get(workspace_id)
     if ws is None:
         return {"error": "workspace not found"}, 404
+    return _workspace_dict(ws)
+
+
+@router.put("/api/workspaces/{workspace_id}")
+async def update_workspace(workspace_id: str, body: dict[str, Any]):
+    wm, _ = _get_managers()
+    ws = wm.get(workspace_id)
+    if ws is None:
+        return {"error": "workspace not found"}, 404
+    if "layout" in body:
+        ws.layout = body["layout"]
     return _workspace_dict(ws)
 
 
@@ -207,3 +227,153 @@ async def websocket_session(websocket: WebSocket, session_id: str):
         logger.exception("WS error: session=%s", session_id)
     finally:
         connection_manager.disconnect(session_id, websocket)
+
+
+# ---------------------------------------------------------------------------
+# Terminal endpoints
+# ---------------------------------------------------------------------------
+
+@router.post("/api/workspaces/{workspace_id}/terminals")
+async def create_terminal_endpoint(workspace_id: str, body: dict[str, Any]):
+    wm, _ = _get_managers()
+    ws = wm.get(workspace_id)
+    if ws is None:
+        return JSONResponse({"error": "workspace not found"}, status_code=404)
+    tm = _get_terminal_manager()
+    if tm is None:
+        return JSONResponse({"error": "terminal manager not available"}, status_code=503)
+    rows = body.get("rows", 24)
+    cols = body.get("cols", 80)
+    term = tm.create(workspace_id, rows, cols, cwd=ws.project_path)
+    return {"id": term.id, "workspace_id": term.workspace_id}
+
+
+@router.websocket("/ws/terminal/{term_id}")
+async def websocket_terminal(websocket: WebSocket, term_id: str):
+    """Binary WebSocket for terminal I/O.
+
+    Protocol:
+    - Client→Server: 0x00 + input bytes
+    - Server→Client: 0x01 + output bytes
+    - Client→Server: 0x02 + 2B rows (big-endian) + 2B cols (big-endian)
+    """
+    tm = _get_terminal_manager()
+    if tm is None or not tm.has(term_id):
+        await websocket.close(code=4004, reason="terminal not found")
+        return
+
+    await websocket.accept()
+    logger.info("Terminal WS connected: term=%s", term_id)
+
+    loop = asyncio.get_running_loop()
+
+    def on_output(data: bytes):
+        """Called from reader thread when PTY produces output."""
+        payload = b"\x01" + data
+        asyncio.run_coroutine_threadsafe(
+            websocket.send_bytes(payload), loop
+        )
+
+    tm.start_reader(term_id, loop, on_output)
+
+    try:
+        while True:
+            raw = await websocket.receive_bytes()
+            if len(raw) < 1:
+                continue
+            msg_type = raw[0]
+            if msg_type == 0x00:
+                # Terminal input
+                tm.write(term_id, raw[1:])
+            elif msg_type == 0x02 and len(raw) >= 5:
+                # Resize: 2B rows + 2B cols (big-endian)
+                rows = int.from_bytes(raw[1:3], "big")
+                cols = int.from_bytes(raw[3:5], "big")
+                tm.resize(term_id, rows, cols)
+    except WebSocketDisconnect:
+        logger.info("Terminal WS disconnected: term=%s", term_id)
+    except Exception:
+        logger.exception("Terminal WS error: term=%s", term_id)
+    finally:
+        tm.kill(term_id)
+
+
+# ---------------------------------------------------------------------------
+# Log streaming WebSocket
+# ---------------------------------------------------------------------------
+
+@router.websocket("/ws/logs")
+async def websocket_logs(websocket: WebSocket):
+    """Stream new log entries to client in real-time."""
+    await websocket.accept()
+    logger.info("Log WS connected")
+
+    store = _get_log_store()
+    if store is None:
+        await websocket.close(code=4500, reason="log store not available")
+        return
+
+    # Start from current end (no history replay)
+    cursor = store.count()
+
+    try:
+        while True:
+            await asyncio.sleep(0.2)
+            current_count = store.count()
+            if current_count > cursor:
+                # Fetch new entries
+                new_entries = store.query(pattern="", level="DEBUG", limit=current_count - cursor)
+                # query returns newest-first, reverse to send oldest-first
+                for e in reversed(new_entries):
+                    await websocket.send_json({
+                        "type": "log",
+                        "timestamp": e.timestamp,
+                        "level": e.level,
+                        "logger": e.logger_name,
+                        "message": e.message,
+                    })
+                cursor = current_count
+    except WebSocketDisconnect:
+        logger.info("Log WS disconnected")
+    except Exception:
+        logger.exception("Log WS error")
+
+
+# ---------------------------------------------------------------------------
+# File read endpoint
+# ---------------------------------------------------------------------------
+
+_LANG_MAP = {
+    ".py": "python", ".js": "javascript", ".ts": "typescript", ".tsx": "typescriptreact",
+    ".jsx": "javascriptreact", ".json": "json", ".html": "html", ".css": "css",
+    ".md": "markdown", ".yaml": "yaml", ".yml": "yaml", ".toml": "toml",
+    ".sh": "shell", ".bash": "shell", ".sql": "sql", ".xml": "xml",
+    ".rs": "rust", ".go": "go", ".java": "java", ".c": "c", ".cpp": "cpp",
+    ".h": "c", ".hpp": "cpp", ".rb": "ruby", ".php": "php",
+}
+
+
+@router.get("/api/workspaces/{workspace_id}/file")
+async def read_file(workspace_id: str, path: str = Query(..., description="Relative file path")):
+    wm, _ = _get_managers()
+    ws = wm.get(workspace_id)
+    if ws is None:
+        return JSONResponse({"error": "workspace not found"}, status_code=404)
+
+    # Resolve and verify path is within project
+    project = Path(ws.project_path).resolve()
+    target = (project / path).resolve()
+    if not str(target).startswith(str(project)):
+        return JSONResponse({"error": "path traversal not allowed"}, status_code=403)
+    if not target.is_file():
+        return JSONResponse({"error": "file not found"}, status_code=404)
+
+    try:
+        content = target.read_text(encoding="utf-8", errors="replace")
+    except Exception as exc:
+        return JSONResponse({"error": str(exc)}, status_code=500)
+
+    ext = target.suffix.lower()
+    language = _LANG_MAP.get(ext, "plaintext")
+
+    return {"path": str(target.relative_to(project)), "content": content, "language": language}

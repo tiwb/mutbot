@@ -14,6 +14,7 @@ from mutagent.runtime.log_store import LogStore, LogStoreHandler, SingleLineForm
 
 from mutbot.workspace import WorkspaceManager
 from mutbot.session import SessionManager
+from mutbot.web.terminal import TerminalManager
 
 logger = logging.getLogger(__name__)
 
@@ -24,13 +25,15 @@ logger = logging.getLogger(__name__)
 workspace_manager: WorkspaceManager | None = None
 session_manager: SessionManager | None = None
 log_store: LogStore | None = None
+terminal_manager: TerminalManager | None = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global workspace_manager, session_manager, log_store
+    global workspace_manager, session_manager, log_store, terminal_manager
     workspace_manager = WorkspaceManager()
     session_manager = SessionManager()
+    terminal_manager = TerminalManager()
     workspace_manager.ensure_default()
 
     # --- Unified logging setup (mirrors mutagent pattern) ---
@@ -68,7 +71,9 @@ async def lifespan(app: FastAPI):
 
     yield
 
-    # Shutdown: stop all active sessions
+    # Shutdown: stop all active sessions and terminals
+    if terminal_manager is not None:
+        terminal_manager.kill_all()
     if session_manager is not None:
         for sid in list(session_manager._sessions):
             session_manager.stop(sid)

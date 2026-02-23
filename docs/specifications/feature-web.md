@@ -1,6 +1,6 @@
 # MutBot Web UI 设计规范
 
-**状态**：🔄 进行中（阶段一、二已完成，阶段三待开始）
+**状态**：🔄 进行中（阶段一、二、三已完成，阶段四待开始）
 **日期**：2026-02-23
 **类型**：功能设计
 
@@ -641,26 +641,34 @@ cd frontend && npm run dev
   - [x] 前端有改动时 `npm run build` 重新构建，无需重启后端
   - 状态：✅ 已完成 (2026-02-23)
 
-### 阶段三：面板布局 + 终端 + 文件编辑 [待开始]
+### 阶段三：面板布局 + 终端 + 文件编辑 [✅ 已完成]
 
-- [ ] **Task 3.1**: flexlayout-react 面板系统
-  - [ ] JSON 布局模型 + factory 函数
-  - [ ] 面板增删、拖拽、布局持久化到 Workspace
-  - 状态：⏸️ 待开始
+- [x] **Task 3.1**: flexlayout-react 面板系统
+  - [x] JSON 布局模型 + factory 函数（`layout.ts` + `PanelFactory.tsx`）
+  - [x] 面板增删、拖拽、布局持久化到 Workspace（`PUT /api/workspaces/{id}`）
+  - [x] App.tsx 完整重写：flexlayout Layout + Model + 工具栏（Terminal/Logs 按钮）
+  - [x] SessionList 移入 flexlayout border（持久侧边栏，不可拖拽关闭）
+  - [x] 动态 tabset 查找（`getTargetTabset()` 避免恢复布局时 ID 不匹配）
+  - [x] flexlayout 深色主题覆盖，映射到现有 CSS 自定义属性
+  - 状态：✅ 已完成 (2026-02-23)
 
-- [ ] **Task 3.2**: 终端面板
-  - [ ] PTY 管理（跨平台）
-  - [ ] xterm.js + WebSocket 二进制桥接
-  - 状态：⏸️ 待开始
+- [x] **Task 3.2**: 终端面板
+  - [x] `terminal.py`：跨平台 PTY 管理（Windows pywinpty + Unix pty.openpty）
+  - [x] `POST /api/workspaces/{wid}/terminals` 创建终端会话
+  - [x] `WS /ws/terminal/{term_id}` 二进制 WebSocket（0x00 输入 / 0x01 输出 / 0x02 resize）
+  - [x] `TerminalPanel.tsx`：xterm.js + FitAddon + WebLinksAddon + ResizeObserver
+  - [x] `pyproject.toml` 添加 `pywinpty>=2.0.0` 条件依赖
+  - 状态：✅ 已完成 (2026-02-23)
 
-- [ ] **Task 3.3**: 文件编辑面板
-  - [ ] Monaco Editor 懒加载
-  - [ ] 代码查看 + diff 视图
-  - 状态：⏸️ 待开始
+- [x] **Task 3.3**: 文件编辑面板
+  - [x] `GET /api/workspaces/{wid}/file?path=...` 文件读取（含路径遍历防护）
+  - [x] `CodeEditorPanel.tsx`：Monaco Editor 懒加载（React.lazy）、只读模式、语言自动检测
+  - 状态：✅ 已完成 (2026-02-23)
 
-- [ ] **Task 3.4**: 日志面板
-  - [ ] 实时日志流 + 级别过滤
-  - 状态：⏸️ 待开始
+- [x] **Task 3.4**: 日志面板
+  - [x] `WS /ws/logs` 实时日志推送（200ms 轮询 LogStore）
+  - [x] `LogPanel.tsx`：初始加载 + WebSocket 流式更新、级别过滤、文本搜索、自动滚动、2000 条内存上限
+  - 状态：✅ 已完成 (2026-02-23)
 
 ### 阶段四：会话持久化 + 多用户 + 认证 [待开始]
 
