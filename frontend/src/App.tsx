@@ -11,6 +11,7 @@ import {
   type BorderNode,
   type IJsonModel,
   type ITabSetRenderValues,
+  type ITabRenderValues,
 } from "flexlayout-react";
 import "flexlayout-react/style/dark.css";
 import {
@@ -30,6 +31,39 @@ import {
   PANEL_CODE_EDITOR,
 } from "./lib/layout";
 import { panelFactory } from "./panels/PanelFactory";
+import SessionListPanel from "./panels/SessionListPanel";
+import ContextMenu, { type ContextMenuItem } from "./components/ContextMenu";
+
+// ---------- Tab icons (inline SVG, 16px) ----------
+
+function TabIcon({ type }: { type: string }) {
+  const color = "#858585";
+  const size = 16;
+  switch (type) {
+    case "agent":
+      return (
+        <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+        </svg>
+      );
+    case "terminal":
+      return (
+        <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+          <polyline points="4 17 10 11 4 5" />
+          <line x1="12" y1="19" x2="20" y2="19" />
+        </svg>
+      );
+    case "document":
+      return (
+        <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+          <polyline points="14 2 14 8 20 8" />
+        </svg>
+      );
+    default:
+      return null;
+  }
+}
 
 interface Workspace {
   id: string;
@@ -246,6 +280,17 @@ export default function App() {
     nodeId: string;
     sessionId: string;
   } | null>(null);
+
+  // Tab context menu state
+  const [tabContextMenu, setTabContextMenu] = useState<{
+    position: { x: number; y: number };
+    nodeId: string;
+  } | null>(null);
+
+  // Sidebar collapsed state
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [sidebarWidth, setSidebarWidth] = useState(260);
+  const sidebarResizing = useRef(false);
 
   // Initialize model once workspace is available
   if (!modelRef.current) {
@@ -519,6 +564,178 @@ export default function App() {
   );
 
   // ------------------------------------------------------------------
+  // Sidebar collapse/expand
+  // ------------------------------------------------------------------
+
+  const handleSidebarModeChange = useCallback(
+    (collapsed: boolean) => {
+      setSidebarCollapsed(collapsed);
+    },
+    [],
+  );
+
+  // Sidebar resize by dragging
+  const handleSidebarResizeStart = useCallback(
+    (e: React.MouseEvent) => {
+      e.preventDefault();
+      sidebarResizing.current = true;
+      const startX = e.clientX;
+      const startWidth = sidebarWidth;
+
+      const onMouseMove = (ev: MouseEvent) => {
+        const newWidth = Math.max(150, Math.min(600, startWidth + ev.clientX - startX));
+        setSidebarWidth(newWidth);
+      };
+
+      const onMouseUp = () => {
+        sidebarResizing.current = false;
+        document.removeEventListener("mousemove", onMouseMove);
+        document.removeEventListener("mouseup", onMouseUp);
+        document.body.style.cursor = "";
+        document.body.style.userSelect = "";
+      };
+
+      document.addEventListener("mousemove", onMouseMove);
+      document.addEventListener("mouseup", onMouseUp);
+      document.body.style.cursor = "col-resize";
+      document.body.style.userSelect = "none";
+    },
+    [sidebarWidth],
+  );
+
+  // ------------------------------------------------------------------
+  // Session close/delete from context menu
+  // ------------------------------------------------------------------
+
+  const handleCloseSession = useCallback(
+    (sessionId: string) => {
+      stopSession(sessionId).then(() => {
+        setSessions((prev) =>
+          prev.map((s) => (s.id === sessionId ? { ...s, status: "ended" } : s)),
+        );
+      });
+    },
+    [],
+  );
+
+  const handleDeleteSession = useCallback(
+    (sessionId: string) => {
+      // Stop first, then remove from local state
+      stopSession(sessionId)
+        .catch(() => {})
+        .finally(() => {
+          setSessions((prev) => prev.filter((s) => s.id !== sessionId));
+          // Close any open tab for this session
+          const model = modelRef.current;
+          if (model) {
+            model.visitNodes((node) => {
+              if (node.getType() === "tab") {
+                const tabNode = node as TabNode;
+                if (tabNode.getConfig()?.sessionId === sessionId) {
+                  model.doAction(Actions.deleteTab(node.getId()));
+                }
+              }
+            });
+          }
+        });
+    },
+    [],
+  );
+
+  // ------------------------------------------------------------------
+  // Tab context menu
+  // ------------------------------------------------------------------
+
+  const handleLayoutContextMenu = useCallback(
+    (e: React.MouseEvent) => {
+      // Walk up from click target to find a tab button
+      let el = e.target as HTMLElement | null;
+      while (el && !el.classList.contains("flexlayout__tab_button")) {
+        if (el.classList.contains("flexlayout__layout")) break;
+        el = el.parentElement;
+      }
+      if (!el || !el.classList.contains("flexlayout__tab_button")) return;
+
+      // Extract the node ID from the data attribute
+      const nodeId = el.getAttribute("data-layout-path");
+      // flexlayout stores the node id in the element id (format: varies by version)
+      // Try to find the tab node by matching
+      const model = modelRef.current;
+      if (!model) return;
+
+      // The tab button's text content matches the tab name
+      // Use a more robust approach: iterate model nodes to find matching tab
+      let matchedNodeId: string | null = null;
+      if (nodeId) {
+        matchedNodeId = nodeId;
+      } else {
+        // flexlayout adds id attribute to tab buttons in format "#<id>"
+        const elId = el.id;
+        if (elId) {
+          // The id on tab_button elements is typically "tab_button_<nodeId>"
+          // or just the node path — try extracting
+          model.visitNodes((node) => {
+            if (node.getType() === "tab" && elId.includes(node.getId())) {
+              matchedNodeId = node.getId();
+            }
+          });
+        }
+      }
+
+      if (!matchedNodeId) return;
+
+      e.preventDefault();
+      setTabContextMenu({
+        position: { x: e.clientX, y: e.clientY },
+        nodeId: matchedNodeId,
+      });
+    },
+    [],
+  );
+
+  const getTabContextMenuItems = useCallback((): ContextMenuItem[] => {
+    if (!tabContextMenu) return [];
+    const { nodeId } = tabContextMenu;
+    const model = modelRef.current;
+    if (!model) return [];
+
+    return [
+      {
+        label: "Close",
+        onClick: () => {
+          model.doAction(Actions.deleteTab(nodeId));
+        },
+      },
+      {
+        label: "Close Others",
+        onClick: () => {
+          // Find all tabs in the same tabset
+          let parentId: string | null = null;
+          model.visitNodes((node) => {
+            if (node.getId() === nodeId && node.getType() === "tab") {
+              parentId = node.getParent()?.getId() ?? null;
+            }
+          });
+          if (!parentId) return;
+          const toClose: string[] = [];
+          model.visitNodes((node) => {
+            if (
+              node.getType() === "tab" &&
+              node.getParent()?.getId() === parentId &&
+              node.getId() !== nodeId
+            ) {
+              toClose.push(node.getId());
+            }
+          });
+          for (const id of toClose) {
+            model.doAction(Actions.deleteTab(id));
+          }
+        },
+      },
+    ];
+  }, [tabContextMenu]);
+
+  // ------------------------------------------------------------------
   // Tabset "+" button rendering
   // ------------------------------------------------------------------
 
@@ -540,6 +757,26 @@ export default function App() {
       );
     },
     [handleCreateSession],
+  );
+
+  // ------------------------------------------------------------------
+  // Tab icon rendering
+  // ------------------------------------------------------------------
+
+  const onRenderTab = useCallback(
+    (node: TabNode, renderValues: ITabRenderValues) => {
+      const component = node.getComponent();
+      // Determine session type from component
+      let type: string | null = null;
+      if (component === PANEL_AGENT_CHAT) type = "agent";
+      else if (component === PANEL_TERMINAL) type = "terminal";
+      else if (component === PANEL_CODE_EDITOR) type = "document";
+
+      if (type) {
+        renderValues.leading = <TabIcon type={type} />;
+      }
+    },
+    [],
   );
 
   // ------------------------------------------------------------------
@@ -574,15 +811,34 @@ export default function App() {
   return (
     <div className="app-root">
       <div className="app-layout">
-        {model && (
-          <Layout
-            model={model}
-            factory={factory}
-            onModelChange={handleModelChange}
-            onRenderTabSet={onRenderTabSet}
-            onAction={handleAction}
+        <div
+          className={`sidebar ${sidebarCollapsed ? "collapsed" : ""}`}
+          style={sidebarCollapsed ? undefined : { width: sidebarWidth }}
+        >
+          <SessionListPanel
+            sessions={sessions}
+            activeSessionId={activeSessionId}
+            onSelect={handleSelectSession}
+            onModeChange={handleSidebarModeChange}
+            onCloseSession={handleCloseSession}
+            onDeleteSession={handleDeleteSession}
           />
+        </div>
+        {!sidebarCollapsed && (
+          <div className="sidebar-resize-handle" onMouseDown={handleSidebarResizeStart} />
         )}
+        <div className="main-content" onContextMenu={handleLayoutContextMenu}>
+          {model && (
+            <Layout
+              model={model}
+              factory={factory}
+              onModelChange={handleModelChange}
+              onRenderTabSet={onRenderTabSet}
+              onRenderTab={onRenderTab}
+              onAction={handleAction}
+            />
+          )}
+        </div>
       </div>
       {pendingClose && (
         <ConfirmDialog
@@ -591,6 +847,13 @@ export default function App() {
           cancelLabel="Close Panel Only"
           onConfirm={handleTerminalCloseConfirm}
           onCancel={handleTerminalCloseCancel}
+        />
+      )}
+      {tabContextMenu && (
+        <ContextMenu
+          items={getTabContextMenuItems()}
+          position={tabContextMenu.position}
+          onClose={() => setTabContextMenu(null)}
         />
       )}
     </div>

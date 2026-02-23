@@ -1,13 +1,11 @@
 import React, { Suspense } from "react";
 import type { TabNode } from "flexlayout-react";
 import {
-  PANEL_SESSION_LIST,
   PANEL_AGENT_CHAT,
   PANEL_TERMINAL,
   PANEL_CODE_EDITOR,
   PANEL_LOG,
 } from "../lib/layout";
-import SessionListPanel from "./SessionListPanel";
 import AgentPanel from "./AgentPanel";
 
 const TerminalPanel = React.lazy(() => import("./TerminalPanel"));
@@ -30,15 +28,6 @@ export function panelFactory(node: TabNode, ctx: PanelContext) {
   const component = node.getComponent();
 
   switch (component) {
-    case PANEL_SESSION_LIST:
-      return (
-        <SessionListPanel
-          sessions={ctx.sessions}
-          activeSessionId={ctx.activeSessionId}
-          onSelect={ctx.onSelectSession}
-        />
-      );
-
     case PANEL_AGENT_CHAT: {
       const sessionId = node.getConfig()?.sessionId as string | undefined;
       if (!sessionId) return <div className="empty-state"><p>No session.</p></div>;

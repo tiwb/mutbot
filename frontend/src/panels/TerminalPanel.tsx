@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
@@ -8,6 +8,7 @@ import {
   deleteTerminal as apiDeleteTerminal,
   getAuthToken,
 } from "../lib/api";
+import ContextMenu, { type ContextMenuItem } from "../components/ContextMenu";
 
 interface Props {
   terminalId?: string;
@@ -47,18 +48,27 @@ export default function TerminalPanel({ terminalId: initialId, workspaceId, node
 
     const term = new Terminal({
       theme: {
-        background: "#0d1117",
-        foreground: "#e4e4e4",
-        cursor: "#e94560",
-        selectionBackground: "rgba(233, 69, 96, 0.3)",
-        black: "#1a1a2e",
-        red: "#e94560",
-        green: "#4ecca3",
-        yellow: "#f0c040",
-        blue: "#0f3460",
-        magenta: "#9b59b6",
-        cyan: "#00b4d8",
-        white: "#e4e4e4",
+        background: "#1e1e1e",
+        foreground: "#cccccc",
+        cursor: "#aeafad",
+        cursorAccent: "#000000",
+        selectionBackground: "rgba(255, 255, 255, 0.3)",
+        black: "#000000",
+        red: "#cd3131",
+        green: "#0dbc79",
+        yellow: "#e5e510",
+        blue: "#2472c8",
+        magenta: "#bc3fbc",
+        cyan: "#11a8cd",
+        white: "#e5e5e5",
+        brightBlack: "#666666",
+        brightRed: "#f14c4c",
+        brightGreen: "#23d18b",
+        brightYellow: "#f5f543",
+        brightBlue: "#3b8eea",
+        brightMagenta: "#d670d6",
+        brightCyan: "#29b8db",
+        brightWhite: "#e5e5e5",
       },
       fontFamily: '"SF Mono", "Cascadia Code", Consolas, monospace',
       fontSize: 13,
@@ -225,5 +235,64 @@ export default function TerminalPanel({ terminalId: initialId, workspaceId, node
     };
   }, [workspaceId, initialId]);
 
-  return <div ref={containerRef} className="terminal-panel" />;
+  const [contextMenu, setContextMenu] = useState<{
+    position: { x: number; y: number };
+  } | null>(null);
+
+  const handleContextMenu = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    setContextMenu({ position: { x: e.clientX, y: e.clientY } });
+  }, []);
+
+  const menuItems: ContextMenuItem[] = [
+    {
+      label: "Copy",
+      shortcut: "Ctrl+C",
+      onClick: () => {
+        const term = termRef.current;
+        if (term) {
+          const selection = term.getSelection();
+          if (selection) {
+            navigator.clipboard.writeText(selection);
+          }
+        }
+      },
+    },
+    {
+      label: "Paste",
+      shortcut: "Ctrl+V",
+      onClick: () => {
+        navigator.clipboard.readText().then((text) => {
+          const ws = wsRef.current;
+          if (ws && ws.readyState === WebSocket.OPEN && text) {
+            const encoder = new TextEncoder();
+            const encoded = encoder.encode(text);
+            const buf = new Uint8Array(1 + encoded.length);
+            buf[0] = 0x00;
+            buf.set(encoded, 1);
+            ws.send(buf.buffer);
+          }
+        });
+      },
+    },
+    { label: "", separator: true },
+    {
+      label: "Clear Terminal",
+      onClick: () => {
+        termRef.current?.clear();
+      },
+    },
+  ];
+
+  return (
+    <div ref={containerRef} className="terminal-panel" onContextMenu={handleContextMenu}>
+      {contextMenu && (
+        <ContextMenu
+          items={menuItems}
+          position={contextMenu.position}
+          onClose={() => setContextMenu(null)}
+        />
+      )}
+    </div>
+  );
 }

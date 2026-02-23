@@ -1,6 +1,7 @@
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Markdown from "./Markdown";
 import ToolCallCard, { type ToolGroupData } from "./ToolCallCard";
+import ContextMenu, { type ContextMenuItem } from "./ContextMenu";
 
 export type ChatMessage =
   | { id: string; role: "user"; type: "text"; content: string }
@@ -14,15 +15,57 @@ interface Props {
 
 export default function MessageList({ messages }: Props) {
   const endRef = useRef<HTMLDivElement>(null);
+  const [contextMenu, setContextMenu] = useState<{
+    position: { x: number; y: number };
+  } | null>(null);
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
+  const handleContextMenu = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    setContextMenu({ position: { x: e.clientX, y: e.clientY } });
+  }, []);
+
+  const menuItems: ContextMenuItem[] = [
+    {
+      label: "Copy",
+      shortcut: "Ctrl+C",
+      onClick: () => {
+        const selection = window.getSelection()?.toString();
+        if (selection) {
+          navigator.clipboard.writeText(selection);
+        }
+      },
+    },
+    {
+      label: "Select All",
+      shortcut: "Ctrl+A",
+      onClick: () => {
+        const el = endRef.current?.parentElement;
+        if (el) {
+          const range = document.createRange();
+          range.selectNodeContents(el);
+          const sel = window.getSelection();
+          sel?.removeAllRanges();
+          sel?.addRange(range);
+        }
+      },
+    },
+  ];
+
   return (
-    <div className="message-list">
+    <div className="message-list" onContextMenu={handleContextMenu}>
       {messages.map((msg) => renderMessage(msg))}
       <div ref={endRef} />
+      {contextMenu && (
+        <ContextMenu
+          items={menuItems}
+          position={contextMenu.position}
+          onClose={() => setContextMenu(null)}
+        />
+      )}
     </div>
   );
 }

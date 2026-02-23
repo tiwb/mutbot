@@ -28,7 +28,7 @@ export function getHighlighter(): Promise<Highlighter> {
   if (instance) return Promise.resolve(instance);
   if (!loading) {
     loading = createHighlighter({
-      themes: ["github-dark"],
+      themes: ["dark-plus"],
       langs: PRELOADED_LANGS,
     }).then((h) => {
       instance = h;
@@ -47,7 +47,7 @@ export function highlightCode(code: string, lang: string): string | null {
   try {
     const loaded = instance.getLoadedLanguages();
     const effectiveLang = loaded.includes(lang) ? lang : "text";
-    return instance.codeToHtml(code, { lang: effectiveLang, theme: "github-dark" });
+    return instance.codeToHtml(code, { lang: effectiveLang, theme: "dark-plus" });
   } catch {
     return null;
   }

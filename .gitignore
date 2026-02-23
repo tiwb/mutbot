@@ -30,6 +30,7 @@ nul
 .pytest_cache/
 .coverage
 .mutagent
+.mutbot
 htmlcov/
 node_modules
 /frontend_dist
