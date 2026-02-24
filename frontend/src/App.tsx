@@ -23,6 +23,9 @@ import {
   login,
   setAuthToken,
   stopSession,
+  deleteSession,
+  renameSession,
+  updateSession,
 } from "./lib/api";
 import {
   createModel,
@@ -84,6 +87,22 @@ interface Session {
 /** Find the active tabset, or fall back to the first tabset in the model. */
 function getTargetTabset(model: Model): TabSetNode | undefined {
   return model.getActiveTabset() ?? model.getFirstTabSet();
+}
+
+/** Resolve the sessionId for a tab node, with terminalId fallback. */
+function resolveSessionId(
+  tabNode: TabNode,
+  sessions: { id: string; config?: Record<string, unknown> | null }[],
+): string | undefined {
+  const config = tabNode.getConfig();
+  let sessionId = config?.sessionId as string | undefined;
+  if (!sessionId && config?.terminalId) {
+    const match = sessions.find(
+      (s) => s.config?.terminal_id === config.terminalId,
+    );
+    if (match) sessionId = match.id;
+  }
+  return sessionId;
 }
 
 // ---------------------------------------------------------------------------
@@ -215,13 +234,13 @@ function AddSessionDropdown({
             style={{ top: menuPos.top, left: menuPos.left }}
           >
             <button onPointerDown={(e) => e.stopPropagation()} onClick={() => handleSelect("agent")}>
-              Agent
+              <TabIcon type="agent" /> Agent
             </button>
             <button onPointerDown={(e) => e.stopPropagation()} onClick={() => handleSelect("document")}>
-              Document
+              <TabIcon type="document" /> Document
             </button>
             <button onPointerDown={(e) => e.stopPropagation()} onClick={() => handleSelect("terminal")}>
-              Terminal
+              <TabIcon type="terminal" /> Terminal
             </button>
           </div>,
           document.body,
@@ -238,14 +257,18 @@ function ConfirmDialog({
   message,
   confirmLabel,
   cancelLabel,
+  dismissLabel,
   onConfirm,
   onCancel,
+  onDismiss,
 }: {
   message: string;
   confirmLabel: string;
   cancelLabel: string;
+  dismissLabel?: string;
   onConfirm: () => void;
   onCancel: () => void;
+  onDismiss?: () => void;
 }) {
   return (
     <div className="confirm-overlay">
@@ -254,6 +277,9 @@ function ConfirmDialog({
         <div className="confirm-actions">
           <button className="confirm-btn-primary" onClick={onConfirm}>{confirmLabel}</button>
           <button className="confirm-btn-secondary" onClick={onCancel}>{cancelLabel}</button>
+          {dismissLabel && onDismiss && (
+            <button className="confirm-btn-secondary" onClick={onDismiss}>{dismissLabel}</button>
+          )}
         </div>
       </div>
     </div>
@@ -273,11 +299,13 @@ export default function App() {
   const [sessions, setSessions] = useState<Session[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const modelRef = useRef<Model | null>(null);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- setEditingTab is internal API
+  const layoutRef = useRef<any>(null);
   const [, forceUpdate] = useState(0);
 
-  // Pending close confirmation state
-  const [pendingClose, setPendingClose] = useState<{
-    nodeId: string;
+  // Pending "End Session" confirmation state
+  const [pendingEndSession, setPendingEndSession] = useState<{
+    nodeId?: string;   // if set, also close the tab
     sessionId: string;
   } | null>(null);
 
@@ -429,11 +457,25 @@ export default function App() {
       model.visitNodes((node) => {
         if (node.getType() === "tab") {
           const tabNode = node as TabNode;
-          if (
-            tabNode.getComponent() === targetComponent &&
-            tabNode.getConfig()?.sessionId === id
-          ) {
-            existingNodeId = node.getId();
+          const config = tabNode.getConfig();
+          if (tabNode.getComponent() === targetComponent) {
+            // Primary match: by sessionId
+            if (config?.sessionId === id) {
+              existingNodeId = node.getId();
+            }
+            // Fallback for Terminal: match by terminalId
+            else if (
+              !existingNodeId &&
+              targetComponent === PANEL_TERMINAL &&
+              session.config?.terminal_id &&
+              config?.terminalId === session.config.terminal_id
+            ) {
+              existingNodeId = node.getId();
+              // Patch the missing sessionId into the tab config
+              model.doAction(Actions.updateNodeAttributes(node.getId(), {
+                config: { ...config, sessionId: id },
+              }));
+            }
           }
         }
       });
@@ -441,17 +483,6 @@ export default function App() {
       if (existingNodeId) {
         model.doAction(Actions.selectTab(existingNodeId));
       } else {
-        // For ended terminal sessions, create new PTY with same shell_command
-        if (session.type === "terminal" && session.status === "ended" && workspace) {
-          const shellCommand = (session.config?.shell_command as string) || "cmd.exe";
-          createSession(workspace.id, "terminal", { shell_command: shellCommand }).then(
-            (newSession: Session) => {
-              setSessions((prev) => [...prev, newSession]);
-              addTabForSession(newSession);
-            },
-          );
-          return;
-        }
         addTabForSession(session);
       }
     },
@@ -467,89 +498,78 @@ export default function App() {
       const model = modelRef.current;
       if (!model) return action;
 
-      // Intercept tab close actions
-      if (action.type === Actions.DELETE_TAB) {
-        const nodeId = action.data?.node;
-        if (!nodeId) return action;
-
-        let tabNode: TabNode | null = null;
-        model.visitNodes((node) => {
-          if (node.getId() === nodeId && node.getType() === "tab") {
-            tabNode = node as TabNode;
-          }
-        });
-
-        if (!tabNode) return action;
-        const config = (tabNode as TabNode).getConfig();
-        const component = (tabNode as TabNode).getComponent();
-        const sessionId = config?.sessionId as string | undefined;
-
-        if (!sessionId) return action; // Not a session tab, allow close
-
-        if (component === PANEL_TERMINAL) {
-          // Terminal: show confirmation dialog
-          setPendingClose({ nodeId, sessionId });
-          return undefined; // Block the close action
-        }
-
-        if (component === PANEL_AGENT_CHAT) {
-          // Agent: auto-end session on close
-          stopSession(sessionId).then(() => {
-            setSessions((prev) =>
-              prev.map((s) => (s.id === sessionId ? { ...s, status: "ended" } : s)),
-            );
+      // Intercept tab rename to sync with session title
+      if (action.type === Actions.RENAME_TAB) {
+        const nodeId = (action as any).data?.node;
+        const newName = (action as any).data?.text;
+        if (nodeId && newName) {
+          let tabNode: TabNode | null = null;
+          model.visitNodes((node) => {
+            if (node.getId() === nodeId && node.getType() === "tab") {
+              tabNode = node as TabNode;
+            }
           });
-          return action; // Allow close
+          const sessionId = tabNode ? resolveSessionId(tabNode, sessions) : undefined;
+          if (sessionId) {
+            const sid = sessionId;
+            renameSession(sid, newName).then(() => {
+              setSessions((prev) =>
+                prev.map((s) => (s.id === sid ? { ...s, title: newName } : s)),
+              );
+            });
+          }
         }
+        return action;
+      }
 
-        // Document: just close the tab, session stays active
+      // Tab close = just close the panel, session stays active
+      if (action.type === Actions.DELETE_TAB) {
         return action;
       }
 
       return action;
     },
-    [],
+    [sessions],
   );
 
-  const handleTerminalCloseConfirm = useCallback(() => {
-    if (!pendingClose) return;
-    const { nodeId, sessionId } = pendingClose;
+  // ------------------------------------------------------------------
+  // End Session handling
+  // ------------------------------------------------------------------
 
-    // End session + close tab
+  const handleEndSessionConfirm = useCallback(() => {
+    if (!pendingEndSession) return;
+    const { nodeId, sessionId } = pendingEndSession;
     stopSession(sessionId).then(() => {
       setSessions((prev) =>
         prev.map((s) => (s.id === sessionId ? { ...s, status: "ended" } : s)),
       );
     });
-
-    const model = modelRef.current;
-    if (model) {
-      model.doAction(Actions.deleteTab(nodeId));
+    if (nodeId) {
+      const model = modelRef.current;
+      if (model) model.doAction(Actions.deleteTab(nodeId));
     }
-    setPendingClose(null);
-  }, [pendingClose]);
+    setPendingEndSession(null);
+  }, [pendingEndSession]);
 
-  const handleTerminalCloseCancel = useCallback(() => {
-    if (!pendingClose) return;
-    const { nodeId } = pendingClose;
-
-    // Just close the tab, keep session active
-    const model = modelRef.current;
-    if (model) {
-      model.doAction(Actions.deleteTab(nodeId));
-    }
-    setPendingClose(null);
-  }, [pendingClose]);
+  const handleEndSessionCancel = useCallback(() => {
+    setPendingEndSession(null);
+  }, []);
 
   // ------------------------------------------------------------------
   // Layout callbacks
   // ------------------------------------------------------------------
 
+  const layoutSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   const handleModelChange = useCallback(
     (model: Model) => {
       if (!workspace) return;
-      const json = model.toJson();
-      updateWorkspaceLayout(workspace.id, json);
+      // Debounce layout saves to avoid flooding the server during drag resize
+      if (layoutSaveTimer.current) clearTimeout(layoutSaveTimer.current);
+      layoutSaveTimer.current = setTimeout(() => {
+        const json = model.toJson();
+        updateWorkspaceLayout(workspace.id, json);
+      }, 300);
     },
     [workspace],
   );
@@ -559,6 +579,30 @@ export default function App() {
       const model = modelRef.current;
       if (!model) return;
       model.doAction(Actions.updateNodeAttributes(nodeId, { config }));
+      // Sync terminal_id to backend session when PTY is recreated
+      const sessionId = config.sessionId as string | undefined;
+      const terminalId = config.terminalId as string | undefined;
+      if (sessionId && terminalId) {
+        updateSession(sessionId, { config: { terminal_id: terminalId }, status: "active" });
+        setSessions((prev) =>
+          prev.map((s) =>
+            s.id === sessionId
+              ? { ...s, status: "active", config: { ...s.config, terminal_id: terminalId } }
+              : s,
+          ),
+        );
+      }
+    },
+    [],
+  );
+
+  const handleTerminalExited = useCallback(
+    (sessionId: string) => {
+      // Sync session status to "ended" when terminal process exits
+      updateSession(sessionId, { status: "ended" }).catch(() => {});
+      setSessions((prev) =>
+        prev.map((s) => (s.id === sessionId ? { ...s, status: "ended" } : s)),
+      );
     },
     [],
   );
@@ -607,12 +651,34 @@ export default function App() {
   // Session close/delete from context menu
   // ------------------------------------------------------------------
 
-  const handleCloseSession = useCallback(
+  const handleEndSession = useCallback(
     (sessionId: string) => {
-      stopSession(sessionId).then(() => {
+      const session = sessions.find((s) => s.id === sessionId);
+      if (!session || session.status === "ended") return;
+      // Show confirmation dialog
+      setPendingEndSession({ sessionId });
+    },
+    [sessions],
+  );
+
+  const handleRenameSession = useCallback(
+    (sessionId: string, newTitle: string) => {
+      renameSession(sessionId, newTitle).then(() => {
         setSessions((prev) =>
-          prev.map((s) => (s.id === sessionId ? { ...s, status: "ended" } : s)),
+          prev.map((s) => (s.id === sessionId ? { ...s, title: newTitle } : s)),
         );
+        // Also update the flexlayout tab name if it exists
+        const model = modelRef.current;
+        if (model) {
+          model.visitNodes((node) => {
+            if (node.getType() === "tab") {
+              const tabNode = node as TabNode;
+              if (tabNode.getConfig()?.sessionId === sessionId) {
+                model.doAction(Actions.renameTab(node.getId(), newTitle));
+              }
+            }
+          });
+        }
       });
     },
     [],
@@ -620,8 +686,8 @@ export default function App() {
 
   const handleDeleteSession = useCallback(
     (sessionId: string) => {
-      // Stop first, then remove from local state
-      stopSession(sessionId)
+      // Soft-delete: stops + marks deleted on backend
+      deleteSession(sessionId)
         .catch(() => {})
         .finally(() => {
           setSessions((prev) => prev.filter((s) => s.id !== sessionId));
@@ -656,30 +722,21 @@ export default function App() {
       }
       if (!el || !el.classList.contains("flexlayout__tab_button")) return;
 
-      // Extract the node ID from the data attribute
-      const nodeId = el.getAttribute("data-layout-path");
-      // flexlayout stores the node id in the element id (format: varies by version)
-      // Try to find the tab node by matching
       const model = modelRef.current;
       if (!model) return;
 
-      // The tab button's text content matches the tab name
-      // Use a more robust approach: iterate model nodes to find matching tab
+      // Resolve the actual tab node ID from the DOM element.
+      // flexlayout-react's TabButton sets data-layout-path to "{tabsetPath}/tb{index}"
+      // while the corresponding tab node's path is "{tabsetPath}/t{index}".
       let matchedNodeId: string | null = null;
-      if (nodeId) {
-        matchedNodeId = nodeId;
-      } else {
-        // flexlayout adds id attribute to tab buttons in format "#<id>"
-        const elId = el.id;
-        if (elId) {
-          // The id on tab_button elements is typically "tab_button_<nodeId>"
-          // or just the node path — try extracting
-          model.visitNodes((node) => {
-            if (node.getType() === "tab" && elId.includes(node.getId())) {
-              matchedNodeId = node.getId();
-            }
-          });
-        }
+      const layoutPath = el.getAttribute("data-layout-path");
+      if (layoutPath) {
+        const tabPath = layoutPath.replace(/\/tb(\d+)$/, "/t$1");
+        model.visitNodes((node) => {
+          if (node.getType() === "tab" && node.getPath() === tabPath) {
+            matchedNodeId = node.getId();
+          }
+        });
       }
 
       if (!matchedNodeId) return;
@@ -699,7 +756,27 @@ export default function App() {
     const model = modelRef.current;
     if (!model) return [];
 
-    return [
+    // Find the tab node and resolve its session
+    let tabNode: TabNode | null = null;
+    model.visitNodes((n) => {
+      if (n.getId() === nodeId && n.getType() === "tab") tabNode = n as TabNode;
+    });
+    const sessionId = tabNode ? resolveSessionId(tabNode, sessions) : undefined;
+    const session = sessionId ? sessions.find((s) => s.id === sessionId) : undefined;
+
+    const items: ContextMenuItem[] = [
+      {
+        label: "Rename",
+        onClick: () => {
+          if (tabNode && layoutRef.current) {
+            // setEditingTab is on LayoutInternal, accessed via Layout's selfRef
+            const internal = layoutRef.current.selfRef?.current;
+            if (internal?.setEditingTab) {
+              internal.setEditingTab(tabNode);
+            }
+          }
+        },
+      },
       {
         label: "Close",
         onClick: () => {
@@ -709,7 +786,6 @@ export default function App() {
       {
         label: "Close Others",
         onClick: () => {
-          // Find all tabs in the same tabset
           let parentId: string | null = null;
           model.visitNodes((node) => {
             if (node.getId() === nodeId && node.getType() === "tab") {
@@ -733,7 +809,22 @@ export default function App() {
         },
       },
     ];
-  }, [tabContextMenu]);
+
+    // Add "End Session" for active sessions
+    if (session && session.status !== "ended") {
+      items.push(
+        { label: "", separator: true },
+        {
+          label: "End Session",
+          onClick: () => {
+            setPendingEndSession({ nodeId, sessionId: session.id });
+          },
+        },
+      );
+    }
+
+    return items;
+  }, [tabContextMenu, sessions]);
 
   // ------------------------------------------------------------------
   // Tabset "+" button rendering
@@ -791,9 +882,10 @@ export default function App() {
         workspaceId: workspace?.id ?? null,
         onSelectSession: handleSelectSession,
         onUpdateTabConfig: handleUpdateTabConfig,
+        onTerminalExited: handleTerminalExited,
       });
     },
-    [sessions, activeSessionId, workspace, handleSelectSession, handleUpdateTabConfig],
+    [sessions, activeSessionId, workspace, handleSelectSession, handleUpdateTabConfig, handleTerminalExited],
   );
 
   // Show nothing while checking auth
@@ -820,8 +912,9 @@ export default function App() {
             activeSessionId={activeSessionId}
             onSelect={handleSelectSession}
             onModeChange={handleSidebarModeChange}
-            onCloseSession={handleCloseSession}
+            onCloseSession={handleEndSession}
             onDeleteSession={handleDeleteSession}
+            onRenameSession={handleRenameSession}
           />
         </div>
         {!sidebarCollapsed && (
@@ -830,23 +923,25 @@ export default function App() {
         <div className="main-content" onContextMenu={handleLayoutContextMenu}>
           {model && (
             <Layout
+              ref={layoutRef}
               model={model}
               factory={factory}
               onModelChange={handleModelChange}
               onRenderTabSet={onRenderTabSet}
               onRenderTab={onRenderTab}
               onAction={handleAction}
+              realtimeResize={true}
             />
           )}
         </div>
       </div>
-      {pendingClose && (
+      {pendingEndSession && (
         <ConfirmDialog
-          message="End terminal session?"
+          message="End this session? The process will be terminated."
           confirmLabel="End Session"
-          cancelLabel="Close Panel Only"
-          onConfirm={handleTerminalCloseConfirm}
-          onCancel={handleTerminalCloseCancel}
+          cancelLabel="Cancel"
+          onConfirm={handleEndSessionConfirm}
+          onCancel={handleEndSessionCancel}
         />
       )}
       {tabContextMenu && (

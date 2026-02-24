@@ -11,32 +11,38 @@ import {
 import ContextMenu, { type ContextMenuItem } from "../components/ContextMenu";
 
 interface Props {
+  sessionId?: string;
   terminalId?: string;
   workspaceId: string;
   nodeId?: string;
   onTerminalCreated?: (nodeId: string, config: Record<string, unknown>) => void;
+  onTerminalExited?: (sessionId: string) => void;
 }
 
-/** Build WS URL with optional auth token. */
-function buildWsUrl(termId: string): string {
+/** Build WS URL with optional auth token and terminal dimensions. */
+function buildWsUrl(termId: string, rows?: number, cols?: number): string {
   const protocol = location.protocol === "https:" ? "wss:" : "ws:";
-  let url = `${protocol}//${location.host}/ws/terminal/${termId}`;
+  const params = new URLSearchParams();
   const token = getAuthToken();
-  if (token) {
-    url += `?token=${encodeURIComponent(token)}`;
-  }
-  return url;
+  if (token) params.set("token", token);
+  if (rows) params.set("rows", String(rows));
+  if (cols) params.set("cols", String(cols));
+  const qs = params.toString();
+  const base = `${protocol}//${location.host}/ws/terminal/${termId}`;
+  return qs ? `${base}?${qs}` : base;
 }
 
-export default function TerminalPanel({ terminalId: initialId, workspaceId, nodeId, onTerminalCreated }: Props) {
+export default function TerminalPanel({ sessionId, terminalId: initialId, workspaceId, nodeId, onTerminalCreated, onTerminalExited }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const termIdRef = useRef<string | null>(initialId ?? null);
-  // Track whether this panel "owns" the terminal (created it)
-  // so cleanup can decide whether to delete the PTY.
-  const ownsTermRef = useRef(!initialId);
+
+  const [expired, setExpired] = useState(false);
+
+  // Expose init() via ref so handleRecreate can call it
+  const initRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -95,6 +101,8 @@ export default function TerminalPanel({ terminalId: initialId, workspaceId, node
     // xterm.js from echoing responses to terminal query sequences
     // (e.g. \e[6n cursor position report) back as user input.
     let inputMuted = true;
+    // Guard against duplicate 0x04 signals (reader thread + alive-check fallback)
+    let processExited = false;
 
     function sendResize(r: number, c: number) {
       if (ws && ws.readyState === WebSocket.OPEN) {
@@ -113,7 +121,9 @@ export default function TerminalPanel({ terminalId: initialId, workspaceId, node
       // Mute input until scrollback replay is complete
       inputMuted = true;
 
-      const url = buildWsUrl(termId);
+      const curRows = termRef.current?.rows ?? rows;
+      const curCols = termRef.current?.cols ?? cols;
+      const url = buildWsUrl(termId, curRows, curCols);
       ws = new WebSocket(url);
       ws.binaryType = "arraybuffer";
       wsRef.current = ws;
@@ -129,13 +139,36 @@ export default function TerminalPanel({ terminalId: initialId, workspaceId, node
         const bytes = new Uint8Array(data);
         if (bytes.length === 0) return;
 
+        if (bytes[0] === 0x04) {
+          // Terminal process exited — idempotent guard
+          if (processExited) return;
+          processExited = true;
+          let exitInfo = "";
+          if (bytes.length >= 5) {
+            const dv = new DataView(data, 1, 4);
+            const code = dv.getInt32(0, false);
+            exitInfo = ` (exit code: ${code})`;
+          }
+          term.write(`\r\n\x1b[33m[Terminal process has ended${exitInfo}]\x1b[0m\r\n`);
+          setExpired(true);
+          // Notify parent to sync session status
+          if (sessionId && onTerminalExited) {
+            onTerminalExited(sessionId);
+          }
+          return;
+        }
+
         if (bytes[0] === 0x03) {
-          // Scrollback replay complete — unmute input, send resize
-          inputMuted = false;
-          sendResize(
-            termRef.current?.rows ?? rows,
-            termRef.current?.cols ?? cols,
-          );
+          // Scrollback replay complete — delay unmute until xterm.js
+          // finishes processing all pending writes (prevents DA1 response
+          // leak like ^[[?1;2c being sent back to PTY as user input).
+          term.write("", () => {
+            inputMuted = false;
+            sendResize(
+              termRef.current?.rows ?? rows,
+              termRef.current?.cols ?? cols,
+            );
+          });
           return;
         }
 
@@ -147,13 +180,19 @@ export default function TerminalPanel({ terminalId: initialId, workspaceId, node
       ws.onclose = (event) => {
         if (!active) return;
         if (event.code === 4004) {
-          // Terminal not found — create a new one
-          term.write("\r\n\x1b[33m[Terminal expired, creating new...]\x1b[0m\r\n");
-          termIdRef.current = null;
-          ownsTermRef.current = true;
-          init();
+          // Terminal not found — show expired UI instead of auto-creating
+          if (!processExited) {
+            processExited = true;
+            term.write("\r\n\x1b[33m[Terminal process has ended]\x1b[0m\r\n");
+            if (sessionId && onTerminalExited) {
+              onTerminalExited(sessionId);
+            }
+          }
+          setExpired(true);
           return;
         }
+        // Don't reconnect if the terminal process has already exited
+        if (processExited) return;
         // Auto-reconnect with backoff
         if (retryCount < maxRetries) {
           const delay = Math.min(1000 * 2 ** retryCount, 15000);
@@ -181,14 +220,31 @@ export default function TerminalPanel({ terminalId: initialId, workspaceId, node
         if (!active) return;
         termId = result.id;
         termIdRef.current = termId;
-        ownsTermRef.current = true;
         // Persist terminal ID into the flexlayout tab config
         if (nodeId && onTerminalCreated) {
-          onTerminalCreated(nodeId, { terminalId: termId, workspaceId });
+          onTerminalCreated(nodeId, { sessionId, terminalId: termId, workspaceId });
         }
       }
       connectWs(termId!);
     }
+
+    // Expose init for external re-creation
+    initRef.current = () => {
+      // Close old WS connection (terminal process is dead)
+      ws?.close();
+      wsRef.current?.close();
+      // Delete old dead terminal
+      const oldTid = termIdRef.current;
+      if (oldTid) {
+        apiDeleteTerminal(oldTid).catch(() => {});
+      }
+      // Clear terminal screen for fresh start
+      term.write("\x1b[2J\x1b[H");
+      retryCount = 0;
+      processExited = false;
+      termIdRef.current = null;
+      init();
+    };
 
     // Terminal input → WebSocket (muted during scrollback replay)
     const inputDisposable = term.onData((data) => {
@@ -216,6 +272,7 @@ export default function TerminalPanel({ terminalId: initialId, workspaceId, node
 
     return () => {
       active = false;
+      initRef.current = null;
       if (reconnectTimer) clearTimeout(reconnectTimer);
       inputDisposable.dispose();
       resizeObserver.disconnect();
@@ -226,14 +283,17 @@ export default function TerminalPanel({ terminalId: initialId, workspaceId, node
       wsRef.current = null;
       term.dispose();
       termRef.current = null;
-
-      // If this panel owns the terminal, kill the PTY on unmount
-      const tid = termIdRef.current;
-      if (tid && ownsTermRef.current) {
-        apiDeleteTerminal(tid).catch(() => {});
-      }
+      // PTY lifecycle managed by backend session — no deletion on unmount
     };
-  }, [workspaceId, initialId]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- initialId only used
+  // for ref initialization on mount; re-running the effect on prop change would
+  // destroy and recreate the terminal (handleRecreate manages recreation).
+  }, [workspaceId]);
+
+  const handleRecreate = useCallback(() => {
+    setExpired(false);
+    initRef.current?.();
+  }, []);
 
   const [contextMenu, setContextMenu] = useState<{
     position: { x: number; y: number };
@@ -286,6 +346,13 @@ export default function TerminalPanel({ terminalId: initialId, workspaceId, node
 
   return (
     <div ref={containerRef} className="terminal-panel" onContextMenu={handleContextMenu}>
+      {expired && (
+        <div className="terminal-expired-overlay">
+          <div className="terminal-expired-content">
+            <button onClick={handleRecreate}>Restart Terminal</button>
+          </div>
+        </div>
+      )}
       {contextMenu && (
         <ContextMenu
           items={menuItems}

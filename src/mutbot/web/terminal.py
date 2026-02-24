@@ -10,8 +10,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import struct
 import sys
 import threading
+import time
 import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable
@@ -35,6 +37,7 @@ class TerminalSession:
     process: Any = None
     reader_thread: threading.Thread | None = None
     alive: bool = True
+    exit_code: int | None = field(default=None, repr=False)
     _fd: int | None = field(default=None, repr=False)
     # Scrollback buffer for reconnection replay
     _scrollback: bytearray = field(default_factory=bytearray, repr=False)
@@ -191,7 +194,23 @@ class TerminalManager:
                             break
             finally:
                 session.alive = False
-                logger.info("Terminal reader stopped: %s", term_id)
+                # Capture exit code
+                exit_code = None
+                try:
+                    if IS_WINDOWS:
+                        proc = session.process
+                        if proc:
+                            exit_code = getattr(proc, "exitstatus", None)
+                    else:
+                        proc = session.process
+                        if proc:
+                            proc.wait(timeout=1)
+                            exit_code = proc.returncode
+                except Exception:
+                    pass
+                session.exit_code = exit_code
+                logger.info("Terminal reader stopped: %s (exit_code=%s)", term_id, exit_code)
+                self._notify_process_exit(term_id, exit_code)
 
         t = threading.Thread(target=reader, daemon=True, name=f"term-reader-{term_id}")
         session.reader_thread = t
@@ -220,6 +239,45 @@ class TerminalManager:
                 dead.append((ws, loop))
         for pair in dead:
             conns.discard(pair)
+
+    def _make_exit_payload(self, exit_code: int | None = None) -> bytes:
+        """Build a 0x04 exit signal payload, optionally including exit code."""
+        if exit_code is not None:
+            return b"\x04" + struct.pack(">i", exit_code)
+        return b"\x04"
+
+    def _notify_process_exit(self, term_id: str, exit_code: int | None = None) -> None:
+        """Send process exit signal (0x04) to all attached WS clients.
+
+        Called from the reader thread — uses run_coroutine_threadsafe.
+        """
+        conns = self._connections.get(term_id)
+        if not conns:
+            return
+        payload = self._make_exit_payload(exit_code)
+        for ws, loop in list(conns):
+            try:
+                asyncio.run_coroutine_threadsafe(ws.send_bytes(payload), loop)
+            except Exception:
+                pass
+
+    async def async_notify_exit(self, term_id: str) -> None:
+        """Send process exit signal (0x04) to all attached WS clients (async).
+
+        Must be called from the event loop thread, before kill().
+        Uses await for reliable delivery.
+        """
+        session = self._sessions.get(term_id)
+        exit_code = session.exit_code if session else None
+        conns = self._connections.get(term_id)
+        if not conns:
+            return
+        payload = self._make_exit_payload(exit_code)
+        for ws, _loop in list(conns):
+            try:
+                await ws.send_bytes(payload)
+            except Exception:
+                pass
 
     # ------------------------------------------------------------------
     # Query
@@ -296,8 +354,11 @@ class TerminalManager:
             return
 
         session.alive = False
-        # Clean up connections
+
+        # Clear all attached WS connections
+        # (callers should use async_notify_exit() before kill() to send 0x04)
         self._connections.pop(term_id, None)
+
         logger.info("Killing terminal: %s", term_id)
 
         if IS_WINDOWS:

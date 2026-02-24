@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import ContextMenu, { type ContextMenuItem } from "../components/ContextMenu";
 
 interface Session {
@@ -15,6 +15,7 @@ interface Props {
   onModeChange?: (collapsed: boolean) => void;
   onCloseSession?: (id: string) => void;
   onDeleteSession?: (id: string) => void;
+  onRenameSession?: (id: string, newTitle: string) => void;
 }
 
 // ---------- Codicon-style SVG icons ----------
@@ -63,6 +64,7 @@ export default function SessionListPanel({
   onModeChange,
   onCloseSession,
   onDeleteSession,
+  onRenameSession,
 }: Props) {
   const [collapsed, setCollapsed] = useState(() => {
     try {
@@ -76,6 +78,11 @@ export default function SessionListPanel({
     position: { x: number; y: number };
     sessionId: string;
   } | null>(null);
+
+  // Inline rename state
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState("");
+  const renameInputRef = useRef<HTMLInputElement>(null);
 
   const toggleMode = useCallback(() => {
     setCollapsed((prev) => {
@@ -91,6 +98,14 @@ export default function SessionListPanel({
     onModeChange?.(collapsed);
   }, [collapsed, onModeChange]);
 
+  // Focus rename input when it appears
+  useEffect(() => {
+    if (renamingId && renameInputRef.current) {
+      renameInputRef.current.focus();
+      renameInputRef.current.select();
+    }
+  }, [renamingId]);
+
   const handleContextMenu = useCallback((e: React.MouseEvent, sessionId: string) => {
     e.preventDefault();
     setContextMenu({
@@ -103,13 +118,38 @@ export default function SessionListPanel({
     setContextMenu(null);
   }, []);
 
+  const startRename = useCallback((sessionId: string) => {
+    const session = sessions.find((s) => s.id === sessionId);
+    if (session) {
+      setRenamingId(sessionId);
+      setRenameValue(session.title);
+    }
+  }, [sessions]);
+
+  const commitRename = useCallback(() => {
+    if (renamingId && renameValue.trim()) {
+      onRenameSession?.(renamingId, renameValue.trim());
+    }
+    setRenamingId(null);
+    setRenameValue("");
+  }, [renamingId, renameValue, onRenameSession]);
+
+  const cancelRename = useCallback(() => {
+    setRenamingId(null);
+    setRenameValue("");
+  }, []);
+
   // Build context menu items for a session
   const getContextMenuItems = useCallback((sessionId: string): ContextMenuItem[] => {
     const session = sessions.find((s) => s.id === sessionId);
     if (!session) return [];
     return [
       {
-        label: "Close Session",
+        label: "Rename",
+        onClick: () => startRename(sessionId),
+      },
+      {
+        label: "End Session",
         disabled: session.status === "ended",
         onClick: () => onCloseSession?.(sessionId),
       },
@@ -119,7 +159,7 @@ export default function SessionListPanel({
         onClick: () => onDeleteSession?.(sessionId),
       },
     ];
-  }, [sessions, onCloseSession, onDeleteSession]);
+  }, [sessions, onCloseSession, onDeleteSession, startRename]);
 
   // Sort: active sessions first, then ended
   const sorted = [...sessions].sort((a, b) => {
@@ -128,12 +168,8 @@ export default function SessionListPanel({
     return 0;
   });
 
-  // Compact mode: only show active session(s)
+  // Compact mode: show all sessions as icons
   if (collapsed) {
-    const activeSessions = sorted.filter(
-      (s) => s.id === activeSessionId,
-    );
-
     return (
       <div className="session-list-container compact">
         <div className="sidebar-header compact">
@@ -150,10 +186,10 @@ export default function SessionListPanel({
           </button>
         </div>
         <div className="session-list compact">
-          {activeSessions.map((s) => (
+          {sorted.map((s) => (
             <div
               key={s.id}
-              className="session-icon-item"
+              className={`session-icon-item ${s.id === activeSessionId ? "active" : ""} ${s.status === "ended" ? "ended" : ""}`}
               onClick={() => onSelect(s.id)}
               onContextMenu={(e) => handleContextMenu(e, s.id)}
               title={`${s.title} (${s.status})`}
@@ -194,13 +230,29 @@ export default function SessionListPanel({
             <li
               key={s.id}
               className={`session-item ${s.id === activeSessionId ? "active" : ""} ${s.status === "ended" ? "ended" : ""}`}
-              onClick={() => onSelect(s.id)}
+              onClick={() => { if (renamingId !== s.id) onSelect(s.id); }}
               onContextMenu={(e) => handleContextMenu(e, s.id)}
+              onDoubleClick={() => startRename(s.id)}
             >
               <span className="session-type-icon">
                 {getSessionIcon(s.type, 16, "currentColor")}
               </span>
-              <span className="session-title">{s.title}</span>
+              {renamingId === s.id ? (
+                <input
+                  ref={renameInputRef}
+                  className="session-rename-input"
+                  value={renameValue}
+                  onChange={(e) => setRenameValue(e.target.value)}
+                  onBlur={commitRename}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") commitRename();
+                    else if (e.key === "Escape") cancelRename();
+                  }}
+                  onClick={(e) => e.stopPropagation()}
+                />
+              ) : (
+                <span className="session-title">{s.title}</span>
+              )}
               <span className={`session-status ${s.status}`}>{s.status}</span>
             </li>
           ))}

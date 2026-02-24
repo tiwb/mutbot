@@ -381,6 +381,19 @@ body,
   white-space: nowrap;
 }
 
+.session-rename-input {
+  flex: 1;
+  font-size: 13px;
+  font-family: inherit;
+  background: var(--bg-sidebar);
+  color: var(--text);
+  border: 1px solid var(--accent);
+  outline: none;
+  padding: 1px 4px;
+  border-radius: 2px;
+  min-width: 0;
+}
+
 .session-status {
   font-size: 11px;
   color: var(--text-dim);
@@ -410,6 +423,14 @@ body,
 .session-icon-item:hover {
   background: #2a2d2e;
   color: var(--text);
+}
+
+.session-icon-item.active {
+  background: var(--menu-hover);
+}
+
+.session-icon-item.ended {
+  opacity: 0.5;
 }
 
 /* ----------------------------------------------------------------
@@ -450,6 +471,28 @@ body,
   display: flex;
   flex-direction: column;
   gap: 12px;
+  /* Auto-hide scrollbar when mouse is not over the agent panel */
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+  transition: scrollbar-color 0.3s ease;
+  scrollbar-gutter: stable;
+}
+
+.agent-panel:hover .message-list {
+  scrollbar-color: var(--scrollbar-bg) transparent;
+}
+
+/* Webkit fallback (no transition support for pseudo-elements) */
+.message-list::-webkit-scrollbar-thumb {
+  background: transparent;
+}
+
+.agent-panel:hover .message-list::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-bg);
+}
+
+.agent-panel:hover .message-list::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-hover);
 }
 
 .message {
@@ -1038,10 +1081,48 @@ body,
   height: 100%;
   background: #1e1e1e;
   padding: 4px;
+  position: relative;
 }
 
 .terminal-panel .xterm {
   height: 100%;
+}
+
+.terminal-expired-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(30, 30, 30, 0.75);
+  z-index: 10;
+}
+
+.terminal-expired-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 24px 32px;
+  font-size: 13px;
+  color: var(--text-dim);
+}
+
+.terminal-expired-content button {
+  background: var(--bg-input);
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  padding: 6px 16px;
+  border-radius: 2px;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 13px;
+  transition: background 0.15s, color 0.15s;
+}
+
+.terminal-expired-content button:hover {
+  background: var(--accent);
+  color: white;
 }
 
 /* ----------------------------------------------------------------
@@ -1187,7 +1268,9 @@ body,
 }
 
 .add-session-menu button {
-  display: block;
+  display: flex;
+  align-items: center;
+  gap: 8px;
   width: 100%;
   padding: 6px 12px;
   background: transparent;

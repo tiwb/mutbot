@@ -18,6 +18,7 @@ export interface PanelContext {
   workspaceId: string | null;
   onSelectSession: (id: string) => void;
   onUpdateTabConfig?: (nodeId: string, config: Record<string, unknown>) => void;
+  onTerminalExited?: (sessionId: string) => void;
 }
 
 function Loading() {
@@ -36,15 +37,17 @@ export function panelFactory(node: TabNode, ctx: PanelContext) {
 
     case PANEL_TERMINAL: {
       const termConfig = node.getConfig() as
-        | { terminalId?: string; workspaceId?: string }
+        | { sessionId?: string; terminalId?: string; workspaceId?: string }
         | undefined;
       return (
         <Suspense fallback={<Loading />}>
           <TerminalPanel
+            sessionId={termConfig?.sessionId}
             terminalId={termConfig?.terminalId}
             workspaceId={termConfig?.workspaceId ?? ctx.workspaceId ?? ""}
             nodeId={node.getId()}
             onTerminalCreated={ctx.onUpdateTabConfig}
+            onTerminalExited={ctx.onTerminalExited}
           />
         </Suspense>
       );

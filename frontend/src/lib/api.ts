@@ -113,10 +113,30 @@ export async function createSession(
 }
 
 export async function stopSession(sessionId: string) {
+  const res = await authFetch(`${BASE}/api/sessions/${sessionId}/stop`, {
+    method: "POST",
+  });
+  return res.json();
+}
+
+export async function deleteSession(sessionId: string) {
   const res = await authFetch(`${BASE}/api/sessions/${sessionId}`, {
     method: "DELETE",
   });
   return res.json();
+}
+
+export async function updateSession(sessionId: string, fields: Record<string, unknown>) {
+  const res = await authFetch(`${BASE}/api/sessions/${sessionId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(fields),
+  });
+  return res.json();
+}
+
+export async function renameSession(sessionId: string, title: string) {
+  return updateSession(sessionId, { title });
 }
 
 export async function fetchSessionEvents(

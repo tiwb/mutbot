@@ -34,6 +34,7 @@ class Session:
     created_at: str = ""
     updated_at: str = ""
     config: dict[str, Any] | None = None  # type-specific config
+    deleted: bool = False
     # Runtime (not serialized)
     agent: Agent | None = field(default=None, repr=False)
     bridge: AgentBridge | None = field(default=None, repr=False)
@@ -49,6 +50,7 @@ def _session_to_dict(s: Session, include_messages: bool = False) -> dict:
         "created_at": s.created_at,
         "updated_at": s.updated_at,
         "config": s.config,
+        "deleted": s.deleted,
     }
     if include_messages and s.agent and s.agent.messages:
         d["messages"] = [serialize_message(m) for m in s.agent.messages]
@@ -199,6 +201,7 @@ class SessionManager:
                 created_at=data.get("created_at", ""),
                 updated_at=data.get("updated_at", ""),
                 config=data.get("config"),
+                deleted=data.get("deleted", False),
             )
             self._sessions[session.id] = session
         if self._sessions:
@@ -219,8 +222,11 @@ class SessionManager:
     def record_event(self, session_id: str, event_data: dict) -> None:
         """Append an event to the session's JSONL log.
 
+        Assigns a unique ``event_id`` if not already present.
         Also persists session metadata on response_done/turn_done.
         """
+        if "event_id" not in event_data:
+            event_data["event_id"] = uuid.uuid4().hex[:16]
         storage.append_session_event(session_id, event_data)
         etype = event_data.get("type", "")
         if etype in ("response_done", "turn_done"):
@@ -230,6 +236,33 @@ class SessionManager:
 
     def get_session_events(self, session_id: str) -> list[dict]:
         return storage.load_session_events(session_id)
+
+    def update(self, session_id: str, **fields: Any) -> Session | None:
+        """Update session fields (title, config, status, …) and persist."""
+        session = self._sessions.get(session_id)
+        if not session:
+            return None
+        if "title" in fields:
+            session.title = fields["title"]
+        if "config" in fields:
+            if session.config is None:
+                session.config = {}
+            session.config.update(fields["config"])
+        if "status" in fields:
+            session.status = fields["status"]
+        session.updated_at = datetime.now(timezone.utc).isoformat()
+        self._persist(session)
+        return session
+
+    def delete(self, session_id: str) -> bool:
+        """Soft-delete a session."""
+        session = self._sessions.get(session_id)
+        if not session:
+            return False
+        session.deleted = True
+        session.updated_at = datetime.now(timezone.utc).isoformat()
+        self._persist(session)
+        return True
 
     def create(
         self,
@@ -263,7 +296,10 @@ class SessionManager:
         return self._sessions.get(session_id)
 
     def list_by_workspace(self, workspace_id: str) -> list[Session]:
-        return [s for s in self._sessions.values() if s.workspace_id == workspace_id]
+        return [
+            s for s in self._sessions.values()
+            if s.workspace_id == workspace_id and not s.deleted
+        ]
 
     def start(self, session_id: str, loop: asyncio.AbstractEventLoop, broadcast_fn=None) -> AgentBridge:
         """Assemble Agent + bridge and start the agent thread (agent sessions only).
@@ -331,6 +367,8 @@ class SessionManager:
             if tm is not None and session.config:
                 terminal_id = session.config.get("terminal_id")
                 if terminal_id and tm.has(terminal_id):
+                    # Send 0x04 exit signal before killing (awaited for reliable delivery)
+                    await tm.async_notify_exit(terminal_id)
                     tm.kill(terminal_id)
         # Document sessions have no runtime resources to clean up
 

@@ -228,11 +228,38 @@ async def get_session_events(session_id: str):
     return {"session_id": session_id, "events": events}
 
 
-@router.delete("/api/sessions/{session_id}")
+@router.post("/api/sessions/{session_id}/stop")
 async def stop_session(session_id: str):
     _, sm = _get_managers()
     await sm.stop(session_id)
     return {"status": "stopped"}
+
+
+@router.delete("/api/sessions/{session_id}")
+async def delete_session(session_id: str):
+    _, sm = _get_managers()
+    await sm.stop(session_id)
+    if not sm.delete(session_id):
+        return JSONResponse({"error": "session not found"}, status_code=404)
+    return {"status": "deleted"}
+
+
+@router.patch("/api/sessions/{session_id}")
+async def update_session(session_id: str, body: dict[str, Any]):
+    _, sm = _get_managers()
+    fields: dict[str, Any] = {}
+    if "title" in body:
+        fields["title"] = body["title"]
+    if "config" in body:
+        fields["config"] = body["config"]
+    if "status" in body:
+        fields["status"] = body["status"]
+    if not fields:
+        return JSONResponse({"error": "no updatable fields"}, status_code=400)
+    session = sm.update(session_id, **fields)
+    if session is None:
+        return JSONResponse({"error": "session not found"}, status_code=404)
+    return _session_dict(session)
 
 
 # ---------------------------------------------------------------------------
@@ -352,6 +379,8 @@ async def delete_terminal(term_id: str):
     tm = _get_terminal_manager()
     if tm is None or not tm.has(term_id):
         return JSONResponse({"error": "terminal not found"}, status_code=404)
+    # Send 0x04 exit signal before killing (awaited for reliable delivery)
+    await tm.async_notify_exit(term_id)
     tm.kill(term_id)
     return {"status": "killed"}
 
@@ -376,6 +405,11 @@ async def websocket_terminal(websocket: WebSocket, term_id: str):
         return
     logger.info("Terminal WS connected: term=%s", term_id)
 
+    # Read optional terminal dimensions from query params for immediate
+    # resize after scrollback replay (avoids cursor position mismatch).
+    rows_param = int(websocket.query_params.get("rows", "0"))
+    cols_param = int(websocket.query_params.get("cols", "0"))
+
     loop = asyncio.get_running_loop()
 
     # Send scrollback BEFORE attaching, so live output from the reader
@@ -395,12 +429,31 @@ async def websocket_terminal(websocket: WebSocket, term_id: str):
     except Exception:
         pass
 
+    # Immediately sync PTY dimensions to match the connecting client,
+    # so the shell redraws its prompt at the correct cursor position.
+    if rows_param > 0 and cols_param > 0:
+        tm.resize(term_id, rows_param, cols_param)
+
     # Now attach as I/O channel for live output
     tm.attach(term_id, websocket, loop)
 
     try:
         while True:
-            raw = await websocket.receive_bytes()
+            try:
+                raw = await asyncio.wait_for(websocket.receive_bytes(), timeout=2.0)
+            except asyncio.TimeoutError:
+                # Periodic alive check — fallback for process exit detection
+                session = tm.get(term_id)
+                if session is None or not session.alive:
+                    exit_code = session.exit_code if session else None
+                    payload = tm._make_exit_payload(exit_code)
+                    try:
+                        await websocket.send_bytes(payload)
+                    except Exception:
+                        pass
+                    break
+                continue
+
             if len(raw) < 1:
                 continue
             msg_type = raw[0]

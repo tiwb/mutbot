@@ -26,14 +26,25 @@ export default function AgentPanel({ sessionId }: Props) {
   const pendingTextRef = useRef(pendingTextCache.get(sessionId) ?? "");
   const messagesRef = useRef<ChatMessage[]>(messages);
   const toolCallMapRef = useRef<Map<string, string>>(new Map());
-  const lastSentTextRef = useRef<string>("");
   const replayedRef = useRef<Set<string>>(new Set());
+  const processedEventIds = useRef<Set<string>>(new Set());
 
   // Keep messagesRef in sync with state (for cleanup to read latest)
   messagesRef.current = messages;
 
   function handleEvent(data: Record<string, unknown>) {
     const eventType = data.type as string;
+
+    // Dedup by event_id (backend assigns unique IDs to all persisted events)
+    const eventId = data.event_id as string | undefined;
+    if (eventId) {
+      if (processedEventIds.current.has(eventId)) {
+        if (DEBUG) rlog.debug("skip duplicate event_id", eventId, eventType);
+        return;
+      }
+      processedEventIds.current.add(eventId);
+    }
+
     if (DEBUG) {
       if (eventType === "text_delta") {
         rlog.debug("evt text_delta", `"${(data.text as string).slice(0, 40)}"`);
@@ -151,13 +162,7 @@ export default function AgentPanel({ sessionId }: Props) {
         ]);
       }
     } else if (eventType === "user_message") {
-      // User message from another client (or replayed from history)
       const text = data.text as string;
-      // Dedup: skip if this matches the last message we sent ourselves
-      if (text === lastSentTextRef.current) {
-        lastSentTextRef.current = "";
-        return;
-      }
       setMessages((prev) => [
         ...prev,
         {
@@ -182,7 +187,7 @@ export default function AgentPanel({ sessionId }: Props) {
     setMessages(cached ?? []);
     pendingTextRef.current = cachedPending;
     toolCallMapRef.current.clear();
-    lastSentTextRef.current = "";
+    processedEventIds.current.clear();
 
     // Track whether this session was already replayed from cache
     const hadCache = !!cached && cached.length > 0;
@@ -236,16 +241,6 @@ export default function AgentPanel({ sessionId }: Props) {
   const handleSend = useCallback((text: string) => {
     if (!text.trim()) return;
     if (DEBUG) rlog.debug("send:", text.slice(0, 80));
-    lastSentTextRef.current = text;
-    setMessages((prev) => [
-      ...prev,
-      {
-        id: crypto.randomUUID(),
-        role: "user" as const,
-        type: "text" as const,
-        content: text,
-      },
-    ]);
     pendingTextRef.current = "";
     wsRef.current?.send({ type: "message", text });
   }, []);

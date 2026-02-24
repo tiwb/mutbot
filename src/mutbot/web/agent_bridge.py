@@ -148,14 +148,10 @@ class AgentBridge:
         """Feed a user message into the Agent."""
         event = InputEvent(type="user_message", text=text, data=data or {})
         self.web_userio.input_queue.put(event)
-        # Record user message event to disk
+        # Broadcast user message to all connected clients.
+        # Recording to disk happens in _forward_events() when it processes
+        # this event from the queue — no need to record here.
         user_event = {"type": "user_message", "text": text, "data": data or {}}
-        if self.event_recorder:
-            try:
-                self.event_recorder(user_event)
-            except Exception:
-                logger.exception("User event recording failed for session %s", self.session_id)
-        # Broadcast user message to all connected clients
         self.loop.call_soon_threadsafe(self._event_queue.put_nowait, user_event)
 
     async def stop(self) -> None:
