@@ -15,17 +15,10 @@ import {
 import "flexlayout-react/style/dark.css";
 import {
   fetchWorkspaces,
-  fetchSessions,
-  getSession,
-  updateWorkspaceLayout,
   checkAuthStatus,
   login,
   setAuthToken,
   getAuthToken,
-  stopSession,
-  deleteSession,
-  renameSession,
-  updateSession,
 } from "./lib/api";
 import {
   createModel,
@@ -35,7 +28,6 @@ import {
 } from "./lib/layout";
 import { panelFactory } from "./panels/PanelFactory";
 import SessionListPanel from "./panels/SessionListPanel";
-import ContextMenu, { type ContextMenuItem } from "./components/ContextMenu";
 import RpcMenu, { type MenuExecResult } from "./components/RpcMenu";
 import { WorkspaceRpc } from "./lib/workspace-rpc";
 
@@ -274,7 +266,6 @@ export default function App() {
             // Fall back to default layout on parse error
           }
         }
-        fetchSessions(ws.id).then(setSessions);
       }
     });
   }, [authenticated]);
@@ -284,10 +275,69 @@ export default function App() {
     if (!workspace) return;
     const wsRpc = new WorkspaceRpc(workspace.id, {
       tokenFn: getAuthToken,
+      onOpen: () => {
+        // 连接建立后通过 RPC 获取 session 列表
+        wsRpc.call<Session[]>("session.list", { workspace_id: workspace.id }).then(setSessions).catch(() => {});
+      },
     });
     rpcRef.current = wsRpc;
     setRpc(wsRpc);
+
+    // 事件监听：session_created / session_updated / session_deleted
+    const unsubs = [
+      wsRpc.on("session_created", (data) => {
+        const session = data as unknown as Session;
+        if (session?.id) {
+          setSessions((prev) => {
+            if (prev.some((s) => s.id === session.id)) return prev;
+            return [...prev, session];
+          });
+        }
+      }),
+      wsRpc.on("session_updated", (data) => {
+        const session = data as unknown as Session;
+        if (session?.id) {
+          setSessions((prev) =>
+            prev.map((s) => (s.id === session.id ? { ...s, ...session } : s)),
+          );
+          // 同步更新 flexlayout 中的 tab 名称（跨客户端重命名）
+          if (session.title) {
+            const model = modelRef.current;
+            if (model) {
+              model.visitNodes((node) => {
+                if (node.getType() === "tab") {
+                  const tabNode = node as TabNode;
+                  if (tabNode.getConfig()?.sessionId === session.id && tabNode.getName() !== session.title) {
+                    model.doAction(Actions.renameTab(node.getId(), session.title));
+                  }
+                }
+              });
+            }
+          }
+        }
+      }),
+      wsRpc.on("session_deleted", (data) => {
+        const sessionId = data.session_id as string;
+        if (sessionId) {
+          setSessions((prev) => prev.filter((s) => s.id !== sessionId));
+          // 关闭已删除 session 的 tab
+          const model = modelRef.current;
+          if (model) {
+            model.visitNodes((node) => {
+              if (node.getType() === "tab") {
+                const tabNode = node as TabNode;
+                if (tabNode.getConfig()?.sessionId === sessionId) {
+                  model.doAction(Actions.deleteTab(node.getId()));
+                }
+              }
+            });
+          }
+        }
+      }),
+    ];
+
     return () => {
+      unsubs.forEach((fn) => fn());
       wsRpc.close();
       rpcRef.current = null;
       setRpc(null);
@@ -351,16 +401,16 @@ export default function App() {
   );
 
   // Handle RpcMenu result (from menu.execute)
+  // 状态更新由 event handler 统一处理，这里只做发起者特有的 UI 操作（打开 tab）
   const handleMenuResult = useCallback(
     async (result: MenuExecResult, tabsetNode?: TabSetNode) => {
       if (result.error || result.action === "error") return;
 
       if (result.action === "session_created") {
         const sessionId = result.data.session_id as string;
-        if (!sessionId) return;
+        if (!sessionId || !rpcRef.current) return;
         try {
-          const session: Session = await getSession(sessionId);
-          setSessions((prev) => [...prev, session]);
+          const session: Session = await rpcRef.current.call("session.get", { session_id: sessionId });
           addTabForSession(session, tabsetNode);
         } catch {
           // 静默处理
@@ -451,11 +501,7 @@ export default function App() {
           const sessionId = tabNode ? resolveSessionId(tabNode, sessions) : undefined;
           if (sessionId) {
             const sid = sessionId;
-            renameSession(sid, newName).then(() => {
-              setSessions((prev) =>
-                prev.map((s) => (s.id === sid ? { ...s, title: newName } : s)),
-              );
-            });
+            rpcRef.current?.call("session.update", { session_id: sid, title: newName });
           }
         }
         return action;
@@ -478,11 +524,7 @@ export default function App() {
   const handleEndSessionConfirm = useCallback(() => {
     if (!pendingEndSession) return;
     const { nodeId, sessionId } = pendingEndSession;
-    stopSession(sessionId).then(() => {
-      setSessions((prev) =>
-        prev.map((s) => (s.id === sessionId ? { ...s, status: "ended" } : s)),
-      );
-    });
+    rpcRef.current?.call("session.stop", { session_id: sessionId });
     if (nodeId) {
       const model = modelRef.current;
       if (model) model.doAction(Actions.deleteTab(nodeId));
@@ -507,7 +549,7 @@ export default function App() {
       if (layoutSaveTimer.current) clearTimeout(layoutSaveTimer.current);
       layoutSaveTimer.current = setTimeout(() => {
         const json = model.toJson();
-        updateWorkspaceLayout(workspace.id, json);
+        rpcRef.current?.call("workspace.update", { workspace_id: workspace.id, layout: json });
       }, 300);
     },
     [workspace],
@@ -522,14 +564,11 @@ export default function App() {
       const sessionId = config.sessionId as string | undefined;
       const terminalId = config.terminalId as string | undefined;
       if (sessionId && terminalId) {
-        updateSession(sessionId, { config: { terminal_id: terminalId }, status: "active" });
-        setSessions((prev) =>
-          prev.map((s) =>
-            s.id === sessionId
-              ? { ...s, status: "active", config: { ...s.config, terminal_id: terminalId } }
-              : s,
-          ),
-        );
+        rpcRef.current?.call("session.update", {
+          session_id: sessionId,
+          config: { terminal_id: terminalId },
+          status: "active",
+        });
       }
     },
     [],
@@ -538,10 +577,7 @@ export default function App() {
   const handleTerminalExited = useCallback(
     (sessionId: string) => {
       // Sync session status to "ended" when terminal process exits
-      updateSession(sessionId, { status: "ended" }).catch(() => {});
-      setSessions((prev) =>
-        prev.map((s) => (s.id === sessionId ? { ...s, status: "ended" } : s)),
-      );
+      rpcRef.current?.call("session.update", { session_id: sessionId, status: "ended" }).catch(() => {});
     },
     [],
   );
@@ -602,53 +638,21 @@ export default function App() {
 
   const handleRenameSession = useCallback(
     (sessionId: string, newTitle: string) => {
-      renameSession(sessionId, newTitle).then(() => {
-        setSessions((prev) =>
-          prev.map((s) => (s.id === sessionId ? { ...s, title: newTitle } : s)),
-        );
-        // Also update the flexlayout tab name if it exists
-        const model = modelRef.current;
-        if (model) {
-          model.visitNodes((node) => {
-            if (node.getType() === "tab") {
-              const tabNode = node as TabNode;
-              if (tabNode.getConfig()?.sessionId === sessionId) {
-                model.doAction(Actions.renameTab(node.getId(), newTitle));
-              }
-            }
-          });
-        }
-      });
+      rpcRef.current?.call("session.update", { session_id: sessionId, title: newTitle });
     },
     [],
   );
 
   const handleDeleteSession = useCallback(
     (sessionId: string) => {
-      // Soft-delete: stops + marks deleted on backend
-      deleteSession(sessionId)
-        .catch(() => {})
-        .finally(() => {
-          setSessions((prev) => prev.filter((s) => s.id !== sessionId));
-          // Close any open tab for this session
-          const model = modelRef.current;
-          if (model) {
-            model.visitNodes((node) => {
-              if (node.getType() === "tab") {
-                const tabNode = node as TabNode;
-                if (tabNode.getConfig()?.sessionId === sessionId) {
-                  model.doAction(Actions.deleteTab(node.getId()));
-                }
-              }
-            });
-          }
-        });
+      // Soft-delete: backend stops + marks deleted, event handler updates UI
+      rpcRef.current?.call("session.delete", { session_id: sessionId }).catch(() => {});
     },
     [],
   );
 
   // ------------------------------------------------------------------
-  // Tab context menu
+  // Tab context menu (RpcMenu context mode)
   // ------------------------------------------------------------------
 
   const handleLayoutContextMenu = useCallback(
@@ -665,8 +669,6 @@ export default function App() {
       if (!model) return;
 
       // Resolve the actual tab node ID from the DOM element.
-      // flexlayout-react's TabButton sets data-layout-path to "{tabsetPath}/tb{index}"
-      // while the corresponding tab node's path is "{tabsetPath}/t{index}".
       let matchedNodeId: string | null = null;
       const layoutPath = el.getAttribute("data-layout-path");
       if (layoutPath) {
@@ -689,81 +691,76 @@ export default function App() {
     [],
   );
 
-  const getTabContextMenuItems = useCallback((): ContextMenuItem[] => {
-    if (!tabContextMenu) return [];
-    const { nodeId } = tabContextMenu;
+  // Resolve tab context menu session info
+  const tabContextSession = (() => {
+    if (!tabContextMenu) return null;
     const model = modelRef.current;
-    if (!model) return [];
-
-    // Find the tab node and resolve its session
+    if (!model) return null;
     let tabNode: TabNode | null = null;
     model.visitNodes((n) => {
-      if (n.getId() === nodeId && n.getType() === "tab") tabNode = n as TabNode;
+      if (n.getId() === tabContextMenu.nodeId && n.getType() === "tab") tabNode = n as TabNode;
     });
     const sessionId = tabNode ? resolveSessionId(tabNode, sessions) : undefined;
     const session = sessionId ? sessions.find((s) => s.id === sessionId) : undefined;
+    return { tabNode, session };
+  })();
 
-    const items: ContextMenuItem[] = [
-      {
-        label: "Rename",
-        onClick: () => {
-          if (tabNode && layoutRef.current) {
-            // setEditingTab is on LayoutInternal, accessed via Layout's selfRef
-            const internal = layoutRef.current.selfRef?.current;
-            if (internal?.setEditingTab) {
-              internal.setEditingTab(tabNode);
-            }
+  const handleTabClientAction = useCallback(
+    (action: string, _data: Record<string, unknown>) => {
+      if (!tabContextMenu) return;
+      const { nodeId } = tabContextMenu;
+      const model = modelRef.current;
+      if (!model) return;
+
+      if (action === "start_rename") {
+        let tabNode: TabNode | null = null;
+        model.visitNodes((n) => {
+          if (n.getId() === nodeId && n.getType() === "tab") tabNode = n as TabNode;
+        });
+        if (tabNode && layoutRef.current) {
+          const internal = layoutRef.current.selfRef?.current;
+          if (internal?.setEditingTab) {
+            internal.setEditingTab(tabNode);
           }
-        },
-      },
-      {
-        label: "Close",
-        onClick: () => {
-          model.doAction(Actions.deleteTab(nodeId));
-        },
-      },
-      {
-        label: "Close Others",
-        onClick: () => {
-          let parentId: string | null = null;
-          model.visitNodes((node) => {
-            if (node.getId() === nodeId && node.getType() === "tab") {
-              parentId = node.getParent()?.getId() ?? null;
-            }
-          });
-          if (!parentId) return;
-          const toClose: string[] = [];
-          model.visitNodes((node) => {
-            if (
-              node.getType() === "tab" &&
-              node.getParent()?.getId() === parentId &&
-              node.getId() !== nodeId
-            ) {
-              toClose.push(node.getId());
-            }
-          });
-          for (const id of toClose) {
-            model.doAction(Actions.deleteTab(id));
+        }
+      } else if (action === "close_tab") {
+        model.doAction(Actions.deleteTab(nodeId));
+      } else if (action === "close_others") {
+        let parentId: string | null = null;
+        model.visitNodes((node) => {
+          if (node.getId() === nodeId && node.getType() === "tab") {
+            parentId = node.getParent()?.getId() ?? null;
           }
-        },
-      },
-    ];
+        });
+        if (!parentId) return;
+        const toClose: string[] = [];
+        model.visitNodes((node) => {
+          if (
+            node.getType() === "tab" &&
+            node.getParent()?.getId() === parentId &&
+            node.getId() !== nodeId
+          ) {
+            toClose.push(node.getId());
+          }
+        });
+        for (const id of toClose) {
+          model.doAction(Actions.deleteTab(id));
+        }
+      }
+    },
+    [tabContextMenu],
+  );
 
-    // Add "End Session" for active sessions
-    if (session && session.status !== "ended") {
-      items.push(
-        { label: "", separator: true },
-        {
-          label: "End Session",
-          onClick: () => {
-            setPendingEndSession({ nodeId, sessionId: session.id });
-          },
-        },
-      );
-    }
-
-    return items;
-  }, [tabContextMenu, sessions]);
+  const handleTabMenuResult = useCallback(
+    (result: MenuExecResult) => {
+      // 状态更新由 event handler 统一处理，这里只做发起者特有的 UI 操作（关闭 tab）
+      if (result.action === "session_ended" && tabContextMenu?.nodeId) {
+        const model = modelRef.current;
+        if (model) model.doAction(Actions.deleteTab(tabContextMenu.nodeId));
+      }
+    },
+    [tabContextMenu],
+  );
 
   // ------------------------------------------------------------------
   // Tabset "+" button rendering
@@ -823,12 +820,13 @@ export default function App() {
         sessions,
         activeSessionId,
         workspaceId: workspace?.id ?? null,
+        rpc,
         onSelectSession: handleSelectSession,
         onUpdateTabConfig: handleUpdateTabConfig,
         onTerminalExited: handleTerminalExited,
       });
     },
-    [sessions, activeSessionId, workspace, handleSelectSession, handleUpdateTabConfig, handleTerminalExited],
+    [sessions, activeSessionId, workspace, rpc, handleSelectSession, handleUpdateTabConfig, handleTerminalExited],
   );
 
   // Show nothing while checking auth
@@ -853,6 +851,7 @@ export default function App() {
           <SessionListPanel
             sessions={sessions}
             activeSessionId={activeSessionId}
+            rpc={rpc}
             onSelect={handleSelectSession}
             onModeChange={handleSidebarModeChange}
             onCloseSession={handleEndSession}
@@ -888,10 +887,18 @@ export default function App() {
         />
       )}
       {tabContextMenu && (
-        <ContextMenu
-          items={getTabContextMenuItems()}
+        <RpcMenu
+          rpc={rpc}
+          category="Tab/Context"
+          context={{
+            session_id: tabContextSession?.session?.id ?? "",
+            session_type: tabContextSession?.session?.type ?? "",
+            session_status: tabContextSession?.session?.status ?? "",
+          }}
           position={tabContextMenu.position}
           onClose={() => setTabContextMenu(null)}
+          onResult={handleTabMenuResult}
+          onClientAction={handleTabClientAction}
         />
       )}
     </div>

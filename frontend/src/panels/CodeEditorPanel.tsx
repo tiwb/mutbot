@@ -1,22 +1,23 @@
 import { useEffect, useState } from "react";
 import Editor from "@monaco-editor/react";
-import { readFile } from "../lib/api";
+import type { WorkspaceRpc } from "../lib/workspace-rpc";
 
 interface Props {
   filePath: string;
   workspaceId: string;
   language?: string;
+  rpc?: WorkspaceRpc | null;
 }
 
-export default function CodeEditorPanel({ filePath, workspaceId, language }: Props) {
+export default function CodeEditorPanel({ filePath, workspaceId, language, rpc }: Props) {
   const [content, setContent] = useState<string | null>(null);
   const [detectedLang, setDetectedLang] = useState(language ?? "plaintext");
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!filePath || !workspaceId) return;
+    if (!filePath || !workspaceId || !rpc) return;
 
-    readFile(workspaceId, filePath).then((data: { content?: string; language?: string; error?: string }) => {
+    rpc.call<{ content?: string; language?: string; error?: string }>("file.read", { path: filePath }).then((data) => {
       if (data.error) {
         setError(data.error);
       } else {
@@ -26,7 +27,7 @@ export default function CodeEditorPanel({ filePath, workspaceId, language }: Pro
     }).catch((err: Error) => {
       setError(err.message);
     });
-  }, [filePath, workspaceId]);
+  }, [filePath, workspaceId, rpc]);
 
   if (!filePath) {
     return (

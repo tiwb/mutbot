@@ -1,12 +1,27 @@
 /**
- * RpcMenu — 通过 WorkspaceRpc 获取后端菜单数据并渲染的下拉菜单组件。
+ * RpcMenu — 通过 WorkspaceRpc 获取后端菜单数据并渲染的菜单组件。
  *
- * 用法：
+ * 支持两种模式：
+ * 1. 下拉模式（trigger）：点击触发按钮展开下拉菜单
+ * 2. 上下文菜单模式（position + onClose）：在指定位置显示右键菜单
+ *
+ * 用法（下拉模式）：
  *   <RpcMenu
  *     rpc={workspaceRpc}
  *     category="SessionPanel/Add"
  *     trigger={<button>+</button>}
  *     onResult={handleMenuResult}
+ *   />
+ *
+ * 用法（上下文菜单模式）：
+ *   <RpcMenu
+ *     rpc={workspaceRpc}
+ *     category="Tab/Context"
+ *     context={{ session_id: "...", session_status: "active" }}
+ *     position={{ x: 100, y: 200 }}
+ *     onClose={() => setMenu(null)}
+ *     onResult={handleMenuResult}
+ *     onClientAction={handleClientAction}
  *   />
  */
 
@@ -22,6 +37,8 @@ interface RpcMenuItem {
   order: string;
   enabled: boolean;
   visible: boolean;
+  shortcut?: string;
+  client_action?: string;
   data?: Record<string, unknown>;
 }
 
@@ -32,16 +49,21 @@ export interface MenuExecResult {
   error?: string;
 }
 
-interface RpcMenuProps {
+type RpcMenuProps = {
   /** WorkspaceRpc 实例 */
   rpc: WorkspaceRpc | null;
   /** 菜单 category（对应后端 display_category） */
   category: string;
-  /** 触发按钮（渲染在原位） */
-  trigger: React.ReactElement;
+  /** 传递给 menu.query 的上下文（如 session_id, session_status） */
+  context?: Record<string, unknown>;
   /** 执行结果回调 */
   onResult?: (result: MenuExecResult) => void;
-}
+  /** 前端直接处理的 client_action 回调 */
+  onClientAction?: (action: string, data: Record<string, unknown>) => void;
+} & (
+  | { trigger: React.ReactElement; position?: never; onClose?: never }
+  | { trigger?: never; position: { x: number; y: number }; onClose: () => void }
+);
 
 /** 从 order 字段提取 group 名（"group:index" → "group"） */
 function getGroup(order: string): string {
@@ -49,34 +71,69 @@ function getGroup(order: string): string {
   return idx >= 0 ? order.slice(0, idx) : order;
 }
 
-export default function RpcMenu({ rpc, category, trigger, onResult }: RpcMenuProps) {
-  const [open, setOpen] = useState(false);
+export default function RpcMenu(props: RpcMenuProps) {
+  const { rpc, category, context, onResult, onClientAction } = props;
+  const isContextMenu = "position" in props && !!props.position;
+
+  const [open, setOpen] = useState(isContextMenu);
   const [items, setItems] = useState<RpcMenuItem[]>([]);
   const [loading, setLoading] = useState(false);
   const btnRef = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
-  const [menuPos, setMenuPos] = useState({ top: 0, left: 0 });
+  const [menuPos, setMenuPos] = useState(
+    isContextMenu ? { top: props.position!.y, left: props.position!.x } : { top: 0, left: 0 },
+  );
 
-  // 打开时获取菜单项
+  const close = useCallback(() => {
+    setOpen(false);
+    if (isContextMenu && props.onClose) {
+      props.onClose();
+    }
+  }, [isContextMenu, props]);
+
+  // 获取菜单项
   const fetchItems = useCallback(async () => {
     if (!rpc) return;
     setLoading(true);
     try {
-      const result = await rpc.call<RpcMenuItem[]>("menu.query", { category });
+      const result = await rpc.call<RpcMenuItem[]>("menu.query", { category, context: context || {} });
       setItems(result.filter((it) => it.visible));
     } catch {
       setItems([]);
     } finally {
       setLoading(false);
     }
-  }, [rpc, category]);
+  }, [rpc, category, context]);
 
-  // 计算菜单位置
+  // 上下文菜单模式：立即获取数据
+  useEffect(() => {
+    if (isContextMenu) {
+      fetchItems();
+    }
+  }, [isContextMenu, fetchItems]);
+
+  // 计算下拉模式菜单位置
   const updateMenuPos = useCallback(() => {
     if (!btnRef.current) return;
     const rect = btnRef.current.getBoundingClientRect();
     setMenuPos({ top: rect.bottom + 2, left: rect.right - 140 });
   }, []);
+
+  // 上下文菜单模式：调整位置防止溢出
+  useEffect(() => {
+    if (!isContextMenu || !open || !menuRef.current) return;
+    const rect = menuRef.current.getBoundingClientRect();
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    let x = props.position!.x;
+    let y = props.position!.y;
+    if (x + rect.width > vw) x = vw - rect.width - 4;
+    if (y + rect.height > vh) y = vh - rect.height - 4;
+    if (x < 0) x = 4;
+    if (y < 0) y = 4;
+    menuRef.current.style.left = `${x}px`;
+    menuRef.current.style.top = `${y}px`;
+  }, [isContextMenu, open, items, props]);
 
   // 点击外部关闭
   useEffect(() => {
@@ -84,21 +141,21 @@ export default function RpcMenu({ rpc, category, trigger, onResult }: RpcMenuPro
     const handler = (e: PointerEvent) => {
       const target = e.target as Node;
       if (btnRef.current?.contains(target) || menuRef.current?.contains(target)) return;
-      setOpen(false);
+      close();
     };
     document.addEventListener("pointerdown", handler);
     return () => document.removeEventListener("pointerdown", handler);
-  }, [open]);
+  }, [open, close]);
 
   // Escape 关闭
   useEffect(() => {
     if (!open) return;
     const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setOpen(false);
+      if (e.key === "Escape") close();
     };
     document.addEventListener("keydown", handler);
     return () => document.removeEventListener("keydown", handler);
-  }, [open]);
+  }, [open, close]);
 
   const handleToggle = useCallback(
     (e: React.PointerEvent) => {
@@ -115,19 +172,28 @@ export default function RpcMenu({ rpc, category, trigger, onResult }: RpcMenuPro
 
   const handleExecute = useCallback(
     async (item: RpcMenuItem) => {
-      if (!rpc || !item.enabled) return;
-      setOpen(false);
+      if (!item.enabled) return;
+      close();
+
+      // 如果有 client_action，交由前端处理
+      if (item.client_action && onClientAction) {
+        onClientAction(item.client_action, item.data || {});
+        return;
+      }
+
+      // 否则走 RPC execute
+      if (!rpc) return;
       try {
         const result = await rpc.call<MenuExecResult>("menu.execute", {
           menu_id: item.id,
-          params: item.data || {},
+          params: { ...(context || {}), ...(item.data || {}) },
         });
         onResult?.(result);
       } catch {
         // 静默处理
       }
     },
-    [rpc, onResult],
+    [rpc, context, onResult, onClientAction, close],
   );
 
   // 插入分组分隔线
@@ -159,18 +225,31 @@ export default function RpcMenu({ rpc, category, trigger, onResult }: RpcMenuPro
           onPointerDown={(e) => e.stopPropagation()}
           onClick={() => handleExecute(item)}
         >
-          {item.icon && <span className="rpc-menu-icon">{getIconForType(item.icon)}</span>}
+          <span className="rpc-menu-icon">{item.icon ? getIconForType(item.icon) : null}</span>
           <span className="rpc-menu-label">{item.name}</span>
+          {item.shortcut && <span className="rpc-menu-shortcut">{item.shortcut}</span>}
         </button>,
       );
     }
     return elements;
   };
 
+  // 上下文菜单模式
+  if (isContextMenu) {
+    if (!open) return null;
+    return createPortal(
+      <div ref={menuRef} className="rpc-menu" style={{ top: menuPos.top, left: menuPos.left }}>
+        {renderItems()}
+      </div>,
+      document.body,
+    );
+  }
+
+  // 下拉模式
   return (
     <>
       <div ref={btnRef} style={{ display: "inline-flex" }} onPointerDown={handleToggle}>
-        {trigger}
+        {props.trigger}
       </div>
       {open &&
         createPortal(

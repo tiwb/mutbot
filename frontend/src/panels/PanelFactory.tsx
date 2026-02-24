@@ -6,6 +6,7 @@ import {
   PANEL_CODE_EDITOR,
   PANEL_LOG,
 } from "../lib/layout";
+import type { WorkspaceRpc } from "../lib/workspace-rpc";
 import AgentPanel from "./AgentPanel";
 
 const TerminalPanel = React.lazy(() => import("./TerminalPanel"));
@@ -16,6 +17,7 @@ export interface PanelContext {
   sessions: { id: string; title: string; type: string; status: string; config?: Record<string, unknown> | null }[];
   activeSessionId: string | null;
   workspaceId: string | null;
+  rpc: WorkspaceRpc | null;
   onSelectSession: (id: string) => void;
   onUpdateTabConfig?: (nodeId: string, config: Record<string, unknown>) => void;
   onTerminalExited?: (sessionId: string) => void;
@@ -32,7 +34,7 @@ export function panelFactory(node: TabNode, ctx: PanelContext) {
     case PANEL_AGENT_CHAT: {
       const sessionId = node.getConfig()?.sessionId as string | undefined;
       if (!sessionId) return <div className="empty-state"><p>No session.</p></div>;
-      return <AgentPanel sessionId={sessionId} />;
+      return <AgentPanel sessionId={sessionId} rpc={ctx.rpc} />;
     }
 
     case PANEL_TERMINAL: {
@@ -46,6 +48,7 @@ export function panelFactory(node: TabNode, ctx: PanelContext) {
             terminalId={termConfig?.terminalId}
             workspaceId={termConfig?.workspaceId ?? ctx.workspaceId ?? ""}
             nodeId={node.getId()}
+            rpc={ctx.rpc}
             onTerminalCreated={ctx.onUpdateTabConfig}
             onTerminalExited={ctx.onTerminalExited}
           />
@@ -63,6 +66,7 @@ export function panelFactory(node: TabNode, ctx: PanelContext) {
             filePath={editorConfig?.filePath ?? ""}
             workspaceId={editorConfig?.workspaceId ?? ctx.workspaceId ?? ""}
             language={editorConfig?.language}
+            rpc={ctx.rpc}
           />
         </Suspense>
       );
@@ -71,7 +75,7 @@ export function panelFactory(node: TabNode, ctx: PanelContext) {
     case PANEL_LOG:
       return (
         <Suspense fallback={<Loading />}>
-          <LogPanel />
+          <LogPanel rpc={ctx.rpc} />
         </Suspense>
       );
 

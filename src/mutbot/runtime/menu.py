@@ -32,6 +32,10 @@ class MenuItem:
     order: str = "_"
     enabled: bool = True
     visible: bool = True
+    # 快捷键显示文本（仅供前端渲染，不处理键盘事件）
+    shortcut: str = ""
+    # 前端直接处理的动作标识（非空时前端不走 menu.execute RPC）
+    client_action: str = ""
     # 额外数据（前端可选使用）
     data: dict = field(default_factory=dict)
 
@@ -65,10 +69,12 @@ class Menu(mutobj.Declaration):
     display_icon: str = ""
     display_order: str = "_"
     display_category: str = ""
+    display_shortcut: str = ""
 
     # 行为属性
     enabled: bool = True
     visible: bool = True
+    client_action: str = ""
 
     def execute(self, params: dict, context: RpcContext) -> MenuResult:
         """执行菜单动作，由子类实现"""
@@ -81,6 +87,16 @@ class Menu(mutobj.Declaration):
         返回 None 表示使用静态定义（默认行为）。
         返回 list[MenuItem] 则替代静态菜单项。
         """
+        return None
+
+    @classmethod
+    def check_enabled(cls, context: dict) -> bool | None:
+        """根据上下文判断是否启用。返回 None 使用默认值。"""
+        return None
+
+    @classmethod
+    def check_visible(cls, context: dict) -> bool | None:
+        """根据上下文判断是否可见。返回 None 使用默认值。"""
         return None
 
 
@@ -116,6 +132,8 @@ class MenuRegistry:
     def __init__(self) -> None:
         self._cached_generation: int = -1
         self._cached_menus: list[type[Menu]] = []
+        # 动态菜单项 ID → 生成该项的父 Menu 子类映射
+        self._dynamic_item_owners: dict[str, type[Menu]] = {}
 
     def _refresh(self) -> None:
         gen = mutobj.get_registry_generation()
@@ -151,18 +169,36 @@ class MenuRegistry:
         menus = self.get_by_category(category)
         items: list[MenuItem] = []
 
+        # 从 RPC params 中提取上下文（前端传入的额外信息）
+        menu_context: dict = {}
+        if hasattr(context, "managers"):
+            menu_context = getattr(context, "_menu_context", {})
+
         for menu_cls in menus:
+            # 可见性判断
             visible = _get_attr_default(menu_cls, "visible")
+            check_vis = menu_cls.check_visible(menu_context)
+            if check_vis is not None:
+                visible = check_vis
             if visible is not None and not visible:
                 continue
 
             # 尝试动态展开
             dynamic = menu_cls.dynamic_items(context)
             if dynamic is not None:
+                for item in dynamic:
+                    self._dynamic_item_owners[item.id] = menu_cls
                 items.extend(dynamic)
             else:
                 # 静态菜单项
                 enabled_val = _get_attr_default(menu_cls, "enabled")
+                check_en = menu_cls.check_enabled(menu_context)
+                if check_en is not None:
+                    enabled_val = check_en
+
+                shortcut = _get_attr_default(menu_cls, "display_shortcut") or ""
+                client_act = _get_attr_default(menu_cls, "client_action") or ""
+
                 items.append(MenuItem(
                     id=_menu_id(menu_cls),
                     name=_get_attr_default(menu_cls, "display_name") or menu_cls.__name__,
@@ -170,18 +206,25 @@ class MenuRegistry:
                     order=_get_attr_default(menu_cls, "display_order") or "_",
                     enabled=enabled_val if enabled_val is not None else True,
                     visible=True,
+                    shortcut=shortcut,
+                    client_action=client_act,
                 ))
 
         items.sort(key=lambda it: it.order)
         return [_item_to_dict(it) for it in items]
 
     def find_menu_class(self, menu_id: str) -> type[Menu] | None:
-        """根据 menu_id 查找 Menu 子类"""
+        """根据 menu_id 查找 Menu 子类。
+
+        优先按类 ID 直接查找（静态菜单），
+        其次从 dynamic_items 的 ID 映射中查找父类（动态菜单）。
+        """
         self._refresh()
         for cls in self._cached_menus:
             if _menu_id(cls) == menu_id:
                 return cls
-        return None
+        # 动态菜单项：查找生成该项的父 Menu 子类
+        return self._dynamic_item_owners.get(menu_id)
 
 
 def _menu_id(cls: type[Menu]) -> str:
@@ -198,6 +241,10 @@ def _item_to_dict(item: MenuItem) -> dict:
         "enabled": item.enabled,
         "visible": item.visible,
     }
+    if item.shortcut:
+        d["shortcut"] = item.shortcut
+    if item.client_action:
+        d["client_action"] = item.client_action
     if item.data:
         d["data"] = item.data
     return d
@@ -300,3 +347,106 @@ class AddSessionMenu(Menu):
                 "title": session.title,
             },
         )
+
+
+# ---------------------------------------------------------------------------
+# 内置菜单：Tab 右键菜单 (Tab/Context)
+# ---------------------------------------------------------------------------
+
+class RenameSessionMenu(Menu):
+    """Tab 右键菜单 — 重命名"""
+    display_name = "Rename"
+    display_icon = "rename"
+    display_category = "Tab/Context"
+    display_order = "0basic:0"
+    display_shortcut = "F2"
+    client_action = "start_rename"
+
+
+class CloseTabMenu(Menu):
+    """Tab 右键菜单 — 关闭 Tab"""
+    display_name = "Close"
+    display_icon = "close"
+    display_category = "Tab/Context"
+    display_order = "0basic:1"
+    client_action = "close_tab"
+
+
+class CloseOthersMenu(Menu):
+    """Tab 右键菜单 — 关闭其他 Tab"""
+    display_name = "Close Others"
+    display_category = "Tab/Context"
+    display_order = "0basic:2"
+    client_action = "close_others"
+
+
+class EndSessionMenu(Menu):
+    """Tab 右键菜单 — 结束 Session"""
+    display_name = "End Session"
+    display_icon = "stop"
+    display_category = "Tab/Context"
+    display_order = "1manage:0"
+
+    @classmethod
+    def check_enabled(cls, context: dict) -> bool | None:
+        status = context.get("session_status")
+        if status is not None:
+            return status == "active"
+        return None
+
+    def execute(self, params: dict, context: RpcContext) -> MenuResult:
+        sm = context.managers.get("session_manager")
+        session_id = params.get("session_id", "")
+        if not sm or not session_id:
+            return MenuResult(action="error", data={"message": "missing session_manager or session_id"})
+        # 实际的 async stop 由 handle_menu_execute 处理
+        return MenuResult(action="session_ended", data={"session_id": session_id})
+
+
+# ---------------------------------------------------------------------------
+# 内置菜单：Session 列表右键菜单 (SessionList/Context)
+# ---------------------------------------------------------------------------
+
+class RenameSessionListMenu(Menu):
+    """Session 列表右键菜单 — 重命名"""
+    display_name = "Rename"
+    display_category = "SessionList/Context"
+    display_order = "0basic:0"
+    client_action = "start_rename"
+
+
+class EndSessionListMenu(Menu):
+    """Session 列表右键菜单 — 结束 Session"""
+    display_name = "End Session"
+    display_category = "SessionList/Context"
+    display_order = "1manage:0"
+
+    @classmethod
+    def check_enabled(cls, context: dict) -> bool | None:
+        status = context.get("session_status")
+        if status is not None:
+            return status == "active"
+        return None
+
+    def execute(self, params: dict, context: RpcContext) -> MenuResult:
+        sm = context.managers.get("session_manager")
+        session_id = params.get("session_id", "")
+        if not sm or not session_id:
+            return MenuResult(action="error", data={"message": "missing session_manager or session_id"})
+        # 实际的 async stop 由 handle_menu_execute 处理
+        return MenuResult(action="session_ended", data={"session_id": session_id})
+
+
+class DeleteSessionMenu(Menu):
+    """Session 列表右键菜单 — 删除 Session"""
+    display_name = "Delete"
+    display_category = "SessionList/Context"
+    display_order = "2danger:0"
+
+    def execute(self, params: dict, context: RpcContext) -> MenuResult:
+        sm = context.managers.get("session_manager")
+        session_id = params.get("session_id", "")
+        if not sm or not session_id:
+            return MenuResult(action="error", data={"message": "missing session_manager or session_id"})
+        # 实际的 async stop + delete 由 handle_menu_execute 处理
+        return MenuResult(action="session_deleted", data={"session_id": session_id})

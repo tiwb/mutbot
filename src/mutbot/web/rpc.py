@@ -14,6 +14,8 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+from fastapi import WebSocket
+
 logger = logging.getLogger(__name__)
 
 # RPC 错误码（参考 JSON-RPC 2.0）
@@ -34,6 +36,12 @@ class RpcContext:
     broadcast: Callable[[dict], Awaitable[None]]
     # 管理器引用（由 routes.py 注入）
     managers: dict[str, Any] = field(default_factory=dict)
+    # 发送者 WebSocket，用于 broadcast 时排除自身
+    sender_ws: WebSocket | None = None
+
+    async def broadcast_event(self, event: str, data: dict | None = None) -> None:
+        """广播事件到当前 workspace 所有客户端（自动排除发送者）"""
+        await self.broadcast(make_event(event, data))
 
 
 class RpcDispatcher:

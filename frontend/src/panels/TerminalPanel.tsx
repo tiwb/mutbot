@@ -3,11 +3,8 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import "@xterm/xterm/css/xterm.css";
-import {
-  createTerminal as apiCreateTerminal,
-  deleteTerminal as apiDeleteTerminal,
-  getAuthToken,
-} from "../lib/api";
+import { getAuthToken } from "../lib/api";
+import type { WorkspaceRpc } from "../lib/workspace-rpc";
 import ContextMenu, { type ContextMenuItem } from "../components/ContextMenu";
 
 interface Props {
@@ -15,6 +12,7 @@ interface Props {
   terminalId?: string;
   workspaceId: string;
   nodeId?: string;
+  rpc?: WorkspaceRpc | null;
   onTerminalCreated?: (nodeId: string, config: Record<string, unknown>) => void;
   onTerminalExited?: (sessionId: string) => void;
 }
@@ -32,7 +30,7 @@ function buildWsUrl(termId: string, rows?: number, cols?: number): string {
   return qs ? `${base}?${qs}` : base;
 }
 
-export default function TerminalPanel({ sessionId, terminalId: initialId, workspaceId, nodeId, onTerminalCreated, onTerminalExited }: Props) {
+export default function TerminalPanel({ sessionId, terminalId: initialId, workspaceId, nodeId, rpc, onTerminalCreated, onTerminalExited }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
@@ -216,7 +214,8 @@ export default function TerminalPanel({ sessionId, terminalId: initialId, worksp
       if (!active) return;
       let termId = termIdRef.current;
       if (!termId) {
-        const result = await apiCreateTerminal(workspaceId, rows, cols);
+        if (!rpc) return;
+        const result = await rpc.call<{ id: string }>("terminal.create", { rows, cols });
         if (!active) return;
         termId = result.id;
         termIdRef.current = termId;
@@ -235,8 +234,8 @@ export default function TerminalPanel({ sessionId, terminalId: initialId, worksp
       wsRef.current?.close();
       // Delete old dead terminal
       const oldTid = termIdRef.current;
-      if (oldTid) {
-        apiDeleteTerminal(oldTid).catch(() => {});
+      if (oldTid && rpc) {
+        rpc.call("terminal.delete", { term_id: oldTid }).catch(() => {});
       }
       // Clear terminal screen for fresh start
       term.write("\x1b[2J\x1b[H");

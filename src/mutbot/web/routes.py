@@ -4,12 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
-from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 
 from mutbot.web.connection import ConnectionManager
@@ -34,12 +32,19 @@ workspace_rpc = RpcDispatcher()
 async def handle_menu_query(params: dict, ctx: RpcContext) -> list[dict]:
     """查询指定 category 的菜单项列表"""
     category = params.get("category", "")
+    # 将前端传入的 context 注入到 RpcContext 以供 check_enabled/check_visible 使用
+    menu_context = params.get("context", {})
+    ctx._menu_context = menu_context  # type: ignore[attr-defined]
     return menu_registry.query(category, ctx)
 
 
 @workspace_rpc.method("menu.execute")
 async def handle_menu_execute(params: dict, ctx: RpcContext) -> dict:
-    """执行指定菜单项"""
+    """执行指定菜单项。
+
+    Menu.execute() 是同步方法，只做同步工作（如创建 session）。
+    异步后续操作（stop、broadcast）由本 handler 统一处理。
+    """
     menu_id = params.get("menu_id", "")
     if not menu_id:
         return {"error": "missing menu_id"}
@@ -52,10 +57,309 @@ async def handle_menu_execute(params: dict, ctx: RpcContext) -> dict:
     execute_params = params.get("params", {})
     result = menu_instance.execute(execute_params, ctx)
 
-    # 返回 MenuResult 的序列化形式
-    if isinstance(result, MenuResult):
-        return {"action": result.action, "data": result.data}
-    return result if isinstance(result, dict) else {}
+    if not isinstance(result, MenuResult):
+        return result if isinstance(result, dict) else {}
+
+    result_dict: dict = {"action": result.action, "data": result.data}
+
+    # 异步后续：根据 action 执行 stop/delete 并广播事件给其他客户端
+    sm = ctx.managers.get("session_manager")
+    session_id = result.data.get("session_id", "")
+
+    if result.action == "session_created" and sm and session_id:
+        session = sm.get(session_id)
+        if session:
+            await ctx.broadcast_event("session_created", _session_dict(session))
+
+    elif result.action == "session_ended" and sm and session_id:
+        await sm.stop(session_id)
+        session = sm.get(session_id)
+        data = _session_dict(session) if session else {"session_id": session_id}
+        await ctx.broadcast_event("session_updated", data)
+
+    elif result.action == "session_deleted" and sm and session_id:
+        await sm.stop(session_id)
+        sm.delete(session_id)
+        await ctx.broadcast_event("session_deleted", {"session_id": session_id})
+
+    return result_dict
+
+
+# ---------------------------------------------------------------------------
+# Session RPC handlers
+# ---------------------------------------------------------------------------
+
+@workspace_rpc.method("session.create")
+async def handle_session_create(params: dict, ctx: RpcContext) -> dict:
+    """创建 Session"""
+    wm = ctx.managers.get("workspace_manager")
+    sm = ctx.managers.get("session_manager")
+    if not sm or not wm:
+        return {"error": "managers not available"}
+
+    ws = wm.get(ctx.workspace_id)
+    if ws is None:
+        return {"error": "workspace not found"}
+
+    session_type = params.get("type", "agent")
+    config = params.get("config")
+
+    # terminal 类型需创建 PTY
+    if session_type == "terminal":
+        tm = ctx.managers.get("terminal_manager")
+        if tm is None:
+            return {"error": "terminal manager not available"}
+        rows = params.get("rows", 24)
+        cols = params.get("cols", 80)
+        term = tm.create(ctx.workspace_id, rows, cols, cwd=ws.project_path)
+        config = config or {}
+        config["terminal_id"] = term.id
+
+    # document 类型生成默认文件路径
+    if session_type == "document":
+        import time
+        config = config or {}
+        config.setdefault("file_path", f"untitled-{int(time.time() * 1000)}.md")
+
+    session = sm.create(ctx.workspace_id, session_type=session_type, config=config)
+    ws.sessions.append(session.id)
+    wm.update(ws)
+
+    data = _session_dict(session)
+    await ctx.broadcast_event("session_created", data)
+    return data
+
+
+@workspace_rpc.method("session.list")
+async def handle_session_list(params: dict, ctx: RpcContext) -> list[dict]:
+    """列出 workspace 下的所有 Session"""
+    sm = ctx.managers.get("session_manager")
+    if not sm:
+        return []
+    workspace_id = params.get("workspace_id", ctx.workspace_id)
+    return [_session_dict(s) for s in sm.list_by_workspace(workspace_id)]
+
+
+@workspace_rpc.method("session.get")
+async def handle_session_get(params: dict, ctx: RpcContext) -> dict:
+    """获取单个 Session"""
+    sm = ctx.managers.get("session_manager")
+    if not sm:
+        return {"error": "session_manager not available"}
+    session_id = params.get("session_id", "")
+    session = sm.get(session_id)
+    if session is None:
+        return {"error": "session not found"}
+    return _session_dict(session)
+
+
+@workspace_rpc.method("session.events")
+async def handle_session_events(params: dict, ctx: RpcContext) -> dict:
+    """获取 Session 的持久化事件"""
+    sm = ctx.managers.get("session_manager")
+    if not sm:
+        return {"error": "session_manager not available"}
+    session_id = params.get("session_id", "")
+    session = sm.get(session_id)
+    if session is None:
+        return {"error": "session not found"}
+    events = sm.get_session_events(session_id)
+    return {"session_id": session_id, "events": events}
+
+
+@workspace_rpc.method("session.stop")
+async def handle_session_stop(params: dict, ctx: RpcContext) -> dict:
+    """停止 Session"""
+    sm = ctx.managers.get("session_manager")
+    if not sm:
+        return {"error": "session_manager not available"}
+    session_id = params.get("session_id", "")
+    await sm.stop(session_id)
+    session = sm.get(session_id)
+    data = _session_dict(session) if session else {"session_id": session_id}
+    await ctx.broadcast_event("session_updated", data)
+    return {"status": "stopped"}
+
+
+@workspace_rpc.method("session.delete")
+async def handle_session_delete(params: dict, ctx: RpcContext) -> dict:
+    """删除 Session（先停止后删除）"""
+    sm = ctx.managers.get("session_manager")
+    if not sm:
+        return {"error": "session_manager not available"}
+    session_id = params.get("session_id", "")
+    await sm.stop(session_id)
+    if not sm.delete(session_id):
+        return {"error": "session not found"}
+    await ctx.broadcast_event("session_deleted", {"session_id": session_id})
+    return {"status": "deleted"}
+
+
+@workspace_rpc.method("session.update")
+async def handle_session_update(params: dict, ctx: RpcContext) -> dict:
+    """更新 Session 字段"""
+    sm = ctx.managers.get("session_manager")
+    if not sm:
+        return {"error": "session_manager not available"}
+    session_id = params.get("session_id", "")
+    fields: dict[str, Any] = {}
+    if "title" in params:
+        fields["title"] = params["title"]
+    if "config" in params:
+        fields["config"] = params["config"]
+    if "status" in params:
+        fields["status"] = params["status"]
+    if not fields:
+        return {"error": "no updatable fields"}
+    session = sm.update(session_id, **fields)
+    if session is None:
+        return {"error": "session not found"}
+    data = _session_dict(session)
+    await ctx.broadcast_event("session_updated", data)
+    return data
+
+
+# ---------------------------------------------------------------------------
+# Workspace RPC handlers
+# ---------------------------------------------------------------------------
+
+@workspace_rpc.method("workspace.get")
+async def handle_workspace_get(params: dict, ctx: RpcContext) -> dict:
+    """获取 workspace 详情"""
+    wm = ctx.managers.get("workspace_manager")
+    if not wm:
+        return {"error": "workspace_manager not available"}
+    workspace_id = params.get("workspace_id", ctx.workspace_id)
+    ws = wm.get(workspace_id)
+    if ws is None:
+        return {"error": "workspace not found"}
+    return _workspace_dict(ws)
+
+
+@workspace_rpc.method("workspace.update")
+async def handle_workspace_update(params: dict, ctx: RpcContext) -> dict:
+    """更新 workspace 字段（如 layout）"""
+    wm = ctx.managers.get("workspace_manager")
+    if not wm:
+        return {"error": "workspace_manager not available"}
+    workspace_id = params.get("workspace_id", ctx.workspace_id)
+    ws = wm.get(workspace_id)
+    if ws is None:
+        return {"error": "workspace not found"}
+    if "layout" in params:
+        ws.layout = params["layout"]
+    wm.update(ws)
+    return _workspace_dict(ws)
+
+
+# ---------------------------------------------------------------------------
+# Terminal RPC handlers
+# ---------------------------------------------------------------------------
+
+@workspace_rpc.method("terminal.create")
+async def handle_terminal_create(params: dict, ctx: RpcContext) -> dict:
+    """创建终端"""
+    wm = ctx.managers.get("workspace_manager")
+    tm = ctx.managers.get("terminal_manager")
+    if not wm or not tm:
+        return {"error": "managers not available"}
+    ws = wm.get(ctx.workspace_id)
+    if ws is None:
+        return {"error": "workspace not found"}
+    rows = params.get("rows", 24)
+    cols = params.get("cols", 80)
+    term = tm.create(ctx.workspace_id, rows, cols, cwd=ws.project_path)
+    data = _terminal_dict(term)
+    await ctx.broadcast_event("terminal_created", data)
+    return data
+
+
+@workspace_rpc.method("terminal.list")
+async def handle_terminal_list(params: dict, ctx: RpcContext) -> list[dict]:
+    """列出 workspace 下的所有终端"""
+    tm = ctx.managers.get("terminal_manager")
+    if not tm:
+        return []
+    return [_terminal_dict(t) for t in tm.list_by_workspace(ctx.workspace_id)]
+
+
+@workspace_rpc.method("terminal.delete")
+async def handle_terminal_delete(params: dict, ctx: RpcContext) -> dict:
+    """删除终端"""
+    tm = ctx.managers.get("terminal_manager")
+    if not tm:
+        return {"error": "terminal_manager not available"}
+    term_id = params.get("term_id", "")
+    if not tm.has(term_id):
+        return {"error": "terminal not found"}
+    await tm.async_notify_exit(term_id)
+    tm.kill(term_id)
+    await ctx.broadcast_event("terminal_deleted", {"term_id": term_id})
+    return {"status": "killed"}
+
+
+# ---------------------------------------------------------------------------
+# File RPC handlers
+# ---------------------------------------------------------------------------
+
+@workspace_rpc.method("file.read")
+async def handle_file_read(params: dict, ctx: RpcContext) -> dict:
+    """读取文件内容"""
+    wm = ctx.managers.get("workspace_manager")
+    if not wm:
+        return {"error": "workspace_manager not available"}
+    ws = wm.get(ctx.workspace_id)
+    if ws is None:
+        return {"error": "workspace not found"}
+
+    file_path = params.get("path", "")
+    if not file_path:
+        return {"error": "missing path"}
+
+    project = Path(ws.project_path).resolve()
+    target = (project / file_path).resolve()
+    if not str(target).startswith(str(project)):
+        return {"error": "path traversal not allowed"}
+    if not target.is_file():
+        return {"error": "file not found"}
+
+    try:
+        content = target.read_text(encoding="utf-8", errors="replace")
+    except Exception as exc:
+        return {"error": str(exc)}
+
+    ext = target.suffix.lower()
+    language = _LANG_MAP.get(ext, "plaintext")
+    return {"path": str(target.relative_to(project)), "content": content, "language": language}
+
+
+# ---------------------------------------------------------------------------
+# Log RPC handlers
+# ---------------------------------------------------------------------------
+
+@workspace_rpc.method("log.query")
+async def handle_log_query(params: dict, ctx: RpcContext) -> dict:
+    """查询内存日志"""
+    store = _get_log_store()
+    if store is None:
+        return {"entries": [], "total": 0}
+    pattern = params.get("pattern", "")
+    level = params.get("level", "DEBUG")
+    limit = params.get("limit", 50)
+    entries = store.query(pattern=pattern, level=level, limit=limit)
+    return {
+        "total": store.count(),
+        "returned": len(entries),
+        "entries": [
+            {
+                "timestamp": e.timestamp,
+                "level": e.level,
+                "logger": e.logger_name,
+                "message": e.message,
+            }
+            for e in entries
+        ],
+    }
 
 
 def _get_managers():
@@ -137,37 +441,7 @@ async def auth_login(body: dict[str, Any]):
 
 
 # ---------------------------------------------------------------------------
-# Log query endpoint
-# ---------------------------------------------------------------------------
-
-@router.get("/api/logs")
-async def query_logs(
-    pattern: str = Query("", description="Regex pattern to match against message"),
-    level: str = Query("DEBUG", description="Minimum log level (DEBUG/INFO/WARNING/ERROR)"),
-    limit: int = Query(50, description="Maximum number of entries to return", ge=1, le=500),
-):
-    """Query in-memory log entries (newest first)."""
-    store = _get_log_store()
-    if store is None:
-        return {"entries": [], "total": 0}
-    entries = store.query(pattern=pattern, level=level, limit=limit)
-    return {
-        "total": store.count(),
-        "returned": len(entries),
-        "entries": [
-            {
-                "timestamp": e.timestamp,
-                "level": e.level,
-                "logger": e.logger_name,
-                "message": e.message,
-            }
-            for e in entries
-        ],
-    }
-
-
-# ---------------------------------------------------------------------------
-# Workspace endpoints
+# Workspace endpoints (REST — 仅保留 WS 连接前必需的接口)
 # ---------------------------------------------------------------------------
 
 @router.get("/api/workspaces")
@@ -183,121 +457,6 @@ async def create_workspace(body: dict[str, Any]):
     project_path = body.get("project_path", ".")
     ws = wm.create(name, project_path)
     return _workspace_dict(ws)
-
-
-@router.get("/api/workspaces/{workspace_id}")
-async def get_workspace(workspace_id: str):
-    wm, _ = _get_managers()
-    ws = wm.get(workspace_id)
-    if ws is None:
-        return {"error": "workspace not found"}, 404
-    return _workspace_dict(ws)
-
-
-@router.put("/api/workspaces/{workspace_id}")
-async def update_workspace(workspace_id: str, body: dict[str, Any]):
-    wm, _ = _get_managers()
-    ws = wm.get(workspace_id)
-    if ws is None:
-        return {"error": "workspace not found"}, 404
-    if "layout" in body:
-        ws.layout = body["layout"]
-    wm.update(ws)
-    return _workspace_dict(ws)
-
-
-# ---------------------------------------------------------------------------
-# Session endpoints
-# ---------------------------------------------------------------------------
-
-@router.post("/api/workspaces/{workspace_id}/sessions")
-async def create_session(workspace_id: str, body: dict[str, Any] | None = None):
-    wm, sm = _get_managers()
-    ws = wm.get(workspace_id)
-    if ws is None:
-        return JSONResponse({"error": "workspace not found"}, status_code=404)
-
-    body = body or {}
-    session_type = body.get("type", "agent")
-    config = body.get("config")
-
-    # For terminal sessions, create a PTY and store terminal_id in config
-    if session_type == "terminal":
-        tm = _get_terminal_manager()
-        if tm is None:
-            return JSONResponse({"error": "terminal manager not available"}, status_code=503)
-        shell_command = (config or {}).get("shell_command", "cmd.exe")
-        rows = body.get("rows", 24)
-        cols = body.get("cols", 80)
-        term = tm.create(workspace_id, rows, cols, cwd=ws.project_path)
-        config = config or {}
-        config["terminal_id"] = term.id
-        config.setdefault("shell_command", shell_command)
-
-    session = sm.create(workspace_id, session_type=session_type, config=config)
-    ws.sessions.append(session.id)
-    wm.update(ws)
-    return _session_dict(session)
-
-
-@router.get("/api/workspaces/{workspace_id}/sessions")
-async def list_sessions(workspace_id: str):
-    _, sm = _get_managers()
-    return [_session_dict(s) for s in sm.list_by_workspace(workspace_id)]
-
-
-@router.get("/api/sessions/{session_id}")
-async def get_session(session_id: str):
-    _, sm = _get_managers()
-    session = sm.get(session_id)
-    if session is None:
-        return {"error": "session not found"}, 404
-    return _session_dict(session)
-
-
-@router.get("/api/sessions/{session_id}/events")
-async def get_session_events(session_id: str):
-    """Return persisted events for frontend replay."""
-    _, sm = _get_managers()
-    session = sm.get(session_id)
-    if session is None:
-        return JSONResponse({"error": "session not found"}, status_code=404)
-    events = sm.get_session_events(session_id)
-    return {"session_id": session_id, "events": events}
-
-
-@router.post("/api/sessions/{session_id}/stop")
-async def stop_session(session_id: str):
-    _, sm = _get_managers()
-    await sm.stop(session_id)
-    return {"status": "stopped"}
-
-
-@router.delete("/api/sessions/{session_id}")
-async def delete_session(session_id: str):
-    _, sm = _get_managers()
-    await sm.stop(session_id)
-    if not sm.delete(session_id):
-        return JSONResponse({"error": "session not found"}, status_code=404)
-    return {"status": "deleted"}
-
-
-@router.patch("/api/sessions/{session_id}")
-async def update_session(session_id: str, body: dict[str, Any]):
-    _, sm = _get_managers()
-    fields: dict[str, Any] = {}
-    if "title" in body:
-        fields["title"] = body["title"]
-    if "config" in body:
-        fields["config"] = body["config"]
-    if "status" in body:
-        fields["status"] = body["status"]
-    if not fields:
-        return JSONResponse({"error": "no updatable fields"}, status_code=400)
-    session = sm.update(session_id, **fields)
-    if session is None:
-        return JSONResponse({"error": "session not found"}, status_code=404)
-    return _session_dict(session)
 
 
 # ---------------------------------------------------------------------------
@@ -372,7 +531,7 @@ async def websocket_session(websocket: WebSocket, session_id: str):
 
 
 # ---------------------------------------------------------------------------
-# Terminal endpoints
+# Terminal WebSocket handler
 # ---------------------------------------------------------------------------
 
 def _terminal_dict(t) -> dict[str, Any]:
@@ -383,44 +542,6 @@ def _terminal_dict(t) -> dict[str, Any]:
         "cols": t.cols,
         "alive": t.alive,
     }
-
-
-@router.post("/api/workspaces/{workspace_id}/terminals")
-async def create_terminal_endpoint(workspace_id: str, body: dict[str, Any]):
-    wm, _ = _get_managers()
-    ws = wm.get(workspace_id)
-    if ws is None:
-        return JSONResponse({"error": "workspace not found"}, status_code=404)
-    tm = _get_terminal_manager()
-    if tm is None:
-        return JSONResponse({"error": "terminal manager not available"}, status_code=503)
-    rows = body.get("rows", 24)
-    cols = body.get("cols", 80)
-    term = tm.create(workspace_id, rows, cols, cwd=ws.project_path)
-    return _terminal_dict(term)
-
-
-@router.get("/api/workspaces/{workspace_id}/terminals")
-async def list_terminals(workspace_id: str):
-    wm, _ = _get_managers()
-    ws = wm.get(workspace_id)
-    if ws is None:
-        return JSONResponse({"error": "workspace not found"}, status_code=404)
-    tm = _get_terminal_manager()
-    if tm is None:
-        return []
-    return [_terminal_dict(t) for t in tm.list_by_workspace(workspace_id)]
-
-
-@router.delete("/api/terminals/{term_id}")
-async def delete_terminal(term_id: str):
-    tm = _get_terminal_manager()
-    if tm is None or not tm.has(term_id):
-        return JSONResponse({"error": "terminal not found"}, status_code=404)
-    # Send 0x04 exit signal before killing (awaited for reliable delivery)
-    await tm.async_notify_exit(term_id)
-    tm.kill(term_id)
-    return {"status": "killed"}
 
 
 @router.websocket("/ws/terminal/{term_id}")
@@ -568,32 +689,6 @@ _LANG_MAP = {
 }
 
 
-@router.get("/api/workspaces/{workspace_id}/file")
-async def read_file(workspace_id: str, path: str = Query(..., description="Relative file path")):
-    wm, _ = _get_managers()
-    ws = wm.get(workspace_id)
-    if ws is None:
-        return JSONResponse({"error": "workspace not found"}, status_code=404)
-
-    # Resolve and verify path is within project
-    project = Path(ws.project_path).resolve()
-    target = (project / path).resolve()
-    if not str(target).startswith(str(project)):
-        return JSONResponse({"error": "path traversal not allowed"}, status_code=403)
-    if not target.is_file():
-        return JSONResponse({"error": "file not found"}, status_code=404)
-
-    try:
-        content = target.read_text(encoding="utf-8", errors="replace")
-    except Exception as exc:
-        return JSONResponse({"error": str(exc)}, status_code=500)
-
-    ext = target.suffix.lower()
-    language = _LANG_MAP.get(ext, "plaintext")
-
-    return {"path": str(target.relative_to(project)), "content": content, "language": language}
-
-
 # ---------------------------------------------------------------------------
 # Workspace WebSocket RPC endpoint
 # ---------------------------------------------------------------------------
@@ -628,6 +723,7 @@ async def websocket_workspace(websocket: WebSocket, workspace_id: str):
             "session_manager": sm,
             "terminal_manager": _get_terminal_manager(),
         },
+        sender_ws=websocket,
     )
 
     try:

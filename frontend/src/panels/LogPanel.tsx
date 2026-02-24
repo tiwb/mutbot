@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { fetchLogs } from "../lib/api";
+import type { WorkspaceRpc } from "../lib/workspace-rpc";
 
 interface LogEntry {
   timestamp: string;
@@ -11,7 +11,7 @@ interface LogEntry {
 const MAX_ENTRIES = 2000;
 const LEVELS = ["DEBUG", "INFO", "WARNING", "ERROR"] as const;
 
-export default function LogPanel() {
+export default function LogPanel({ rpc }: { rpc?: WorkspaceRpc | null }) {
   const [entries, setEntries] = useState<LogEntry[]>([]);
   const [levelFilter, setLevelFilter] = useState<string>("DEBUG");
   const [search, setSearch] = useState("");
@@ -19,12 +19,13 @@ export default function LogPanel() {
   const listRef = useRef<HTMLDivElement>(null);
   const wsRef = useRef<WebSocket | null>(null);
 
-  // Load initial entries
+  // Load initial entries via RPC
   useEffect(() => {
-    fetchLogs("", "DEBUG", 200).then((data: { entries: LogEntry[] }) => {
+    if (!rpc) return;
+    rpc.call<{ entries: LogEntry[] }>("log.query", { pattern: "", level: "DEBUG", limit: 200 }).then((data) => {
       setEntries(data.entries.reverse());
-    });
-  }, []);
+    }).catch(() => {});
+  }, [rpc]);
 
   // WebSocket for real-time streaming
   useEffect(() => {

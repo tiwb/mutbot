@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ReconnectingWebSocket } from "../lib/websocket";
-import { fetchSessionEvents, getAuthToken } from "../lib/api";
+import { getAuthToken } from "../lib/api";
+import type { WorkspaceRpc } from "../lib/workspace-rpc";
 import { rlog, setLogSocket } from "../lib/remote-log";
 import MessageList, { type ChatMessage } from "../components/MessageList";
 import ChatInput from "../components/ChatInput";
@@ -14,9 +15,10 @@ const pendingTextCache = new Map<string, string>();
 
 interface Props {
   sessionId: string;
+  rpc?: WorkspaceRpc | null;
 }
 
-export default function AgentPanel({ sessionId }: Props) {
+export default function AgentPanel({ sessionId, rpc }: Props) {
   const [messages, setMessages] = useState<ChatMessage[]>(
     () => messageCache.get(sessionId) ?? [],
   );
@@ -206,16 +208,18 @@ export default function AgentPanel({ sessionId }: Props) {
           // If no cached messages, load history from server
           if (!hadCache && !replayedRef.current.has(sessionId)) {
             replayedRef.current.add(sessionId);
-            fetchSessionEvents(sessionId).then((result) => {
-              if (result.events && result.events.length > 0) {
-                if (DEBUG) rlog.debug("Replaying", result.events.length, "events from history");
-                for (const event of result.events) {
-                  handleEvent(event);
+            if (rpc) {
+              rpc.call<{ session_id: string; events: Record<string, unknown>[] }>("session.events", { session_id: sessionId }).then((result) => {
+                if (result.events && result.events.length > 0) {
+                  if (DEBUG) rlog.debug("Replaying", result.events.length, "events from history");
+                  for (const event of result.events) {
+                    handleEvent(event);
+                  }
                 }
-              }
-            }).catch((err) => {
-              if (DEBUG) rlog.error("Failed to fetch session events:", String(err));
-            });
+              }).catch((err) => {
+                if (DEBUG) rlog.error("Failed to fetch session events:", String(err));
+              });
+            }
           }
         },
         onClose: () => {

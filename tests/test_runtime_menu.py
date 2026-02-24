@@ -385,16 +385,34 @@ class TestMenuRpcHandlers:
     async def test_menu_execute_handler(self):
         from mutbot.web.routes import workspace_rpc
 
+        class FakeSession:
+            id = "new_session_id"
+            workspace_id = "ws_1"
+            title = "Agent 1"
+            type = "agent"
+            status = "active"
+            created_at = ""
+            updated_at = ""
+            config = {}
+
         class FakeSessionManager:
             def create(self, workspace_id, session_type, config=None):
-                class FakeSession:
-                    id = "new_session_id"
-                    title = "Agent 1"
                 return FakeSession()
+
+            def get(self, session_id):
+                if session_id == "new_session_id":
+                    return FakeSession()
+                return None
+
+        broadcast_events = []
+
+        async def capture_broadcast(data: dict) -> None:
+            broadcast_events.append(data)
 
         ctx = _make_context(
             workspace_id="ws_1",
             managers={"session_manager": FakeSessionManager()},
+            broadcast=capture_broadcast,
         )
 
         menu_id = _menu_id(AddSessionMenu)
@@ -413,6 +431,13 @@ class TestMenuRpcHandlers:
         result = resp["result"]
         assert result["action"] == "session_created"
         assert result["data"]["session_id"] == "new_session_id"
+
+        # 验证广播了 session_created 事件
+        assert len(broadcast_events) == 1
+        evt = broadcast_events[0]
+        assert evt["type"] == "event"
+        assert evt["event"] == "session_created"
+        assert evt["data"]["id"] == "new_session_id"
 
     @pytest.mark.asyncio
     async def test_menu_execute_missing_menu_id(self):
@@ -451,3 +476,163 @@ class TestMenuRpcHandlers:
         from mutbot.web.routes import workspace_rpc
         assert "menu.query" in workspace_rpc.methods
         assert "menu.execute" in workspace_rpc.methods
+
+
+# ---------------------------------------------------------------------------
+# 新属性测试 (Phase 7)
+# ---------------------------------------------------------------------------
+
+class TestMenuNewAttributes:
+
+    def test_menu_default_new_attributes(self):
+        """Menu 基类的新属性默认值"""
+        assert _get_attr_default(Menu, "display_shortcut") == ""
+        assert _get_attr_default(Menu, "client_action") == ""
+
+    def test_check_enabled_default_returns_none(self):
+        assert Menu.check_enabled({}) is None
+
+    def test_check_visible_default_returns_none(self):
+        assert Menu.check_visible({}) is None
+
+
+# ---------------------------------------------------------------------------
+# Tab/Context 菜单测试
+# ---------------------------------------------------------------------------
+
+class TestTabContextMenus:
+
+    def test_rename_session_menu_attributes(self):
+        from mutbot.runtime.menu import RenameSessionMenu
+        assert _get_attr_default(RenameSessionMenu, "display_name") == "Rename"
+        assert _get_attr_default(RenameSessionMenu, "display_category") == "Tab/Context"
+        assert _get_attr_default(RenameSessionMenu, "display_shortcut") == "F2"
+        assert _get_attr_default(RenameSessionMenu, "client_action") == "start_rename"
+
+    def test_close_tab_menu_attributes(self):
+        from mutbot.runtime.menu import CloseTabMenu
+        assert _get_attr_default(CloseTabMenu, "display_name") == "Close"
+        assert _get_attr_default(CloseTabMenu, "client_action") == "close_tab"
+
+    def test_close_others_menu_attributes(self):
+        from mutbot.runtime.menu import CloseOthersMenu
+        assert _get_attr_default(CloseOthersMenu, "display_name") == "Close Others"
+        assert _get_attr_default(CloseOthersMenu, "client_action") == "close_others"
+
+    def test_end_session_menu_check_enabled_active(self):
+        from mutbot.runtime.menu import EndSessionMenu
+        assert EndSessionMenu.check_enabled({"session_status": "active"}) is True
+
+    def test_end_session_menu_check_enabled_ended(self):
+        from mutbot.runtime.menu import EndSessionMenu
+        assert EndSessionMenu.check_enabled({"session_status": "ended"}) is False
+
+    def test_end_session_menu_check_enabled_no_status(self):
+        from mutbot.runtime.menu import EndSessionMenu
+        assert EndSessionMenu.check_enabled({}) is None
+
+    def test_tab_context_discovery(self):
+        menus = menu_registry.get_by_category("Tab/Context")
+        names = [c.__name__ for c in menus]
+        assert "RenameSessionMenu" in names
+        assert "CloseTabMenu" in names
+        assert "CloseOthersMenu" in names
+        assert "EndSessionMenu" in names
+
+    def test_tab_context_query(self):
+        ctx = _make_context()
+        result = menu_registry.query("Tab/Context", ctx)
+        assert len(result) >= 4
+        names = [it["name"] for it in result]
+        assert "Rename" in names
+        assert "Close" in names
+
+    def test_tab_context_query_with_shortcut(self):
+        ctx = _make_context()
+        result = menu_registry.query("Tab/Context", ctx)
+        rename_item = next(it for it in result if it["name"] == "Rename")
+        assert rename_item.get("shortcut") == "F2"
+
+    def test_tab_context_query_with_client_action(self):
+        ctx = _make_context()
+        result = menu_registry.query("Tab/Context", ctx)
+        close_item = next(it for it in result if it["name"] == "Close")
+        assert close_item.get("client_action") == "close_tab"
+
+
+# ---------------------------------------------------------------------------
+# SessionList/Context 菜单测试
+# ---------------------------------------------------------------------------
+
+class TestSessionListContextMenus:
+
+    def test_rename_session_list_menu_attributes(self):
+        from mutbot.runtime.menu import RenameSessionListMenu
+        assert _get_attr_default(RenameSessionListMenu, "display_name") == "Rename"
+        assert _get_attr_default(RenameSessionListMenu, "display_category") == "SessionList/Context"
+        assert _get_attr_default(RenameSessionListMenu, "client_action") == "start_rename"
+
+    def test_end_session_list_menu_check_enabled(self):
+        from mutbot.runtime.menu import EndSessionListMenu
+        assert EndSessionListMenu.check_enabled({"session_status": "active"}) is True
+        assert EndSessionListMenu.check_enabled({"session_status": "ended"}) is False
+
+    def test_delete_session_menu_attributes(self):
+        from mutbot.runtime.menu import DeleteSessionMenu
+        assert _get_attr_default(DeleteSessionMenu, "display_name") == "Delete"
+        assert _get_attr_default(DeleteSessionMenu, "display_category") == "SessionList/Context"
+
+    def test_session_list_context_discovery(self):
+        menus = menu_registry.get_by_category("SessionList/Context")
+        names = [c.__name__ for c in menus]
+        assert "RenameSessionListMenu" in names
+        assert "EndSessionListMenu" in names
+        assert "DeleteSessionMenu" in names
+
+    def test_session_list_context_query(self):
+        ctx = _make_context()
+        result = menu_registry.query("SessionList/Context", ctx)
+        assert len(result) >= 3
+        names = [it["name"] for it in result]
+        assert "Rename" in names
+        assert "End Session" in names
+        assert "Delete" in names
+
+    def test_session_list_context_sorted_by_order(self):
+        ctx = _make_context()
+        result = menu_registry.query("SessionList/Context", ctx)
+        orders = [it["order"] for it in result]
+        assert orders == sorted(orders)
+
+
+# ---------------------------------------------------------------------------
+# MenuItem 新字段序列化测试
+# ---------------------------------------------------------------------------
+
+class TestMenuItemNewFields:
+
+    def test_item_with_shortcut(self):
+        item = MenuItem(id="t1", name="Test", shortcut="Ctrl+S")
+        d = _item_to_dict(item)
+        assert d["shortcut"] == "Ctrl+S"
+
+    def test_item_without_shortcut(self):
+        item = MenuItem(id="t1", name="Test")
+        d = _item_to_dict(item)
+        assert "shortcut" not in d
+
+    def test_item_with_client_action(self):
+        item = MenuItem(id="t1", name="Test", client_action="do_something")
+        d = _item_to_dict(item)
+        assert d["client_action"] == "do_something"
+
+    def test_item_without_client_action(self):
+        item = MenuItem(id="t1", name="Test")
+        d = _item_to_dict(item)
+        assert "client_action" not in d
+
+    def test_item_with_both_new_fields(self):
+        item = MenuItem(id="t1", name="Test", shortcut="F2", client_action="rename")
+        d = _item_to_dict(item)
+        assert d["shortcut"] == "F2"
+        assert d["client_action"] == "rename"

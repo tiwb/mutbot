@@ -22,12 +22,19 @@ class ConnectionManager:
             if not conns:
                 del self._connections[session_id]
 
-    async def broadcast(self, session_id: str, data: dict) -> None:
+    async def broadcast(
+        self,
+        session_id: str,
+        data: dict,
+        exclude: WebSocket | None = None,
+    ) -> None:
         conns = self._connections.get(session_id)
         if not conns:
             return
         dead = []
         for ws in conns:
+            if ws is exclude:
+                continue
             try:
                 await ws.send_json(data)
             except Exception:

@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import ContextMenu, { type ContextMenuItem } from "../components/ContextMenu";
+import RpcMenu, { type MenuExecResult } from "../components/RpcMenu";
+import type { WorkspaceRpc } from "../lib/workspace-rpc";
 
 interface Session {
   id: string;
@@ -11,6 +12,7 @@ interface Session {
 interface Props {
   sessions: Session[];
   activeSessionId: string | null;
+  rpc: WorkspaceRpc | null;
   onSelect: (id: string) => void;
   onModeChange?: (collapsed: boolean) => void;
   onCloseSession?: (id: string) => void;
@@ -60,10 +62,9 @@ const STORAGE_KEY = "mutbot-sidebar-collapsed";
 export default function SessionListPanel({
   sessions,
   activeSessionId,
+  rpc,
   onSelect,
   onModeChange,
-  onCloseSession,
-  onDeleteSession,
   onRenameSession,
 }: Props) {
   const [collapsed, setCollapsed] = useState(() => {
@@ -139,27 +140,24 @@ export default function SessionListPanel({
     setRenameValue("");
   }, []);
 
-  // Build context menu items for a session
-  const getContextMenuItems = useCallback((sessionId: string): ContextMenuItem[] => {
-    const session = sessions.find((s) => s.id === sessionId);
-    if (!session) return [];
-    return [
-      {
-        label: "Rename",
-        onClick: () => startRename(sessionId),
-      },
-      {
-        label: "End Session",
-        disabled: session.status === "ended",
-        onClick: () => onCloseSession?.(sessionId),
-      },
-      { label: "", separator: true },
-      {
-        label: "Delete",
-        onClick: () => onDeleteSession?.(sessionId),
-      },
-    ];
-  }, [sessions, onCloseSession, onDeleteSession, startRename]);
+  // Handle client_action from RpcMenu
+  const handleClientAction = useCallback((action: string, _data: Record<string, unknown>) => {
+    if (!contextMenu) return;
+    if (action === "start_rename") {
+      startRename(contextMenu.sessionId);
+    }
+  }, [contextMenu, startRename]);
+
+  // Handle menu.execute results from RpcMenu
+  // 状态更新由 App.tsx 的 event handler 统一处理，无需额外操作
+  const handleMenuResult = useCallback((_result: MenuExecResult) => {
+    // no-op: broadcast event handler 统一更新状态
+  }, []);
+
+  // Resolve context menu session for RpcMenu context
+  const contextSession = contextMenu
+    ? sessions.find((s) => s.id === contextMenu.sessionId)
+    : null;
 
   // Sort: active sessions first, then ended
   const sorted = [...sessions].sort((a, b) => {
@@ -199,10 +197,18 @@ export default function SessionListPanel({
           ))}
         </div>
         {contextMenu && (
-          <ContextMenu
-            items={getContextMenuItems(contextMenu.sessionId)}
+          <RpcMenu
+            rpc={rpc}
+            category="SessionList/Context"
+            context={{
+              session_id: contextSession?.id ?? "",
+              session_type: contextSession?.type ?? "",
+              session_status: contextSession?.status ?? "",
+            }}
             position={contextMenu.position}
             onClose={closeContextMenu}
+            onResult={handleMenuResult}
+            onClientAction={handleClientAction}
           />
         )}
       </div>
@@ -259,10 +265,18 @@ export default function SessionListPanel({
         </ul>
       </div>
       {contextMenu && (
-        <ContextMenu
-          items={getContextMenuItems(contextMenu.sessionId)}
+        <RpcMenu
+          rpc={rpc}
+          category="SessionList/Context"
+          context={{
+            session_id: contextSession?.id ?? "",
+            session_type: contextSession?.type ?? "",
+            session_status: contextSession?.status ?? "",
+          }}
           position={contextMenu.position}
           onClose={closeContextMenu}
+          onResult={handleMenuResult}
+          onClientAction={handleClientAction}
         />
       )}
     </div>
