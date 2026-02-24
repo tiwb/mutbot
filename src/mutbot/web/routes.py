@@ -13,11 +13,49 @@ from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
 
 from mutbot.web.connection import ConnectionManager
+from mutbot.web.rpc import RpcDispatcher, RpcContext, make_event
+from mutbot.runtime.menu import menu_registry, MenuResult
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
 connection_manager = ConnectionManager()
+workspace_connection_manager = ConnectionManager()
+
+# Workspace RPC dispatcher
+workspace_rpc = RpcDispatcher()
+
+
+# ---------------------------------------------------------------------------
+# Menu RPC handlers
+# ---------------------------------------------------------------------------
+
+@workspace_rpc.method("menu.query")
+async def handle_menu_query(params: dict, ctx: RpcContext) -> list[dict]:
+    """查询指定 category 的菜单项列表"""
+    category = params.get("category", "")
+    return menu_registry.query(category, ctx)
+
+
+@workspace_rpc.method("menu.execute")
+async def handle_menu_execute(params: dict, ctx: RpcContext) -> dict:
+    """执行指定菜单项"""
+    menu_id = params.get("menu_id", "")
+    if not menu_id:
+        return {"error": "missing menu_id"}
+
+    menu_cls = menu_registry.find_menu_class(menu_id)
+    if menu_cls is None:
+        return {"error": f"menu not found: {menu_id}"}
+
+    menu_instance = menu_cls()
+    execute_params = params.get("params", {})
+    result = menu_instance.execute(execute_params, ctx)
+
+    # 返回 MenuResult 的序列化形式
+    if isinstance(result, MenuResult):
+        return {"action": result.action, "data": result.data}
+    return result if isinstance(result, dict) else {}
 
 
 def _get_managers():
@@ -434,8 +472,9 @@ async def websocket_terminal(websocket: WebSocket, term_id: str):
     if rows_param > 0 and cols_param > 0:
         tm.resize(term_id, rows_param, cols_param)
 
-    # Now attach as I/O channel for live output
-    tm.attach(term_id, websocket, loop)
+    # Bind WebSocket → TerminalManager via callback
+    client_id = id(websocket)
+    tm.attach(term_id, str(client_id), websocket.send_bytes, loop)
 
     try:
         while True:
@@ -471,7 +510,7 @@ async def websocket_terminal(websocket: WebSocket, term_id: str):
         logger.exception("Terminal WS error: term=%s", term_id)
     finally:
         # Detach only — PTY stays alive for reconnection
-        tm.detach(term_id, websocket)
+        tm.detach(term_id, str(client_id))
 
 
 # ---------------------------------------------------------------------------
@@ -553,3 +592,53 @@ async def read_file(workspace_id: str, path: str = Query(..., description="Relat
     language = _LANG_MAP.get(ext, "plaintext")
 
     return {"path": str(target.relative_to(project)), "content": content, "language": language}
+
+
+# ---------------------------------------------------------------------------
+# Workspace WebSocket RPC endpoint
+# ---------------------------------------------------------------------------
+
+@router.websocket("/ws/workspace/{workspace_id}")
+async def websocket_workspace(websocket: WebSocket, workspace_id: str):
+    """Workspace 级 WebSocket：承载 RPC 调用和服务端事件推送。
+
+    消息格式：
+    - 请求: { "type": "rpc", "id": str, "method": str, "params": dict }
+    - 响应: { "type": "rpc_result", "id": str, "result": Any }
+    - 错误: { "type": "rpc_error", "id": str, "error": { "code": int, "message": str } }
+    - 推送: { "type": "event", "event": str, "data": dict }
+    """
+    wm, sm = _get_managers()
+    ws = wm.get(workspace_id)
+    if ws is None:
+        await websocket.close(code=4004, reason="workspace not found")
+        return
+
+    await workspace_connection_manager.connect(workspace_id, websocket)
+    logger.info("Workspace WS connected: workspace=%s", workspace_id)
+
+    async def broadcast(data: dict) -> None:
+        await workspace_connection_manager.broadcast(workspace_id, data)
+
+    context = RpcContext(
+        workspace_id=workspace_id,
+        broadcast=broadcast,
+        managers={
+            "workspace_manager": wm,
+            "session_manager": sm,
+            "terminal_manager": _get_terminal_manager(),
+        },
+    )
+
+    try:
+        while True:
+            raw = await websocket.receive_json()
+            response = await workspace_rpc.dispatch(raw, context)
+            if response is not None:
+                await websocket.send_json(response)
+    except WebSocketDisconnect:
+        logger.info("Workspace WS disconnected: workspace=%s", workspace_id)
+    except Exception:
+        logger.exception("Workspace WS error: workspace=%s", workspace_id)
+    finally:
+        workspace_connection_manager.disconnect(workspace_id, websocket)

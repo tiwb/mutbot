@@ -1,4 +1,8 @@
-"""Session manager — session lifecycle, Agent assembly, and persistence."""
+"""Session manager — session lifecycle, Agent assembly, and persistence.
+
+Session 采用 mutobj.Declaration 体系，通过子类定义不同的 Session 类型。
+Runtime 状态（agent、bridge 等）采用分离模式，由 SessionManager 内部维护。
+"""
 
 from __future__ import annotations
 
@@ -6,56 +10,141 @@ import asyncio
 import logging
 import queue
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import mutobj
 from mutagent.agent import Agent
 from mutagent.client import LLMClient
 from mutagent.config import Config
 from mutagent.messages import Message, ToolCall, ToolResult
 from mutagent.tools import ToolSet
 
-from mutbot import storage
+from mutbot.runtime import storage
 from mutbot.web.agent_bridge import AgentBridge, WebUserIO
 from mutbot.web.serializers import serialize_message
 
 logger = logging.getLogger(__name__)
 
 
-@dataclass
-class Session:
+# ---------------------------------------------------------------------------
+# Session Declaration 体系
+# ---------------------------------------------------------------------------
+
+class Session(mutobj.Declaration):
+    """所有 Session 的基类"""
+
     id: str
     workspace_id: str
     title: str
-    type: str = "agent"  # "agent" / "terminal" / "document"
-    status: str = "active"  # "active" / "ended"
+    type: str = ""
+    status: str = "active"
     created_at: str = ""
     updated_at: str = ""
-    config: dict[str, Any] | None = None  # type-specific config
+    config: dict = mutobj.field(default_factory=dict)
     deleted: bool = False
-    # Runtime (not serialized)
-    agent: Agent | None = field(default=None, repr=False)
-    bridge: AgentBridge | None = field(default=None, repr=False)
+
+    def serialize(self) -> dict:
+        """序列化为可持久化的 dict"""
+        return {
+            "id": self.id,
+            "workspace_id": self.workspace_id,
+            "title": self.title,
+            "type": self.type,
+            "status": self.status,
+            "created_at": self.created_at,
+            "updated_at": self.updated_at,
+            "config": self.config,
+            "deleted": self.deleted,
+        }
 
 
-def _session_to_dict(s: Session, include_messages: bool = False) -> dict:
-    d = {
-        "id": s.id,
-        "workspace_id": s.workspace_id,
-        "title": s.title,
-        "type": s.type,
-        "status": s.status,
-        "created_at": s.created_at,
-        "updated_at": s.updated_at,
-        "config": s.config,
-        "deleted": s.deleted,
-    }
-    if include_messages and s.agent and s.agent.messages:
-        d["messages"] = [serialize_message(m) for m in s.agent.messages]
-    return d
+class AgentSession(Session):
+    """Agent 对话 Session"""
 
+    type: str = "agent"
+    model: str = ""
+    system_prompt: str = ""
+
+
+class TerminalSession(Session):
+    """终端 Session"""
+
+    type: str = "terminal"
+
+
+class DocumentSession(Session):
+    """文档编辑 Session"""
+
+    type: str = "document"
+    file_path: str = ""
+    language: str = ""
+
+
+# ---------------------------------------------------------------------------
+# Session 类型注册表（基于 mutobj 子类发现 API）
+# ---------------------------------------------------------------------------
+
+_type_map_cache: dict[str, type[Session]] = {}
+_type_map_generation: int = -1
+
+
+def _get_type_default(cls: type) -> str:
+    """从 Declaration 子类的 'type' 属性描述符中读取默认值"""
+    for klass in cls.__mro__:
+        desc = klass.__dict__.get("type")
+        if desc is not None and hasattr(desc, "has_default") and desc.has_default:
+            val = desc.default
+            if isinstance(val, str) and val:
+                return val
+    return ""
+
+
+def get_session_type_map() -> dict[str, type[Session]]:
+    """返回 type_name → Session 子类映射，注册表变化时自动刷新"""
+    global _type_map_cache, _type_map_generation
+    gen = mutobj.get_registry_generation()
+    if gen != _type_map_generation:
+        _type_map_generation = gen
+        _type_map_cache = {}
+        for cls in mutobj.discover_subclasses(Session):
+            type_name = _get_type_default(cls)
+            if type_name:
+                _type_map_cache[type_name] = cls
+    return _type_map_cache
+
+
+def get_session_class(type_name: str) -> type[Session]:
+    """通过类型名查找 Session 子类"""
+    type_map = get_session_type_map()
+    cls = type_map.get(type_name)
+    if cls is None:
+        raise ValueError(f"Unknown session type: {type_name!r}")
+    return cls
+
+
+# ---------------------------------------------------------------------------
+# Session Runtime 状态（分离模式）
+# ---------------------------------------------------------------------------
+
+@dataclass
+class SessionRuntime:
+    """Session 的 runtime 状态基类（不参与序列化）"""
+    pass
+
+
+@dataclass
+class AgentSessionRuntime(SessionRuntime):
+    """Agent Session 的 runtime 状态"""
+    agent: Agent | None = None
+    bridge: AgentBridge | None = None
+
+
+# ---------------------------------------------------------------------------
+# 辅助函数
+# ---------------------------------------------------------------------------
 
 def _deserialize_message(d: dict) -> Message:
     """Reconstruct a Message from a serialized dict."""
@@ -76,6 +165,24 @@ def _deserialize_message(d: dict) -> Message:
         content=d.get("content", ""),
         tool_calls=tool_calls,
         tool_results=tool_results,
+    )
+
+
+def _session_from_dict(data: dict) -> Session:
+    """从持久化 dict 重建对应子类的 Session 实例"""
+    session_type = data.get("type", "agent")
+    type_map = get_session_type_map()
+    cls = type_map.get(session_type, Session)
+    return cls(
+        id=data["id"],
+        workspace_id=data.get("workspace_id", ""),
+        title=data.get("title", ""),
+        type=session_type,
+        status=data.get("status", "ended"),
+        created_at=data.get("created_at", ""),
+        updated_at=data.get("updated_at", ""),
+        config=data.get("config") or {},
+        deleted=data.get("deleted", False),
     )
 
 
@@ -178,38 +285,52 @@ def create_agent(
     return agent
 
 
+# ---------------------------------------------------------------------------
+# SessionManager
+# ---------------------------------------------------------------------------
+
 class SessionManager:
-    """Session registry with Agent lifecycle management and persistence."""
+    """Session 注册表，管理 Agent 生命周期和持久化。
+
+    采用分离模式：Session Declaration 只描述配置/元数据，
+    runtime 状态（agent、bridge 等）由 _runtimes 字典维护。
+    """
 
     def __init__(self) -> None:
         self._sessions: dict[str, Session] = {}
+        self._runtimes: dict[str, SessionRuntime] = {}
         # Set by server.py lifespan for log/API recording
         self.session_ts: str = ""
         self.log_dir: Path | None = None
         # Set by server.py lifespan for terminal session management
         self.terminal_manager: Any = None
 
+    # --- Runtime 访问 ---
+
+    def get_runtime(self, session_id: str) -> SessionRuntime | None:
+        return self._runtimes.get(session_id)
+
+    def get_agent_runtime(self, session_id: str) -> AgentSessionRuntime | None:
+        rt = self._runtimes.get(session_id)
+        return rt if isinstance(rt, AgentSessionRuntime) else None
+
+    # --- 持久化 ---
+
     def load_from_disk(self) -> None:
-        """Load all sessions from .mutbot/sessions/*.json (metadata only, no agent)."""
+        """Load all sessions from .mutbot/sessions/*.json (metadata only)."""
         for data in storage.load_all_sessions():
-            session = Session(
-                id=data["id"],
-                workspace_id=data.get("workspace_id", ""),
-                title=data.get("title", ""),
-                type=data.get("type", "agent"),
-                status=data.get("status", "ended"),
-                created_at=data.get("created_at", ""),
-                updated_at=data.get("updated_at", ""),
-                config=data.get("config"),
-                deleted=data.get("deleted", False),
-            )
+            session = _session_from_dict(data)
             self._sessions[session.id] = session
         if self._sessions:
             logger.info("Loaded %d session(s) from disk", len(self._sessions))
 
     def _persist(self, session: Session) -> None:
         """Save session metadata + messages to disk."""
-        data = _session_to_dict(session, include_messages=True)
+        data = session.serialize()
+        # 如果有 agent runtime，一并保存 messages
+        rt = self.get_agent_runtime(session.id)
+        if rt and rt.agent and rt.agent.messages:
+            data["messages"] = [serialize_message(m) for m in rt.agent.messages]
         storage.save_session_metadata(data)
 
     def _load_agent_messages(self, session_id: str) -> list[Message]:
@@ -218,6 +339,8 @@ class SessionManager:
         if not data or "messages" not in data:
             return []
         return [_deserialize_message(m) for m in data["messages"]]
+
+    # --- 事件记录 ---
 
     def record_event(self, session_id: str, event_data: dict) -> None:
         """Append an event to the session's JSONL log.
@@ -237,6 +360,8 @@ class SessionManager:
     def get_session_events(self, session_id: str) -> list[dict]:
         return storage.load_session_events(session_id)
 
+    # --- CRUD ---
+
     def update(self, session_id: str, **fields: Any) -> Session | None:
         """Update session fields (title, config, status, …) and persist."""
         session = self._sessions.get(session_id)
@@ -245,8 +370,6 @@ class SessionManager:
         if "title" in fields:
             session.title = fields["title"]
         if "config" in fields:
-            if session.config is None:
-                session.config = {}
             session.config.update(fields["config"])
         if "status" in fields:
             session.status = fields["status"]
@@ -273,20 +396,22 @@ class SessionManager:
     ) -> Session:
         now = datetime.now(timezone.utc).isoformat()
 
-        # Default title based on type
+        # 查找对应的 Session 子类
+        cls = get_session_class(session_type)
+
+        # 自动生成标题
         type_counts = sum(1 for s in self._sessions.values() if s.type == session_type)
         type_labels = {"agent": "Agent", "terminal": "Terminal", "document": "Document"}
         label = type_labels.get(session_type, session_type.capitalize())
         title = f"{label} {type_counts + 1}"
 
-        session = Session(
+        session = cls(
             id=uuid.uuid4().hex[:12],
             workspace_id=workspace_id,
             title=title,
-            type=session_type,
             created_at=now,
             updated_at=now,
-            config=config,
+            config=config or {},
         )
         self._sessions[session.id] = session
         self._persist(session)
@@ -301,6 +426,8 @@ class SessionManager:
             if s.workspace_id == workspace_id and not s.deleted
         ]
 
+    # --- Agent 生命周期 ---
+
     def start(self, session_id: str, loop: asyncio.AbstractEventLoop, broadcast_fn=None) -> AgentBridge:
         """Assemble Agent + bridge and start the agent thread (agent sessions only).
 
@@ -310,10 +437,13 @@ class SessionManager:
             broadcast_fn: async callable(session_id, data) for event broadcasting.
         """
         session = self._sessions[session_id]
-        if session.type != "agent":
+        if not isinstance(session, AgentSession):
             raise ValueError(f"Cannot start agent bridge for {session.type!r} session")
-        if session.bridge is not None:
-            return session.bridge
+
+        # 如果已有 runtime，返回现有 bridge
+        rt = self.get_agent_runtime(session_id)
+        if rt and rt.bridge is not None:
+            return rt.bridge
 
         # Restore messages from disk if available
         saved_messages = self._load_agent_messages(session_id)
@@ -325,7 +455,6 @@ class SessionManager:
             session_ts=self.session_ts,
             messages=saved_messages if saved_messages else None,
         )
-        session.agent = agent
 
         input_q: queue.Queue = queue.Queue()
 
@@ -343,7 +472,10 @@ class SessionManager:
             session_id, agent, web_userio, loop, broadcast_fn,
             event_recorder=_event_recorder,
         )
-        session.bridge = bridge
+
+        # 存储 runtime 状态
+        self._runtimes[session_id] = AgentSessionRuntime(agent=agent, bridge=bridge)
+
         bridge.start()
         logger.info("Session %s: agent started", session_id)
         return bridge
@@ -353,21 +485,20 @@ class SessionManager:
         if session is None:
             return
 
-        if session.type == "agent":
+        if isinstance(session, AgentSession):
             # Stop agent bridge
-            if session.bridge is not None:
-                await session.bridge.stop()
-                session.bridge = None
-            # Persist final state before clearing agent
+            rt = self.get_agent_runtime(session_id)
+            if rt and rt.bridge is not None:
+                await rt.bridge.stop()
+            # Persist final state before clearing runtime
             self._persist(session)
-            session.agent = None
-        elif session.type == "terminal":
+            self._runtimes.pop(session_id, None)
+        elif isinstance(session, TerminalSession):
             # Kill the associated PTY
             tm = self.terminal_manager
             if tm is not None and session.config:
                 terminal_id = session.config.get("terminal_id")
                 if terminal_id and tm.has(terminal_id):
-                    # Send 0x04 exit signal before killing (awaited for reliable delivery)
                     await tm.async_notify_exit(terminal_id)
                     tm.kill(terminal_id)
         # Document sessions have no runtime resources to clean up

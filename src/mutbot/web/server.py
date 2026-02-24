@@ -14,9 +14,9 @@ from starlette.middleware.base import BaseHTTPMiddleware
 
 from mutagent.runtime.log_store import LogStore, LogStoreHandler, SingleLineFormatter
 
-from mutbot.workspace import WorkspaceManager
-from mutbot.session import SessionManager
-from mutbot.web.terminal import TerminalManager
+from mutbot.runtime.workspace import WorkspaceManager
+from mutbot.runtime.session import SessionManager
+from mutbot.runtime.terminal import TerminalManager
 from mutbot.web.auth import AuthManager
 
 logger = logging.getLogger(__name__)

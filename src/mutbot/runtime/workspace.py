@@ -8,7 +8,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
-from mutbot import storage
+from mutbot.runtime import storage
 
 logger = logging.getLogger(__name__)
 

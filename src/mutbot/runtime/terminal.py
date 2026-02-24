@@ -1,8 +1,12 @@
 """Cross-platform PTY terminal manager with lifecycle decoupling.
 
-PTY processes survive WebSocket disconnects.  Clients attach/detach
+PTY processes survive client disconnects.  Clients attach/detach
 as I/O channels; the PTY is only killed by an explicit ``kill()`` call
 (DELETE API or server shutdown).
+
+Transport 无关：不依赖任何 Web 框架。客户端通过
+``on_output: Callable[[bytes], Awaitable[None]]`` 回调接收输出，
+具体的 WebSocket 绑定在 ``mutbot.web.routes`` 中完成。
 """
 
 from __future__ import annotations
@@ -15,10 +19,12 @@ import sys
 import threading
 import time
 import uuid
+from collections.abc import Awaitable
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from fastapi import WebSocket
+# 输出回调类型：接收原始字节（含协议前缀），异步发送给客户端
+OutputCallback = Callable[[bytes], Awaitable[None]]
 
 logger = logging.getLogger(__name__)
 
@@ -47,17 +53,17 @@ class TerminalSession:
 class TerminalManager:
     """Manage PTY terminal sessions with multi-client support.
 
-    PTY lifetime is decoupled from WebSocket connections:
+    PTY lifetime is decoupled from client connections:
     - ``create()`` spawns a PTY and starts the reader thread.
-    - ``attach()`` registers a WebSocket as an I/O channel.
-    - ``detach()`` removes a WebSocket without killing the PTY.
+    - ``attach()`` registers an output callback as an I/O channel.
+    - ``detach()`` removes a callback without killing the PTY.
     - ``kill()`` explicitly destroys the PTY process.
     """
 
     def __init__(self) -> None:
         self._sessions: dict[str, TerminalSession] = {}
-        # Multi-client: term_id → set of (WebSocket, event_loop) pairs
-        self._connections: dict[str, set[tuple[WebSocket, asyncio.AbstractEventLoop]]] = {}
+        # Multi-client: term_id → {client_id: (on_output, event_loop)}
+        self._connections: dict[str, dict[str, tuple[OutputCallback, asyncio.AbstractEventLoop]]] = {}
 
     # ------------------------------------------------------------------
     # Session lifecycle
@@ -122,24 +128,27 @@ class TerminalManager:
     # Connection management (attach / detach)
     # ------------------------------------------------------------------
 
-    def attach(self, term_id: str, ws: WebSocket, loop: asyncio.AbstractEventLoop) -> None:
-        """Register a WebSocket as an I/O channel for this terminal."""
-        self._connections.setdefault(term_id, set()).add((ws, loop))
-        count = len(self._connections[term_id])
-        logger.info("Terminal %s: attached client (total=%d)", term_id, count)
+    def attach(
+        self,
+        term_id: str,
+        client_id: str,
+        on_output: OutputCallback,
+        loop: asyncio.AbstractEventLoop,
+    ) -> None:
+        """Register an output callback as an I/O channel for this terminal."""
+        conns = self._connections.setdefault(term_id, {})
+        conns[client_id] = (on_output, loop)
+        logger.info("Terminal %s: attached client %s (total=%d)", term_id, client_id, len(conns))
 
-    def detach(self, term_id: str, ws: WebSocket) -> None:
-        """Remove a WebSocket without killing the PTY."""
+    def detach(self, term_id: str, client_id: str) -> None:
+        """Remove an output callback without killing the PTY."""
         conns = self._connections.get(term_id)
         if conns:
-            conns.discard(next(((w, l) for w, l in conns if w is ws), (None, None)))  # type: ignore[arg-type]
-            # Clean up properly
-            to_remove = {pair for pair in conns if pair[0] is ws}
-            conns -= to_remove
+            conns.pop(client_id, None)
             if not conns:
                 del self._connections[term_id]
-        count = len(self._connections.get(term_id, set()))
-        logger.info("Terminal %s: detached client (remaining=%d)", term_id, count)
+        remaining = len(self._connections.get(term_id, {}))
+        logger.info("Terminal %s: detached client %s (remaining=%d)", term_id, client_id, remaining)
 
     def get_scrollback(self, term_id: str) -> bytes:
         """Return the scrollback buffer contents for replay on reconnect."""
@@ -150,7 +159,7 @@ class TerminalManager:
             return bytes(session._scrollback)
 
     def connection_count(self, term_id: str) -> int:
-        return len(self._connections.get(term_id, set()))
+        return len(self._connections.get(term_id, {}))
 
     # ------------------------------------------------------------------
     # Reader thread (PTY output → scrollback + broadcast)
@@ -226,19 +235,19 @@ class TerminalManager:
             if overflow > 0:
                 del session._scrollback[:overflow]
 
-        # Broadcast to all connected WebSocket clients
+        # Broadcast to all connected clients via callbacks
         conns = self._connections.get(session.id)
         if not conns:
             return
         payload = b"\x01" + data
-        dead: list[tuple[WebSocket, asyncio.AbstractEventLoop]] = []
-        for ws, loop in list(conns):
+        dead: list[str] = []
+        for client_id, (on_output, loop) in list(conns.items()):
             try:
-                asyncio.run_coroutine_threadsafe(ws.send_bytes(payload), loop)
+                asyncio.run_coroutine_threadsafe(on_output(payload), loop)
             except Exception:
-                dead.append((ws, loop))
-        for pair in dead:
-            conns.discard(pair)
+                dead.append(client_id)
+        for client_id in dead:
+            conns.pop(client_id, None)
 
     def _make_exit_payload(self, exit_code: int | None = None) -> bytes:
         """Build a 0x04 exit signal payload, optionally including exit code."""
@@ -247,7 +256,7 @@ class TerminalManager:
         return b"\x04"
 
     def _notify_process_exit(self, term_id: str, exit_code: int | None = None) -> None:
-        """Send process exit signal (0x04) to all attached WS clients.
+        """Send process exit signal (0x04) to all attached clients.
 
         Called from the reader thread — uses run_coroutine_threadsafe.
         """
@@ -255,14 +264,14 @@ class TerminalManager:
         if not conns:
             return
         payload = self._make_exit_payload(exit_code)
-        for ws, loop in list(conns):
+        for _client_id, (on_output, loop) in list(conns.items()):
             try:
-                asyncio.run_coroutine_threadsafe(ws.send_bytes(payload), loop)
+                asyncio.run_coroutine_threadsafe(on_output(payload), loop)
             except Exception:
                 pass
 
     async def async_notify_exit(self, term_id: str) -> None:
-        """Send process exit signal (0x04) to all attached WS clients (async).
+        """Send process exit signal (0x04) to all attached clients (async).
 
         Must be called from the event loop thread, before kill().
         Uses await for reliable delivery.
@@ -273,9 +282,9 @@ class TerminalManager:
         if not conns:
             return
         payload = self._make_exit_payload(exit_code)
-        for ws, _loop in list(conns):
+        for _client_id, (on_output, _loop) in list(conns.items()):
             try:
-                await ws.send_bytes(payload)
+                await on_output(payload)
             except Exception:
                 pass
 
@@ -355,7 +364,7 @@ class TerminalManager:
 
         session.alive = False
 
-        # Clear all attached WS connections
+        # Clear all attached client connections
         # (callers should use async_notify_exit() before kill() to send 0x04)
         self._connections.pop(term_id, None)
 

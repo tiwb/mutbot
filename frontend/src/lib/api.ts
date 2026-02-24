@@ -95,6 +95,11 @@ export async function fetchSessions(workspaceId: string) {
   return res.json();
 }
 
+export async function getSession(sessionId: string) {
+  const res = await authFetch(`${BASE}/api/sessions/${sessionId}`);
+  return res.json();
+}
+
 export async function createSession(
   workspaceId: string,
   type: string = "agent",

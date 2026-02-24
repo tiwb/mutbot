@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { createPortal } from "react-dom";
 import {
   Layout,
   type Model,
@@ -16,12 +15,13 @@ import {
 import "flexlayout-react/style/dark.css";
 import {
   fetchWorkspaces,
-  createSession,
   fetchSessions,
+  getSession,
   updateWorkspaceLayout,
   checkAuthStatus,
   login,
   setAuthToken,
+  getAuthToken,
   stopSession,
   deleteSession,
   renameSession,
@@ -36,6 +36,8 @@ import {
 import { panelFactory } from "./panels/PanelFactory";
 import SessionListPanel from "./panels/SessionListPanel";
 import ContextMenu, { type ContextMenuItem } from "./components/ContextMenu";
+import RpcMenu, { type MenuExecResult } from "./components/RpcMenu";
+import { WorkspaceRpc } from "./lib/workspace-rpc";
 
 // ---------- Tab icons (inline SVG, 16px) ----------
 
@@ -161,95 +163,6 @@ function LoginScreen({ onLogin }: { onLogin: () => void }) {
 }
 
 // ---------------------------------------------------------------------------
-// Add Session dropdown button (for tabset "+" button)
-// ---------------------------------------------------------------------------
-
-function AddSessionDropdown({
-  onAdd,
-}: {
-  onAdd: (type: "agent" | "terminal" | "document") => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const btnRef = useRef<HTMLButtonElement>(null);
-  const menuRef = useRef<HTMLDivElement>(null);
-  const [menuPos, setMenuPos] = useState<{ top: number; left: number }>({ top: 0, left: 0 });
-
-  // Compute menu position from button rect
-  const updateMenuPos = useCallback(() => {
-    if (!btnRef.current) return;
-    const rect = btnRef.current.getBoundingClientRect();
-    setMenuPos({ top: rect.bottom + 2, left: rect.right - 120 });
-  }, []);
-
-  // Close on outside click
-  useEffect(() => {
-    if (!open) return;
-    const handler = (e: PointerEvent) => {
-      const target = e.target as Node;
-      if (
-        btnRef.current?.contains(target) ||
-        menuRef.current?.contains(target)
-      ) {
-        return;
-      }
-      setOpen(false);
-    };
-    document.addEventListener("pointerdown", handler);
-    return () => document.removeEventListener("pointerdown", handler);
-  }, [open]);
-
-  const handleToggle = useCallback(
-    (e: React.PointerEvent) => {
-      e.stopPropagation();
-      e.preventDefault();
-      if (!open) updateMenuPos();
-      setOpen((v) => !v);
-    },
-    [open, updateMenuPos],
-  );
-
-  const handleSelect = useCallback(
-    (type: "agent" | "terminal" | "document") => {
-      setOpen(false);
-      onAdd(type);
-    },
-    [onAdd],
-  );
-
-  return (
-    <>
-      <button
-        ref={btnRef}
-        className="add-session-btn"
-        title="New Session"
-        onPointerDown={handleToggle}
-      >
-        +
-      </button>
-      {open &&
-        createPortal(
-          <div
-            ref={menuRef}
-            className="add-session-menu"
-            style={{ top: menuPos.top, left: menuPos.left }}
-          >
-            <button onPointerDown={(e) => e.stopPropagation()} onClick={() => handleSelect("agent")}>
-              <TabIcon type="agent" /> Agent
-            </button>
-            <button onPointerDown={(e) => e.stopPropagation()} onClick={() => handleSelect("document")}>
-              <TabIcon type="document" /> Document
-            </button>
-            <button onPointerDown={(e) => e.stopPropagation()} onClick={() => handleSelect("terminal")}>
-              <TabIcon type="terminal" /> Terminal
-            </button>
-          </div>,
-          document.body,
-        )}
-    </>
-  );
-}
-
-// ---------------------------------------------------------------------------
 // Terminal close confirmation dialog
 // ---------------------------------------------------------------------------
 
@@ -320,6 +233,10 @@ export default function App() {
   const [sidebarWidth, setSidebarWidth] = useState(260);
   const sidebarResizing = useRef(false);
 
+  // Workspace RPC 连接
+  const rpcRef = useRef<WorkspaceRpc | null>(null);
+  const [rpc, setRpc] = useState<WorkspaceRpc | null>(null);
+
   // Initialize model once workspace is available
   if (!modelRef.current) {
     modelRef.current = createModel();
@@ -361,6 +278,21 @@ export default function App() {
       }
     });
   }, [authenticated]);
+
+  // Initialize WorkspaceRpc when workspace is available
+  useEffect(() => {
+    if (!workspace) return;
+    const wsRpc = new WorkspaceRpc(workspace.id, {
+      tokenFn: getAuthToken,
+    });
+    rpcRef.current = wsRpc;
+    setRpc(wsRpc);
+    return () => {
+      wsRpc.close();
+      rpcRef.current = null;
+      setRpc(null);
+    };
+  }, [workspace]);
 
   // ------------------------------------------------------------------
   // Session creation helpers
@@ -418,17 +350,24 @@ export default function App() {
     [],
   );
 
-  const handleCreateSession = useCallback(
-    async (type: "agent" | "terminal" | "document", tabsetNode?: TabSetNode) => {
-      if (!workspace) return;
-      const config = type === "document"
-        ? { file_path: `untitled-${Date.now()}.md` }
-        : undefined;
-      const session: Session = await createSession(workspace.id, type, config);
-      setSessions((prev) => [...prev, session]);
-      addTabForSession(session, tabsetNode);
+  // Handle RpcMenu result (from menu.execute)
+  const handleMenuResult = useCallback(
+    async (result: MenuExecResult, tabsetNode?: TabSetNode) => {
+      if (result.error || result.action === "error") return;
+
+      if (result.action === "session_created") {
+        const sessionId = result.data.session_id as string;
+        if (!sessionId) return;
+        try {
+          const session: Session = await getSession(sessionId);
+          setSessions((prev) => [...prev, session]);
+          addTabForSession(session, tabsetNode);
+        } catch {
+          // 静默处理
+        }
+      }
     },
-    [workspace, addTabForSession],
+    [addTabForSession],
   );
 
   // ------------------------------------------------------------------
@@ -838,16 +777,20 @@ export default function App() {
       // Don't add "+" button to border panels (Session list border)
       if (tabSetNode.getType() === "border") return;
 
+      const tsNode = tabSetNode as TabSetNode;
       renderValues.stickyButtons.push(
-        <AddSessionDropdown
+        <RpcMenu
           key="add-session"
-          onAdd={(type) =>
-            handleCreateSession(type, tabSetNode as TabSetNode)
+          rpc={rpc}
+          category="SessionPanel/Add"
+          trigger={
+            <button className="add-session-btn" title="New Session">+</button>
           }
+          onResult={(result) => handleMenuResult(result, tsNode)}
         />,
       );
     },
-    [handleCreateSession],
+    [rpc, handleMenuResult],
   );
 
   // ------------------------------------------------------------------

@@ -8,7 +8,7 @@ import secrets
 import time
 from typing import Any
 
-from mutbot import storage
+from mutbot.runtime import storage
 
 logger = logging.getLogger(__name__)
 
