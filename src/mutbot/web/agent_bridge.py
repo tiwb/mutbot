@@ -100,9 +100,40 @@ class AgentBridge:
 
     def start(self) -> None:
         """Launch the agent thread and event forwarder task."""
-        self._agent_task = self.loop.create_task(
-            asyncio.to_thread(self._run_agent)
+        # 使用 daemon thread 直接运行 agent，绕过 ThreadPoolExecutor
+        # 的 _python_exit atexit handler（避免 t.join() 阻塞进程退出）
+        future: asyncio.Future = self.loop.create_future()
+
+        def _thread_target():
+            try:
+                self._run_agent()
+            except Exception:
+                pass
+            # Future 结果仅用于 asyncio 侧感知线程结束；
+            # stop() 可能已 cancel 了 future（通过 task 取消链），
+            # 此时 future 不再是 PENDING，set_result 会抛 InvalidStateError。
+            def _resolve():
+                if not future.done():
+                    future.set_result(None)
+            try:
+                self.loop.call_soon_threadsafe(_resolve)
+            except RuntimeError:
+                pass
+
+        t = threading.Thread(
+            target=_thread_target,
+            daemon=True,
+            name=f"agent-{self.session_id}",
         )
+        t.start()
+
+        async def _await_agent():
+            try:
+                await future
+            except asyncio.CancelledError:
+                pass
+
+        self._agent_task = self.loop.create_task(_await_agent())
         self._forwarder_task = self.loop.create_task(
             self._forward_events()
         )
@@ -135,14 +166,23 @@ class AgentBridge:
         try:
             for event in self.agent.run(self.web_userio.input_stream()):
                 data = serialize_stream_event(event)
-                self.loop.call_soon_threadsafe(self._event_queue.put_nowait, data)
+                try:
+                    self.loop.call_soon_threadsafe(self._event_queue.put_nowait, data)
+                except RuntimeError:
+                    break  # Event loop closed during shutdown
         except Exception as exc:
             logger.exception("Agent error in session %s", self.session_id)
             error_data = {"type": "error", "error": str(exc)}
-            self.loop.call_soon_threadsafe(self._event_queue.put_nowait, error_data)
+            try:
+                self.loop.call_soon_threadsafe(self._event_queue.put_nowait, error_data)
+            except RuntimeError:
+                pass
         finally:
             # Signal that the agent has finished
-            self.loop.call_soon_threadsafe(self._event_queue.put_nowait, None)
+            try:
+                self.loop.call_soon_threadsafe(self._event_queue.put_nowait, None)
+            except RuntimeError:
+                pass
 
     def send_message(self, text: str, data: dict | None = None) -> None:
         """Feed a user message into the Agent."""

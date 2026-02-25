@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import os
+import signal
+import sys
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
@@ -30,6 +34,94 @@ session_manager: SessionManager | None = None
 log_store: LogStore | None = None
 terminal_manager: TerminalManager | None = None
 auth_manager: AuthManager | None = None
+
+
+# ---------------------------------------------------------------------------
+# Shutdown helpers
+# ---------------------------------------------------------------------------
+
+_SHUTDOWN_TIMEOUT = 10  # seconds
+
+def _force_exit_flush():
+    """Flush standard streams and log handlers before os._exit()."""
+    try:
+        sys.stdout.flush()
+        sys.stderr.flush()
+    except Exception:
+        pass
+    for handler in logging.getLogger().handlers:
+        try:
+            handler.flush()
+        except Exception:
+            pass
+
+
+def _start_exit_watchdog():
+    """Start a daemon thread that forces os._exit after SHUTDOWN_TIMEOUT seconds.
+
+    Covers the case where uvicorn's own shutdown hangs before reaching
+    the lifespan shutdown code.  Being a daemon thread, it is harmless
+    if the process exits normally before the timeout.
+    """
+    import time
+    import threading as _threading
+
+    def _watchdog():
+        time.sleep(_SHUTDOWN_TIMEOUT)
+        print(f"\nShutdown timed out after {_SHUTDOWN_TIMEOUT}s, forcing exit...",
+              flush=True)
+        _force_exit_flush()
+        os._exit(0)
+
+    t = _threading.Thread(target=_watchdog, daemon=True, name="exit-watchdog")
+    t.start()
+
+
+_sigint_count = 0
+
+
+def _install_double_ctrlc_handler():
+    """Install a chained SIGINT handler: 1st Ctrl+C → uvicorn graceful, 2nd → os._exit.
+
+    Must be called AFTER uvicorn has installed its own handler (i.e. during
+    lifespan startup), so we can capture and chain uvicorn's handler.
+    """
+    global _sigint_count
+    _sigint_count = 0
+
+    try:
+        prev_handler = signal.getsignal(signal.SIGINT)
+    except (OSError, ValueError):
+        return
+
+    def _chained_sigint(signum, frame):
+        global _sigint_count
+        _sigint_count += 1
+        if _sigint_count >= 2:
+            print("\nForce shutting down...", flush=True)
+            _force_exit_flush()
+            os._exit(0)
+        # 第一次 Ctrl+C：启动超时 watchdog，提示用户，然后交给 uvicorn 优雅退出
+        _start_exit_watchdog()
+        print("\nShutting down gracefully... Press Ctrl+C again to force exit",
+              flush=True)
+        if callable(prev_handler):
+            prev_handler(signum, frame)
+
+    try:
+        signal.signal(signal.SIGINT, _chained_sigint)
+        logger.info("Double Ctrl+C handler installed (chained with %s)", prev_handler)
+    except (OSError, ValueError) as exc:
+        logger.warning("Cannot install SIGINT handler: %s", exc)
+
+
+async def _shutdown_cleanup():
+    """Stop all active sessions and terminals."""
+    if terminal_manager is not None:
+        terminal_manager.kill_all()
+    if session_manager is not None:
+        for sid in list(session_manager._sessions):
+            await session_manager.stop(sid)
 
 
 @asynccontextmanager
@@ -84,14 +176,32 @@ async def lifespan(app: FastAPI):
     # Wire terminal_manager for Terminal Session lifecycle
     session_manager.terminal_manager = terminal_manager
 
+    # --- Double Ctrl+C handler ---
+    # Install AFTER uvicorn has set up its own SIGINT handler, so we can chain.
+    # Lifespan startup runs during Server.startup(), after uvicorn's handler.
+    _install_double_ctrlc_handler()
+
     yield
 
-    # Shutdown: stop all active sessions and terminals
-    if terminal_manager is not None:
-        terminal_manager.kill_all()
-    if session_manager is not None:
-        for sid in list(session_manager._sessions):
-            await session_manager.stop(sid)
+    # --- Graceful shutdown with timeout fallback ---
+    import threading as _threading
+    logger.info(
+        "Shutdown started. Active threads: %s",
+        [(t.name, t.daemon) for t in _threading.enumerate()],
+    )
+    try:
+        await asyncio.wait_for(_shutdown_cleanup(), timeout=10.0)
+        logger.info("Shutdown cleanup completed normally")
+    except asyncio.TimeoutError:
+        logger.warning("Shutdown cleanup timed out after 10s, forcing exit")
+        _force_exit_flush()
+        os._exit(0)
+    except Exception:
+        logger.exception("Shutdown cleanup raised unexpected error")
+    logger.info(
+        "Post-cleanup threads: %s",
+        [(t.name, t.daemon) for t in _threading.enumerate()],
+    )
 
 
 # ---------------------------------------------------------------------------
