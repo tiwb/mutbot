@@ -34,3 +34,4 @@ nul
 htmlcov/
 node_modules
 /src/mutbot/web/frontend_dist
+*.tsbuildinfo
