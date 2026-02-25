@@ -272,6 +272,6 @@ app.include_router(api_router)
 # Static files (production build)
 # ---------------------------------------------------------------------------
 
-_frontend_dist = Path(__file__).resolve().parent.parent.parent.parent / "frontend_dist"
+_frontend_dist = Path(__file__).resolve().parent / "frontend_dist"
 if _frontend_dist.is_dir():
     app.mount("/", StaticFiles(directory=str(_frontend_dist), html=True), name="static")

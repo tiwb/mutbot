@@ -33,4 +33,4 @@ nul
 .mutbot
 htmlcov/
 node_modules
-/frontend_dist
+/src/mutbot/web/frontend_dist

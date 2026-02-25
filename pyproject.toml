@@ -38,6 +38,9 @@ Repository = "https://github.com/tiwb/mutbot"
 where = ["src"]
 include = ["mutbot*"]
 
+[tool.setuptools.package-data]
+"mutbot.web" = ["frontend_dist/**"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]

@@ -17,7 +17,7 @@ export default defineConfig({
     },
   },
   build: {
-    outDir: "../frontend_dist",
+    outDir: "../src/mutbot/web/frontend_dist",
     emptyOutDir: true,
   },
 });
