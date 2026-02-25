@@ -158,6 +158,18 @@ def setup_environment(config: Config) -> None:
         importlib.import_module(module_name)
 
 
+def _load_config() -> dict | None:
+    """加载 mutagent 配置文件，返回 models 相关配置 dict。供 proxy 等模块使用。"""
+    try:
+        config = Config.load(".mutagent/config.json")
+        return {
+            "models": config.get("models", {}),
+            "default_model": config.get("default_model", ""),
+        }
+    except Exception:
+        return None
+
+
 def create_llm_client(
     config: Config,
     model_name: str = "",
@@ -165,7 +177,13 @@ def create_llm_client(
     session_ts: str = "",
 ) -> LLMClient:
     """根据 Config 创建 LLMClient 实例（含可选的 API 录制器）。"""
+    import mutobj
     from mutagent.runtime.api_recorder import ApiRecorder
+    from mutagent.provider import LLMProvider
+
+    # 确保内置 provider 已注册
+    import mutagent.builtins.anthropic_provider  # noqa: F401
+    import mutagent.builtins.openai_provider  # noqa: F401
 
     # Get model config (convert SystemExit to RuntimeError for web context)
     try:
@@ -179,10 +197,14 @@ def create_llm_client(
         api_recorder = ApiRecorder(log_dir, mode="incremental", session_ts=session_ts)
         logger.info("API recorder enabled (session_ts=%s)", session_ts)
 
+    # 通过 provider 配置创建 provider 实例
+    provider_path = model.get("provider", "AnthropicProvider")
+    provider_cls = mutobj.resolve_class(provider_path, base_cls=LLMProvider)
+    provider = provider_cls.from_config(model)
+
     return LLMClient(
+        provider=provider,
         model=model.get("model_id", ""),
-        api_key=model.get("auth_token", ""),
-        base_url=model.get("base_url", ""),
         api_recorder=api_recorder,
     )
 

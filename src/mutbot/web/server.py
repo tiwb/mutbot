@@ -181,6 +181,21 @@ async def lifespan(app: FastAPI):
     # Lifespan startup runs during Server.startup(), after uvicorn's handler.
     _install_double_ctrlc_handler()
 
+    # --- LLM proxy routes (optional, loaded via modules config) ---
+    try:
+        from mutbot.proxy import create_llm_router
+        # 读取 config 以获取 models 配置
+        from mutbot.runtime.session_impl import _load_config
+        proxy_config = _load_config()
+        if proxy_config is not None:
+            router = create_llm_router(proxy_config)
+            app.include_router(router, prefix="/llm")
+            logger.info("LLM proxy routes mounted at /llm")
+    except ImportError:
+        pass  # proxy 模块未安装或未配置，跳过
+    except Exception:
+        logger.warning("Failed to load LLM proxy routes", exc_info=True)
+
     yield
 
     # --- Graceful shutdown with timeout fallback ---
@@ -215,7 +230,7 @@ _AUTH_SKIP_PATHS = frozenset({
     "/api/health",
 })
 
-_AUTH_SKIP_PREFIXES = ("/docs", "/openapi", "/redoc")
+_AUTH_SKIP_PREFIXES = ("/docs", "/openapi", "/redoc", "/llm")
 
 
 class AuthMiddleware(BaseHTTPMiddleware):
