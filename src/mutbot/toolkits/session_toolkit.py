@@ -38,11 +38,11 @@ class SessionToolkit(Toolkit):
         Returns:
             新 Session 的 ID 和类型信息。
         """
-        from mutbot.session import get_session_class, AgentSession
+        from mutbot.session import Session, AgentSession
 
         # 验证 session_type
         try:
-            session_cls = get_session_class(session_type)
+            session_cls = Session.get_session_class(session_type)
         except ValueError:
             return f"未知的 Session 类型：{session_type}"
 

@@ -247,14 +247,14 @@ class TestAddSessionMenu:
         )
 
         menu = AddSessionMenu()
-        result = menu.execute({"session_type": "agent"}, ctx)
+        result = menu.execute({"session_type": "mutbot.session.AgentSession"}, ctx)
 
         assert isinstance(result, MenuResult)
         assert result.action == "session_created"
         assert result.data["session_id"] == "fake_id"
-        assert result.data["session_type"] == "agent"
+        assert result.data["session_type"] == "mutbot.session.AgentSession"
         assert result.data["title"] == "Agent 1"
-        assert fake_sm.created == [("ws_1", "agent")]
+        assert fake_sm.created == [("ws_1", "mutbot.session.AgentSession")]
 
     def test_execute_creates_terminal_session(self):
         """terminal session 创建时应同时创建 PTY"""
@@ -295,10 +295,10 @@ class TestAddSessionMenu:
         )
 
         menu = AddSessionMenu()
-        result = menu.execute({"session_type": "terminal"}, ctx)
+        result = menu.execute({"session_type": "mutbot.session.TerminalSession"}, ctx)
 
         assert result.action == "session_created"
-        assert result.data["session_type"] == "terminal"
+        assert result.data["session_type"] == "mutbot.session.TerminalSession"
         assert fake_sm.last_config["terminal_id"] == "term_123"
 
     def test_execute_terminal_without_terminal_manager(self):
@@ -313,29 +313,28 @@ class TestAddSessionMenu:
 
         ctx = _make_context(managers={"session_manager": FakeSessionManager()})
         menu = AddSessionMenu()
-        result = menu.execute({"session_type": "terminal"}, ctx)
+        result = menu.execute({"session_type": "mutbot.session.TerminalSession"}, ctx)
         assert result.action == "error"
 
     def test_execute_without_session_manager(self):
         ctx = _make_context(managers={})
         menu = AddSessionMenu()
-        result = menu.execute({"session_type": "agent"}, ctx)
+        result = menu.execute({"session_type": "mutbot.session.AgentSession"}, ctx)
         assert result.action == "error"
 
-    def test_execute_default_type_is_guide(self):
+    def test_execute_no_type_returns_error(self):
         class FakeSessionManager:
             def create(self, workspace_id, session_type, config=None):
                 class FakeSession:
                     id = "s1"
                     title = "Guide 1"
-                self.last_type = session_type
                 return FakeSession()
 
         fake_sm = FakeSessionManager()
         ctx = _make_context(managers={"session_manager": fake_sm})
         menu = AddSessionMenu()
-        menu.execute({}, ctx)  # 不传 session_type
-        assert fake_sm.last_type == "mutbot.builtins.guide.GuideSession"
+        result = menu.execute({}, ctx)  # 不传 session_type
+        assert result.action == "error"
 
 
 # ---------------------------------------------------------------------------
@@ -420,7 +419,7 @@ class TestMenuRpcHandlers:
             "method": "menu.execute",
             "params": {
                 "menu_id": menu_id,
-                "params": {"session_type": "agent"},
+                "params": {"session_type": "mutbot.session.AgentSession"},
             },
         }
         resp = await workspace_rpc.dispatch(msg, ctx)

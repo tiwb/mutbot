@@ -40,19 +40,15 @@ class Session(mutobj.Declaration):
             kwargs["type"] = f"{type(self).__module__}.{type(self).__qualname__}"
         super().__init__(**kwargs)
 
+    @staticmethod
+    def get_session_class(qualified_name: str) -> type[Session]:
+        """通过全限定名查找 Session 子类，直接使用 mutobj 基础设施。"""
+        from mutbot.runtime.session_impl import get_session_class
+        return get_session_class(qualified_name)
+
     def serialize(self) -> dict:
-        """序列化为可持久化的 dict"""
-        return {
-            "id": self.id,
-            "workspace_id": self.workspace_id,
-            "title": self.title,
-            "type": self.type,
-            "status": self.status,
-            "created_at": self.created_at,
-            "updated_at": self.updated_at,
-            "config": self.config,
-            "deleted": self.deleted,
-        }
+        from mutbot.runtime.session_impl import serialize_session
+        return serialize_session(self)
 
 
 class AgentSession(Session):
@@ -75,7 +71,6 @@ class AgentSession(Session):
         默认实现保持当前行为（ModuleToolkit + LogToolkit + auto_discover）。
         """
         from mutbot.runtime.session_impl import build_default_agent
-
         return build_default_agent(self, config, log_dir, session_ts, messages)
 
 
@@ -90,32 +85,3 @@ class DocumentSession(Session):
 
     file_path: str = ""
     language: str = ""
-
-
-# ---------------------------------------------------------------------------
-# Session 类查找（基于 mutobj 子类发现）
-# ---------------------------------------------------------------------------
-
-# 旧短名称 → 全限定名映射（持久化向后兼容）
-_LEGACY_TYPE_MAP: dict[str, str] = {
-    "agent": "mutbot.session.AgentSession",
-    "terminal": "mutbot.session.TerminalSession",
-    "document": "mutbot.session.DocumentSession",
-    "guide": "mutbot.builtins.guide.GuideSession",
-    "researcher": "mutbot.builtins.researcher.ResearcherSession",
-}
-
-# 默认 Session 类型（新建 Session 时使用）
-DEFAULT_SESSION_TYPE = "mutbot.builtins.guide.GuideSession"
-
-
-def get_session_class(qualified_name: str) -> type[Session]:
-    """通过全限定名查找 Session 子类，直接使用 mutobj 基础设施。
-
-    支持旧短名称（如 "agent"）的向后兼容映射。
-    """
-    resolved = _LEGACY_TYPE_MAP.get(qualified_name, qualified_name)
-    for cls in mutobj.discover_subclasses(Session):
-        if f"{cls.__module__}.{cls.__qualname__}" == resolved:
-            return cls
-    raise ValueError(f"Unknown session type: {qualified_name!r}")

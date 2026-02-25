@@ -105,14 +105,19 @@ async def handle_session_create(params: dict, ctx: RpcContext) -> dict:
     session_type = params.get("type", "")
     config = params.get("config")
 
-    # 未指定类型时使用默认（GuideSession）
+    # 未指定类型时：空工作区默认 GuideSession，否则返回错误
     from mutbot.session import (
-        get_session_class, TerminalSession, DocumentSession, DEFAULT_SESSION_TYPE,
+        Session, TerminalSession, DocumentSession,
     )
     if not session_type:
-        session_type = DEFAULT_SESSION_TYPE
+        # 检查工作区是否为空（无 session）
+        existing = sm.list_by_workspace(ws.id)
+        if not existing:
+            session_type = "mutbot.builtins.guide.GuideSession"
+        else:
+            return {"error": "session type is required"}
     try:
-        session_cls = get_session_class(session_type)
+        session_cls = Session.get_session_class(session_type)
     except ValueError:
         return {"error": f"unknown session type: {session_type}"}
 
@@ -458,9 +463,6 @@ def _session_kind(session_type: str) -> str:
     """从全限定类型名推导短类型名。"""
     if session_type in _KIND_MAP:
         return _KIND_MAP[session_type]
-    # 旧短名称直接返回
-    if session_type in ("agent", "terminal", "document"):
-        return session_type
     # 回退：从类名推导 ("GuideSession" → "guide")
     parts = session_type.rsplit(".", 1)
     name = parts[-1] if parts else session_type

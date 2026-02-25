@@ -27,9 +27,6 @@ from mutbot.session import (
     AgentSession,
     TerminalSession,
     DocumentSession,
-    get_session_class,
-    _LEGACY_TYPE_MAP,
-    DEFAULT_SESSION_TYPE,
 )
 from mutbot.runtime import storage
 from mutbot.web.agent_bridge import AgentBridge, WebUserIO
@@ -37,6 +34,33 @@ from mutbot.web.serializers import serialize_message
 
 logger = logging.getLogger(__name__)
 
+
+# ---------------------------------------------------------------------------
+# Session.get_session_class 实现
+# ---------------------------------------------------------------------------
+
+@mutobj.impl(Session.get_session_class)
+def get_session_class(qualified_name: str) -> type[Session]:
+    for cls in mutobj.discover_subclasses(Session):
+        if f"{cls.__module__}.{cls.__qualname__}" == qualified_name:
+            return cls
+    raise ValueError(f"Unknown session type: {qualified_name!r}")
+
+
+@mutobj.impl(Session.serialize)
+def serialize_session(self: Session) -> dict:
+    """序列化为可持久化的 dict"""
+    return {
+        "id": self.id,
+        "workspace_id": self.workspace_id,
+        "title": self.title,
+        "type": self.type,
+        "status": self.status,
+        "created_at": self.created_at,
+        "updated_at": self.updated_at,
+        "config": self.config,
+        "deleted": self.deleted,
+    }
 
 # ---------------------------------------------------------------------------
 # Session Runtime 状态（分离模式）
@@ -82,17 +106,12 @@ def _deserialize_message(d: dict) -> Message:
 
 
 def _session_from_dict(data: dict) -> Session:
-    """从持久化 dict 重建对应子类的 Session 实例。
-
-    支持旧短名称（"agent"）和新全限定名（"mutbot.session.AgentSession"）。
-    """
+    """从持久化 dict 重建对应子类的 Session 实例。"""
     raw_type = data.get("type", "")
-    # 将旧短名称映射为全限定名
-    resolved_type = _LEGACY_TYPE_MAP.get(raw_type, raw_type)
 
     # 尝试查找 Session 子类
     try:
-        cls = get_session_class(resolved_type)
+        cls = Session.get_session_class(raw_type)
     except ValueError:
         cls = Session
 
@@ -100,7 +119,7 @@ def _session_from_dict(data: dict) -> Session:
         id=data["id"],
         workspace_id=data.get("workspace_id", ""),
         title=data.get("title", ""),
-        type=resolved_type,
+        type=raw_type,
         status=data.get("status", "ended"),
         created_at=data.get("created_at", ""),
         updated_at=data.get("updated_at", ""),
@@ -354,14 +373,14 @@ class SessionManager:
     def create(
         self,
         workspace_id: str,
-        session_type: str = DEFAULT_SESSION_TYPE,
+        session_type: str,
         config: dict[str, Any] | None = None,
         agent_config: dict[str, Any] | None = None,
     ) -> Session:
         now = datetime.now(timezone.utc).isoformat()
 
-        # 查找对应的 Session 子类（支持旧短名称）
-        cls = get_session_class(session_type)
+        # 查找对应的 Session 子类
+        cls = Session.get_session_class(session_type)
 
         # 自动生成标题：从类名推导标签
         type_counts = sum(1 for s in self._sessions.values() if type(s) is cls)

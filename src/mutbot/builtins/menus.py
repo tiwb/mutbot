@@ -74,17 +74,19 @@ class AddSessionMenu(Menu):
         import time
 
         from mutbot.session import (
-            TerminalSession, DocumentSession, get_session_class, DEFAULT_SESSION_TYPE,
+            Session, TerminalSession, DocumentSession,
         )
 
-        session_type = params.get("session_type", DEFAULT_SESSION_TYPE)
+        session_type = params.get("session_type", "")
+        if not session_type:
+            return MenuResult(action="error", data={"message": "session type is required"})
         sm = context.managers.get("session_manager")
         if sm is None:
             return MenuResult(action="error", data={"message": "session_manager not available"})
 
         # 查找 Session 类以判断类型
         try:
-            session_cls = get_session_class(session_type)
+            session_cls = Session.get_session_class(session_type)
         except ValueError:
             return MenuResult(action="error", data={"message": f"unknown session type: {session_type}"})
 

@@ -182,10 +182,10 @@ class TestSessionHandlers:
         broadcasted = []
         ctx = _make_context(broadcasted, workspace_manager=wm, session_manager=sm)
 
-        resp = await _dispatch("session.create", {"type": "agent"}, ctx)
+        resp = await _dispatch("session.create", {"type": "mutbot.session.AgentSession"}, ctx)
         assert resp["type"] == "rpc_result"
         result = resp["result"]
-        assert result["type"] == "agent"
+        assert result["type"] == "mutbot.session.AgentSession"
         assert result["id"].startswith("s_")
         # 验证 broadcast 被调用
         assert len(broadcasted) == 1
@@ -199,9 +199,9 @@ class TestSessionHandlers:
         tm = FakeTerminalManager()
         ctx = _make_context(workspace_manager=wm, session_manager=sm, terminal_manager=tm)
 
-        resp = await _dispatch("session.create", {"type": "terminal"}, ctx)
+        resp = await _dispatch("session.create", {"type": "mutbot.session.TerminalSession"}, ctx)
         result = resp["result"]
-        assert result["type"] == "terminal"
+        assert result["type"] == "mutbot.session.TerminalSession"
         assert result["config"]["terminal_id"].startswith("t_")
 
     @pytest.mark.asyncio

@@ -11,11 +11,11 @@ def test_import_mutbot_session():
     """mutbot.session 模块（公开 API）可导入且包含核心类"""
     from mutbot.session import (
         Session, AgentSession, TerminalSession, DocumentSession,
-        get_session_class,
     )
     assert issubclass(AgentSession, Session)
     assert issubclass(TerminalSession, Session)
     assert issubclass(DocumentSession, Session)
+    assert hasattr(Session, "get_session_class")
 
 
 def test_import_mutbot_menu():
