@@ -11,9 +11,10 @@ export type ChatMessage =
 
 interface Props {
   messages: ChatMessage[];
+  onSessionLink?: (sessionId: string) => void;
 }
 
-export default function MessageList({ messages }: Props) {
+export default function MessageList({ messages, onSessionLink }: Props) {
   const endRef = useRef<HTMLDivElement>(null);
   const [contextMenu, setContextMenu] = useState<{
     position: { x: number; y: number };
@@ -57,7 +58,7 @@ export default function MessageList({ messages }: Props) {
 
   return (
     <div className="message-list" onContextMenu={handleContextMenu}>
-      {messages.map((msg) => renderMessage(msg))}
+      {messages.map((msg) => renderMessage(msg, onSessionLink))}
       <div ref={endRef} />
       {contextMenu && (
         <ContextMenu
@@ -70,13 +71,13 @@ export default function MessageList({ messages }: Props) {
   );
 }
 
-function renderMessage(msg: ChatMessage) {
+function renderMessage(msg: ChatMessage, onSessionLink?: (sessionId: string) => void) {
   switch (msg.type) {
     case "text":
       return (
         <div key={msg.id} className={`message ${msg.role} text`}>
           {msg.role === "assistant" ? (
-            <Markdown content={msg.content} />
+            <Markdown content={msg.content} onSessionLink={onSessionLink} />
           ) : (
             <div className="message-content">
               <pre>{msg.content}</pre>

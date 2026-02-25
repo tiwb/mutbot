@@ -14,7 +14,7 @@ const CodeEditorPanel = React.lazy(() => import("./CodeEditorPanel"));
 const LogPanel = React.lazy(() => import("./LogPanel"));
 
 export interface PanelContext {
-  sessions: { id: string; title: string; type: string; status: string; config?: Record<string, unknown> | null }[];
+  sessions: { id: string; title: string; type: string; kind: string; status: string; config?: Record<string, unknown> | null }[];
   activeSessionId: string | null;
   workspaceId: string | null;
   rpc: WorkspaceRpc | null;
@@ -34,7 +34,7 @@ export function panelFactory(node: TabNode, ctx: PanelContext) {
     case PANEL_AGENT_CHAT: {
       const sessionId = node.getConfig()?.sessionId as string | undefined;
       if (!sessionId) return <div className="empty-state"><p>No session.</p></div>;
-      return <AgentPanel sessionId={sessionId} rpc={ctx.rpc} />;
+      return <AgentPanel sessionId={sessionId} rpc={ctx.rpc} onSessionLink={ctx.onSelectSession} />;
     }
 
     case PANEL_TERMINAL: {

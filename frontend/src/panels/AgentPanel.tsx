@@ -16,9 +16,10 @@ const pendingTextCache = new Map<string, string>();
 interface Props {
   sessionId: string;
   rpc?: WorkspaceRpc | null;
+  onSessionLink?: (sessionId: string) => void;
 }
 
-export default function AgentPanel({ sessionId, rpc }: Props) {
+export default function AgentPanel({ sessionId, rpc, onSessionLink }: Props) {
   const [messages, setMessages] = useState<ChatMessage[]>(
     () => messageCache.get(sessionId) ?? [],
   );
@@ -264,7 +265,7 @@ export default function AgentPanel({ sessionId, rpc }: Props) {
         )}
         {DEBUG && <span style={{ marginLeft: "auto", opacity: 0.5, fontSize: "0.8em" }}>msgs: {messages.length}</span>}
       </div>
-      <MessageList messages={messages} />
+      <MessageList messages={messages} onSessionLink={onSessionLink} />
       <ChatInput onSend={handleSend} disabled={!connected} />
     </div>
   );

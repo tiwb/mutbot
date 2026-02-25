@@ -74,6 +74,7 @@ interface Session {
   workspace_id: string;
   title: string;
   type: string;
+  kind: string;  // 短类型名，供 UI switch/display 使用
   status: string;
   config?: Record<string, unknown> | null;
 }
@@ -358,7 +359,7 @@ export default function App() {
       let component: string;
       let tabConfig: Record<string, unknown>;
 
-      switch (session.type) {
+      switch (session.kind) {
         case "terminal":
           component = PANEL_TERMINAL;
           tabConfig = {
@@ -439,7 +440,7 @@ export default function App() {
         terminal: PANEL_TERMINAL,
         document: PANEL_CODE_EDITOR,
       };
-      const targetComponent = componentMap[session.type] || PANEL_AGENT_CHAT;
+      const targetComponent = componentMap[session.kind] || PANEL_AGENT_CHAT;
 
       // Check if tab for this session already exists
       let existingNodeId: string | null = null;

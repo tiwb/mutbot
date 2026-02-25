@@ -1,7 +1,7 @@
-"""Session manager — session lifecycle, Agent assembly, and persistence.
+"""Session 实现细节 — SessionManager、Runtime 状态、Agent 组装。
 
-Session 采用 mutobj.Declaration 体系，通过子类定义不同的 Session 类型。
-Runtime 状态（agent、bridge 等）采用分离模式，由 SessionManager 内部维护。
+Session Declaration 基类已迁移到 mutbot.session（公开 API），
+本模块保留 runtime 实现：SessionManager 生命周期管理、持久化、Agent 组装。
 """
 
 from __future__ import annotations
@@ -22,107 +22,20 @@ from mutagent.config import Config
 from mutagent.messages import Message, ToolCall, ToolResult
 from mutagent.tools import ToolSet
 
+from mutbot.session import (
+    Session,
+    AgentSession,
+    TerminalSession,
+    DocumentSession,
+    get_session_class,
+    _LEGACY_TYPE_MAP,
+    DEFAULT_SESSION_TYPE,
+)
 from mutbot.runtime import storage
 from mutbot.web.agent_bridge import AgentBridge, WebUserIO
 from mutbot.web.serializers import serialize_message
 
 logger = logging.getLogger(__name__)
-
-
-# ---------------------------------------------------------------------------
-# Session Declaration 体系
-# ---------------------------------------------------------------------------
-
-class Session(mutobj.Declaration):
-    """所有 Session 的基类"""
-
-    id: str
-    workspace_id: str
-    title: str
-    type: str = ""
-    status: str = "active"
-    created_at: str = ""
-    updated_at: str = ""
-    config: dict = mutobj.field(default_factory=dict)
-    deleted: bool = False
-
-    def serialize(self) -> dict:
-        """序列化为可持久化的 dict"""
-        return {
-            "id": self.id,
-            "workspace_id": self.workspace_id,
-            "title": self.title,
-            "type": self.type,
-            "status": self.status,
-            "created_at": self.created_at,
-            "updated_at": self.updated_at,
-            "config": self.config,
-            "deleted": self.deleted,
-        }
-
-
-class AgentSession(Session):
-    """Agent 对话 Session"""
-
-    type: str = "agent"
-    model: str = ""
-    system_prompt: str = ""
-
-
-class TerminalSession(Session):
-    """终端 Session"""
-
-    type: str = "terminal"
-
-
-class DocumentSession(Session):
-    """文档编辑 Session"""
-
-    type: str = "document"
-    file_path: str = ""
-    language: str = ""
-
-
-# ---------------------------------------------------------------------------
-# Session 类型注册表（基于 mutobj 子类发现 API）
-# ---------------------------------------------------------------------------
-
-_type_map_cache: dict[str, type[Session]] = {}
-_type_map_generation: int = -1
-
-
-def _get_type_default(cls: type) -> str:
-    """从 Declaration 子类的 'type' 属性描述符中读取默认值"""
-    for klass in cls.__mro__:
-        desc = klass.__dict__.get("type")
-        if desc is not None and hasattr(desc, "has_default") and desc.has_default:
-            val = desc.default
-            if isinstance(val, str) and val:
-                return val
-    return ""
-
-
-def get_session_type_map() -> dict[str, type[Session]]:
-    """返回 type_name → Session 子类映射，注册表变化时自动刷新"""
-    global _type_map_cache, _type_map_generation
-    gen = mutobj.get_registry_generation()
-    if gen != _type_map_generation:
-        _type_map_generation = gen
-        _type_map_cache = {}
-        for cls in mutobj.discover_subclasses(Session):
-            type_name = _get_type_default(cls)
-            if type_name:
-                _type_map_cache[type_name] = cls
-    return _type_map_cache
-
-
-def get_session_class(type_name: str) -> type[Session]:
-    """通过类型名查找 Session 子类"""
-    type_map = get_session_type_map()
-    cls = type_map.get(type_name)
-    if cls is None:
-        raise ValueError(f"Unknown session type: {type_name!r}")
-    return cls
 
 
 # ---------------------------------------------------------------------------
@@ -169,15 +82,25 @@ def _deserialize_message(d: dict) -> Message:
 
 
 def _session_from_dict(data: dict) -> Session:
-    """从持久化 dict 重建对应子类的 Session 实例"""
-    session_type = data.get("type", "agent")
-    type_map = get_session_type_map()
-    cls = type_map.get(session_type, Session)
+    """从持久化 dict 重建对应子类的 Session 实例。
+
+    支持旧短名称（"agent"）和新全限定名（"mutbot.session.AgentSession"）。
+    """
+    raw_type = data.get("type", "")
+    # 将旧短名称映射为全限定名
+    resolved_type = _LEGACY_TYPE_MAP.get(raw_type, raw_type)
+
+    # 尝试查找 Session 子类
+    try:
+        cls = get_session_class(resolved_type)
+    except ValueError:
+        cls = Session
+
     return cls(
         id=data["id"],
         workspace_id=data.get("workspace_id", ""),
         title=data.get("title", ""),
-        type=session_type,
+        type=resolved_type,
         status=data.get("status", "ended"),
         created_at=data.get("created_at", ""),
         updated_at=data.get("updated_at", ""),
@@ -186,35 +109,15 @@ def _session_from_dict(data: dict) -> Session:
     )
 
 
-def create_agent(
-    agent_config: dict[str, Any] | None = None,
-    log_dir: Path | None = None,
-    session_ts: str = "",
-    messages: list[Message] | None = None,
-) -> Agent:
-    """Assemble a mutagent Agent from configuration.
+def setup_environment(config: Config) -> None:
+    """执行全局环境初始化（env、sys.path、扩展模块加载）。
 
-    Loads Config from the standard location, builds LLMClient + ToolSet,
-    and returns a ready-to-run Agent.
-
-    Args:
-        messages: If provided, restore these messages into the new Agent
-                  (for session resumption after restart).
+    可被多次调用，操作幂等。
     """
     import importlib
     import os
     import sys
     from pathlib import Path as _Path
-
-    from mutagent.main import App
-    from mutagent.toolkits.module_toolkit import ModuleToolkit
-    from mutagent.toolkits.log_toolkit import LogToolkit
-    from mutagent.runtime.module_manager import ModuleManager
-    from mutagent.runtime.log_store import LogStore, LogStoreHandler
-    from mutagent.runtime.api_recorder import ApiRecorder
-
-    # Load config
-    config = Config.load(".mutagent/config.json")
 
     # Set env vars
     for key, value in config.get("env", {}).items():
@@ -235,15 +138,58 @@ def create_agent(
     for module_name in config.get("modules", []):
         importlib.import_module(module_name)
 
+
+def create_llm_client(
+    config: Config,
+    model_name: str = "",
+    log_dir: Path | None = None,
+    session_ts: str = "",
+) -> LLMClient:
+    """根据 Config 创建 LLMClient 实例（含可选的 API 录制器）。"""
+    from mutagent.runtime.api_recorder import ApiRecorder
+
     # Get model config (convert SystemExit to RuntimeError for web context)
-    model_name = (agent_config or {}).get("model")
     try:
-        model = config.get_model(model_name)
+        model = config.get_model(model_name or None)
     except SystemExit as e:
         raise RuntimeError(str(e)) from None
 
-    # Build components
-    search_dirs = [_Path.home() / ".mutagent", _Path.cwd() / ".mutagent"]
+    # API call recorder (JSONL, shared log_dir with mutbot)
+    api_recorder = None
+    if log_dir and session_ts:
+        api_recorder = ApiRecorder(log_dir, mode="incremental", session_ts=session_ts)
+        logger.info("API recorder enabled (session_ts=%s)", session_ts)
+
+    return LLMClient(
+        model=model.get("model_id", ""),
+        api_key=model.get("auth_token", ""),
+        base_url=model.get("base_url", ""),
+        api_recorder=api_recorder,
+    )
+
+
+def build_default_agent(
+    session: AgentSession,
+    config: Config,
+    log_dir: Path | None = None,
+    session_ts: str = "",
+    messages: list[Message] | None = None,
+) -> Agent:
+    """AgentSession 基类的默认 create_agent 实现。
+
+    组装 ModuleToolkit + LogToolkit + auto_discover 的标准 Agent。
+    """
+    from mutagent.toolkits.module_toolkit import ModuleToolkit
+    from mutagent.toolkits.log_toolkit import LogToolkit
+    from mutagent.runtime.module_manager import ModuleManager
+    from mutagent.runtime.log_store import LogStore
+
+    setup_environment(config)
+
+    client = create_llm_client(config, session.model, log_dir, session_ts)
+
+    # Build tool set
+    search_dirs = [Path.home() / ".mutagent", Path.cwd() / ".mutagent"]
     module_manager = ModuleManager(search_dirs=search_dirs)
     module_tools = ModuleToolkit(module_manager=module_manager)
 
@@ -254,20 +200,7 @@ def create_agent(
     tool_set.add(module_tools)
     tool_set.add(log_tools)
 
-    # API call recorder (JSONL, shared log_dir with mutbot)
-    api_recorder = None
-    if log_dir and session_ts:
-        api_recorder = ApiRecorder(log_dir, mode="incremental", session_ts=session_ts)
-        logger.info("API recorder enabled (session_ts=%s)", session_ts)
-
-    client = LLMClient(
-        model=model.get("model_id", ""),
-        api_key=model.get("auth_token", ""),
-        base_url=model.get("base_url", ""),
-        api_recorder=api_recorder,
-    )
-
-    system_prompt = (agent_config or {}).get("system_prompt", "")
+    system_prompt = session.system_prompt
     if not system_prompt:
         system_prompt = (
             "You are a Python AI Agent with the ability to inspect, modify, "
@@ -285,6 +218,27 @@ def create_agent(
     return agent
 
 
+# 保持向后兼容的全局工厂函数（已弃用，请使用 session.create_agent()）
+def create_agent(
+    agent_config: dict[str, Any] | None = None,
+    log_dir: Path | None = None,
+    session_ts: str = "",
+    messages: list[Message] | None = None,
+) -> Agent:
+    """Assemble a mutagent Agent from configuration.
+
+    .. deprecated::
+        Use ``AgentSession.create_agent()`` instead.
+    """
+    config = Config.load(".mutagent/config.json")
+    session = AgentSession(
+        id="", workspace_id="", title="",
+        model=(agent_config or {}).get("model", ""),
+        system_prompt=(agent_config or {}).get("system_prompt", ""),
+    )
+    return build_default_agent(session, config, log_dir, session_ts, messages)
+
+
 # ---------------------------------------------------------------------------
 # SessionManager
 # ---------------------------------------------------------------------------
@@ -299,11 +253,21 @@ class SessionManager:
     def __init__(self) -> None:
         self._sessions: dict[str, Session] = {}
         self._runtimes: dict[str, SessionRuntime] = {}
+        self._config: Config | None = None
         # Set by server.py lifespan for log/API recording
         self.session_ts: str = ""
         self.log_dir: Path | None = None
         # Set by server.py lifespan for terminal session management
         self.terminal_manager: Any = None
+        # 跨线程广播支持（Agent 线程创建 Session 时使用）
+        self._event_loop: asyncio.AbstractEventLoop | None = None
+        self._broadcast_fn: Any = None  # async callable(event_data: dict)
+
+    def _get_config(self) -> Config:
+        """懒加载 Config（首次调用时读取配置文件）。"""
+        if self._config is None:
+            self._config = Config.load(".mutagent/config.json")
+        return self._config
 
     # --- Runtime 访问 ---
 
@@ -390,19 +354,20 @@ class SessionManager:
     def create(
         self,
         workspace_id: str,
-        session_type: str = "agent",
+        session_type: str = DEFAULT_SESSION_TYPE,
         config: dict[str, Any] | None = None,
         agent_config: dict[str, Any] | None = None,
     ) -> Session:
         now = datetime.now(timezone.utc).isoformat()
 
-        # 查找对应的 Session 子类
+        # 查找对应的 Session 子类（支持旧短名称）
         cls = get_session_class(session_type)
 
-        # 自动生成标题
-        type_counts = sum(1 for s in self._sessions.values() if s.type == session_type)
-        type_labels = {"agent": "Agent", "terminal": "Terminal", "document": "Document"}
-        label = type_labels.get(session_type, session_type.capitalize())
+        # 自动生成标题：从类名推导标签
+        type_counts = sum(1 for s in self._sessions.values() if type(s) is cls)
+        label = cls.__name__
+        if label.endswith("Session"):
+            label = label[:-7]
         title = f"{label} {type_counts + 1}"
 
         session = cls(
@@ -415,6 +380,7 @@ class SessionManager:
         )
         self._sessions[session.id] = session
         self._persist(session)
+        self._maybe_broadcast_created(session)
         return session
 
     def get(self, session_id: str) -> Session | None:
@@ -425,6 +391,46 @@ class SessionManager:
             s for s in self._sessions.values()
             if s.workspace_id == workspace_id and not s.deleted
         ]
+
+    # --- 跨线程广播 ---
+
+    def set_broadcast(self, loop: asyncio.AbstractEventLoop, broadcast_fn: Any) -> None:
+        """设置广播回调（由 workspace WebSocket handler 调用）。
+
+        Args:
+            loop: 事件循环（用于从 Agent 线程安全调度异步调用）。
+            broadcast_fn: async callable(workspace_id: str, event_data: dict)，
+                          广播到指定 workspace 的所有客户端。
+        """
+        self._event_loop = loop
+        self._broadcast_fn = broadcast_fn
+
+    def _maybe_broadcast_created(self, session: Session) -> None:
+        """如果配置了广播回调，广播 session_created 事件。"""
+        if self._broadcast_fn is None or self._event_loop is None:
+            return
+        # 构建事件数据（与 routes.py _session_dict 格式一致）
+        data = session.serialize()
+        # 添加 kind 字段
+        qname = data.get("type", "")
+        parts = qname.rsplit(".", 1)
+        name = parts[-1] if parts else qname
+        if name.endswith("Session"):
+            name = name[:-7]
+        data["kind"] = name.lower()
+
+        event = {"type": "event", "event": "session_created", "data": data}
+        loop = self._event_loop
+        broadcast = self._broadcast_fn
+        workspace_id = session.workspace_id
+        # 从任意线程安全调度到事件循环
+        try:
+            loop.call_soon_threadsafe(
+                asyncio.ensure_future, broadcast(workspace_id, event)
+            )
+        except RuntimeError:
+            # 事件循环已关闭
+            pass
 
     # --- Agent 生命周期 ---
 
@@ -438,7 +444,7 @@ class SessionManager:
         """
         session = self._sessions[session_id]
         if not isinstance(session, AgentSession):
-            raise ValueError(f"Cannot start agent bridge for {session.type!r} session")
+            raise ValueError(f"Cannot start agent bridge for {type(session).__name__} session")
 
         # 如果已有 runtime，返回现有 bridge
         rt = self.get_agent_runtime(session_id)
@@ -450,10 +456,13 @@ class SessionManager:
         if saved_messages:
             logger.info("Session %s: restoring %d messages", session_id, len(saved_messages))
 
-        agent = create_agent(
+        config = self._get_config()
+        agent = session.create_agent(
+            config=config,
             log_dir=self.log_dir,
             session_ts=self.session_ts,
             messages=saved_messages if saved_messages else None,
+            session_manager=self,
         )
 
         input_q: queue.Queue = queue.Queue()
@@ -478,6 +487,14 @@ class SessionManager:
 
         bridge.start()
         logger.info("Session %s: agent started", session_id)
+
+        # 如果 config 中有 initial_message，自动作为第一条用户消息发送
+        initial_message = session.config.pop("initial_message", None)
+        if initial_message:
+            bridge.send_message(initial_message)
+            self._persist(session)
+            logger.info("Session %s: sent initial_message (%d chars)", session_id, len(initial_message))
+
         return bridge
 
     async def stop(self, session_id: str) -> None:
@@ -506,4 +523,4 @@ class SessionManager:
         session.status = "ended"
         session.updated_at = datetime.now(timezone.utc).isoformat()
         self._persist(session)
-        logger.info("Session %s (%s): stopped", session_id, session.type)
+        logger.info("Session %s (%s): stopped", session_id, type(session).__name__)

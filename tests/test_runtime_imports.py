@@ -1,10 +1,45 @@
-"""测试 runtime 模块重组后的 import 路径正确性（Phase 1）"""
+"""测试模块重组后的 import 路径正确性"""
 
 import importlib
 
 
 # ---------------------------------------------------------------------------
-# 模块可导入性
+# 新公开 API 模块可导入性
+# ---------------------------------------------------------------------------
+
+def test_import_mutbot_session():
+    """mutbot.session 模块（公开 API）可导入且包含核心类"""
+    from mutbot.session import (
+        Session, AgentSession, TerminalSession, DocumentSession,
+        get_session_class,
+    )
+    assert issubclass(AgentSession, Session)
+    assert issubclass(TerminalSession, Session)
+    assert issubclass(DocumentSession, Session)
+
+
+def test_import_mutbot_menu():
+    """mutbot.menu 模块（公开 API）可导入且包含核心类"""
+    from mutbot.menu import Menu, MenuItem, MenuResult
+    assert hasattr(Menu, "execute")
+    assert hasattr(Menu, "dynamic_items")
+
+
+def test_import_mutbot_builtins():
+    """mutbot.builtins 包可导入"""
+    import mutbot.builtins
+    from mutbot.builtins.menus import AddSessionMenu, RenameSessionMenu
+    assert hasattr(AddSessionMenu, "execute")
+
+
+def test_import_mutbot_top_level():
+    """mutbot 顶层包导出核心类型"""
+    from mutbot import Session, AgentSession, Menu, MenuItem, MenuResult
+    assert issubclass(AgentSession, Session)
+
+
+# ---------------------------------------------------------------------------
+# 实现模块可导入性
 # ---------------------------------------------------------------------------
 
 def test_import_runtime_storage():
@@ -28,16 +63,42 @@ def test_import_runtime_workspace():
     assert hasattr(wm, "list_all")
 
 
-def test_import_runtime_session():
-    """runtime.session 模块可导入且包含 Session 相关类"""
-    from mutbot.runtime.session import (
-        Session, AgentSession, TerminalSession, DocumentSession,
+def test_import_runtime_session_impl():
+    """runtime.session_impl 模块可导入且包含 SessionManager"""
+    from mutbot.runtime.session_impl import (
         SessionManager, SessionRuntime, AgentSessionRuntime,
-        get_session_type_map, get_session_class,
+        create_agent, _session_from_dict,
     )
-    assert issubclass(AgentSession, Session)
-    assert issubclass(TerminalSession, Session)
-    assert issubclass(DocumentSession, Session)
+    assert hasattr(SessionManager, "create")
+    assert hasattr(SessionManager, "start")
+
+
+def test_import_runtime_menu_impl():
+    """runtime.menu_impl 模块可导入且包含 MenuRegistry"""
+    from mutbot.runtime.menu_impl import (
+        MenuRegistry, menu_registry,
+        _get_attr_default, _menu_id, _item_to_dict,
+    )
+    assert hasattr(MenuRegistry, "query")
+    assert hasattr(MenuRegistry, "find_menu_class")
+
+
+def test_old_runtime_session_removed():
+    """旧路径 mutbot.runtime.session 已删除"""
+    try:
+        importlib.import_module("mutbot.runtime.session")
+        assert False, "mutbot.runtime.session should not exist"
+    except (ModuleNotFoundError, ImportError):
+        pass
+
+
+def test_old_runtime_menu_removed():
+    """旧路径 mutbot.runtime.menu 已删除"""
+    try:
+        importlib.import_module("mutbot.runtime.menu")
+        assert False, "mutbot.runtime.menu should not exist"
+    except (ModuleNotFoundError, ImportError):
+        pass
 
 
 def test_import_runtime_terminal():
@@ -87,15 +148,6 @@ def test_old_workspace_import_removed():
         pass
 
 
-def test_old_session_import_removed():
-    """旧路径 mutbot.session 不再存在"""
-    try:
-        importlib.import_module("mutbot.session")
-        assert False, "mutbot.session should not exist"
-    except (ModuleNotFoundError, ImportError):
-        pass
-
-
 def test_old_web_terminal_import_removed():
     """旧路径 mutbot.web.terminal 不再存在"""
     try:
@@ -122,6 +174,5 @@ def test_terminal_no_fastapi_dependency():
 def test_terminal_output_callback_type():
     """OutputCallback 类型定义正确"""
     from mutbot.runtime.terminal import OutputCallback
-    import typing
     # OutputCallback 应该是 Callable[[bytes], Awaitable[None]]
     assert OutputCallback is not None

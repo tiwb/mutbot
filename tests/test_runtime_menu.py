@@ -18,17 +18,15 @@ import pytest
 
 import mutobj
 
-from mutbot.runtime.menu import (
-    AddSessionMenu,
-    Menu,
-    MenuItem,
+from mutbot.menu import Menu, MenuItem, MenuResult
+from mutbot.runtime.menu_impl import (
     MenuRegistry,
-    MenuResult,
+    menu_registry,
     _get_attr_default,
     _item_to_dict,
     _menu_id,
-    menu_registry,
 )
+from mutbot.builtins.menus import AddSessionMenu
 from mutbot.web.rpc import RpcContext, RpcDispatcher
 
 
@@ -215,9 +213,9 @@ class TestAddSessionMenu:
         assert len(items) >= 3  # agent, terminal, document
 
         type_names = [it.data.get("session_type") for it in items]
-        assert "agent" in type_names
-        assert "terminal" in type_names
-        assert "document" in type_names
+        assert "mutbot.session.AgentSession" in type_names
+        assert "mutbot.session.TerminalSession" in type_names
+        assert "mutbot.session.DocumentSession" in type_names
 
     def test_dynamic_items_have_correct_format(self):
         ctx = _make_context()
@@ -324,12 +322,12 @@ class TestAddSessionMenu:
         result = menu.execute({"session_type": "agent"}, ctx)
         assert result.action == "error"
 
-    def test_execute_default_type_is_agent(self):
+    def test_execute_default_type_is_guide(self):
         class FakeSessionManager:
             def create(self, workspace_id, session_type, config=None):
                 class FakeSession:
                     id = "s1"
-                    title = "Agent 1"
+                    title = "Guide 1"
                 self.last_type = session_type
                 return FakeSession()
 
@@ -337,7 +335,7 @@ class TestAddSessionMenu:
         ctx = _make_context(managers={"session_manager": fake_sm})
         menu = AddSessionMenu()
         menu.execute({}, ctx)  # 不传 session_type
-        assert fake_sm.last_type == "agent"
+        assert fake_sm.last_type == "mutbot.builtins.guide.GuideSession"
 
 
 # ---------------------------------------------------------------------------
@@ -503,32 +501,32 @@ class TestMenuNewAttributes:
 class TestTabContextMenus:
 
     def test_rename_session_menu_attributes(self):
-        from mutbot.runtime.menu import RenameSessionMenu
+        from mutbot.builtins.menus import RenameSessionMenu
         assert _get_attr_default(RenameSessionMenu, "display_name") == "Rename"
         assert _get_attr_default(RenameSessionMenu, "display_category") == "Tab/Context"
         assert _get_attr_default(RenameSessionMenu, "display_shortcut") == "F2"
         assert _get_attr_default(RenameSessionMenu, "client_action") == "start_rename"
 
     def test_close_tab_menu_attributes(self):
-        from mutbot.runtime.menu import CloseTabMenu
+        from mutbot.builtins.menus import CloseTabMenu
         assert _get_attr_default(CloseTabMenu, "display_name") == "Close"
         assert _get_attr_default(CloseTabMenu, "client_action") == "close_tab"
 
     def test_close_others_menu_attributes(self):
-        from mutbot.runtime.menu import CloseOthersMenu
+        from mutbot.builtins.menus import CloseOthersMenu
         assert _get_attr_default(CloseOthersMenu, "display_name") == "Close Others"
         assert _get_attr_default(CloseOthersMenu, "client_action") == "close_others"
 
     def test_end_session_menu_check_enabled_active(self):
-        from mutbot.runtime.menu import EndSessionMenu
+        from mutbot.builtins.menus import EndSessionMenu
         assert EndSessionMenu.check_enabled({"session_status": "active"}) is True
 
     def test_end_session_menu_check_enabled_ended(self):
-        from mutbot.runtime.menu import EndSessionMenu
+        from mutbot.builtins.menus import EndSessionMenu
         assert EndSessionMenu.check_enabled({"session_status": "ended"}) is False
 
     def test_end_session_menu_check_enabled_no_status(self):
-        from mutbot.runtime.menu import EndSessionMenu
+        from mutbot.builtins.menus import EndSessionMenu
         assert EndSessionMenu.check_enabled({}) is None
 
     def test_tab_context_discovery(self):
@@ -567,18 +565,18 @@ class TestTabContextMenus:
 class TestSessionListContextMenus:
 
     def test_rename_session_list_menu_attributes(self):
-        from mutbot.runtime.menu import RenameSessionListMenu
+        from mutbot.builtins.menus import RenameSessionListMenu
         assert _get_attr_default(RenameSessionListMenu, "display_name") == "Rename"
         assert _get_attr_default(RenameSessionListMenu, "display_category") == "SessionList/Context"
         assert _get_attr_default(RenameSessionListMenu, "client_action") == "start_rename"
 
     def test_end_session_list_menu_check_enabled(self):
-        from mutbot.runtime.menu import EndSessionListMenu
+        from mutbot.builtins.menus import EndSessionListMenu
         assert EndSessionListMenu.check_enabled({"session_status": "active"}) is True
         assert EndSessionListMenu.check_enabled({"session_status": "ended"}) is False
 
     def test_delete_session_menu_attributes(self):
-        from mutbot.runtime.menu import DeleteSessionMenu
+        from mutbot.builtins.menus import DeleteSessionMenu
         assert _get_attr_default(DeleteSessionMenu, "display_name") == "Delete"
         assert _get_attr_default(DeleteSessionMenu, "display_category") == "SessionList/Context"
 

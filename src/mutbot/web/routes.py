@@ -12,7 +12,8 @@ from fastapi.responses import JSONResponse
 
 from mutbot.web.connection import ConnectionManager
 from mutbot.web.rpc import RpcDispatcher, RpcContext, make_event
-from mutbot.runtime.menu import menu_registry, MenuResult
+from mutbot.runtime.menu_impl import menu_registry
+from mutbot.menu import MenuResult
 
 logger = logging.getLogger(__name__)
 
@@ -101,11 +102,22 @@ async def handle_session_create(params: dict, ctx: RpcContext) -> dict:
     if ws is None:
         return {"error": "workspace not found"}
 
-    session_type = params.get("type", "agent")
+    session_type = params.get("type", "")
     config = params.get("config")
 
+    # 未指定类型时使用默认（GuideSession）
+    from mutbot.session import (
+        get_session_class, TerminalSession, DocumentSession, DEFAULT_SESSION_TYPE,
+    )
+    if not session_type:
+        session_type = DEFAULT_SESSION_TYPE
+    try:
+        session_cls = get_session_class(session_type)
+    except ValueError:
+        return {"error": f"unknown session type: {session_type}"}
+
     # terminal 类型需创建 PTY
-    if session_type == "terminal":
+    if issubclass(session_cls, TerminalSession):
         tm = ctx.managers.get("terminal_manager")
         if tm is None:
             return {"error": "terminal manager not available"}
@@ -116,7 +128,7 @@ async def handle_session_create(params: dict, ctx: RpcContext) -> dict:
         config["terminal_id"] = term.id
 
     # document 类型生成默认文件路径
-    if session_type == "document":
+    if issubclass(session_cls, DocumentSession):
         import time
         config = config or {}
         config.setdefault("file_path", f"untitled-{int(time.time() * 1000)}.md")
@@ -128,6 +140,27 @@ async def handle_session_create(params: dict, ctx: RpcContext) -> dict:
     data = _session_dict(session)
     await ctx.broadcast_event("session_created", data)
     return data
+
+
+@workspace_rpc.method("session.types")
+async def handle_session_types(params: dict, ctx: RpcContext) -> list[dict]:
+    """返回可用的 Session 类型列表"""
+    import mutobj
+    from mutbot.session import Session, AgentSession
+
+    result = []
+    for cls in mutobj.discover_subclasses(Session):
+        qualified = f"{cls.__module__}.{cls.__qualname__}"
+        kind = _session_kind(qualified)
+        label, icon = _session_type_display(qualified, cls)
+        result.append({
+            "type": qualified,
+            "kind": kind,
+            "label": label,
+            "icon": icon,
+            "is_agent": issubclass(cls, AgentSession),
+        })
+    return result
 
 
 @workspace_rpc.method("session.list")
@@ -396,11 +429,14 @@ def _workspace_dict(ws) -> dict[str, Any]:
 
 
 def _session_dict(s) -> dict[str, Any]:
+    # kind: 从全限定名推导短类型名，供前端 switch/display 使用
+    kind = _session_kind(s.type)
     return {
         "id": s.id,
         "workspace_id": s.workspace_id,
         "title": s.title,
         "type": s.type,
+        "kind": kind,
         "status": s.status,
         "created_at": s.created_at,
         "updated_at": s.updated_at,
@@ -408,8 +444,50 @@ def _session_dict(s) -> dict[str, Any]:
     }
 
 
-# ---------------------------------------------------------------------------
-# Health check
+# 全限定名 → 短类型名映射（前端 switch 使用）
+_KIND_MAP: dict[str, str] = {
+    "mutbot.builtins.guide.GuideSession": "guide",
+    "mutbot.builtins.researcher.ResearcherSession": "researcher",
+    "mutbot.session.AgentSession": "agent",
+    "mutbot.session.TerminalSession": "terminal",
+    "mutbot.session.DocumentSession": "document",
+}
+
+
+def _session_kind(session_type: str) -> str:
+    """从全限定类型名推导短类型名。"""
+    if session_type in _KIND_MAP:
+        return _KIND_MAP[session_type]
+    # 旧短名称直接返回
+    if session_type in ("agent", "terminal", "document"):
+        return session_type
+    # 回退：从类名推导 ("GuideSession" → "guide")
+    parts = session_type.rsplit(".", 1)
+    name = parts[-1] if parts else session_type
+    if name.endswith("Session"):
+        name = name[:-7]
+    return name.lower()
+
+
+# 全限定名 → (显示名, 图标) 映射
+_TYPE_DISPLAY: dict[str, tuple[str, str]] = {
+    "mutbot.builtins.guide.GuideSession": ("Guide", "guide"),
+    "mutbot.builtins.researcher.ResearcherSession": ("Researcher", "researcher"),
+    "mutbot.session.AgentSession": ("Agent", "agent"),
+    "mutbot.session.TerminalSession": ("Terminal", "terminal"),
+    "mutbot.session.DocumentSession": ("Document", "document"),
+}
+
+
+def _session_type_display(qualified: str, cls: type) -> tuple[str, str]:
+    """获取 Session 类型的 (显示名, 图标)。"""
+    if qualified in _TYPE_DISPLAY:
+        return _TYPE_DISPLAY[qualified]
+    # 回退：从类名推导
+    name = cls.__name__
+    if name.endswith("Session"):
+        name = name[:-7]
+    return (name, _session_kind(qualified))
 # ---------------------------------------------------------------------------
 
 @router.get("/api/health")
@@ -714,6 +792,16 @@ async def websocket_workspace(websocket: WebSocket, workspace_id: str):
 
     async def broadcast(data: dict) -> None:
         await workspace_connection_manager.broadcast(workspace_id, data)
+
+    # 确保 SessionManager 能从 Agent 线程广播事件
+    if sm and not sm._broadcast_fn:
+        import asyncio as _asyncio
+        loop = _asyncio.get_running_loop()
+
+        async def _sm_broadcast(ws_id: str, data: dict) -> None:
+            await workspace_connection_manager.broadcast(ws_id, data)
+
+        sm.set_broadcast(loop, _sm_broadcast)
 
     context = RpcContext(
         workspace_id=workspace_id,

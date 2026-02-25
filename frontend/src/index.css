@@ -614,6 +614,18 @@ body,
   text-decoration: underline;
 }
 
+.markdown-body a.session-link {
+  color: var(--accent);
+  cursor: pointer;
+  border-bottom: 1px dashed var(--accent);
+  text-decoration: none;
+}
+
+.markdown-body a.session-link:hover {
+  border-bottom-style: solid;
+  text-decoration: none;
+}
+
 .markdown-body strong {
   font-weight: 600;
 }

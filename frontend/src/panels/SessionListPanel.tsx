@@ -6,6 +6,7 @@ interface Session {
   id: string;
   title: string;
   type: string;
+  kind: string;
   status: string;
 }
 
@@ -48,8 +49,29 @@ function FileIcon({ size = 24, color = "currentColor" }: { size?: number; color?
   );
 }
 
-function getSessionIcon(type: string, size = 24, color = "currentColor") {
-  switch (type) {
+function GuideIcon({ size = 24, color = "currentColor" }: { size?: number; color?: string }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="10" />
+      <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" />
+      <line x1="12" y1="17" x2="12.01" y2="17" />
+    </svg>
+  );
+}
+
+function ResearcherIcon({ size = 24, color = "currentColor" }: { size?: number; color?: string }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="11" cy="11" r="8" />
+      <line x1="21" y1="21" x2="16.65" y2="16.65" />
+    </svg>
+  );
+}
+
+function getSessionIcon(kind: string, size = 24, color = "currentColor") {
+  switch (kind) {
+    case "guide": return <GuideIcon size={size} color={color} />;
+    case "researcher": return <ResearcherIcon size={size} color={color} />;
     case "agent": return <ChatIcon size={size} color={color} />;
     case "terminal": return <TerminalIcon size={size} color={color} />;
     case "document": return <FileIcon size={size} color={color} />;
@@ -192,7 +214,7 @@ export default function SessionListPanel({
               onContextMenu={(e) => handleContextMenu(e, s.id)}
               title={`${s.title} (${s.status})`}
             >
-              {getSessionIcon(s.type, 24, "#cccccc")}
+              {getSessionIcon(s.kind, 24, "#cccccc")}
             </div>
           ))}
         </div>
@@ -241,7 +263,7 @@ export default function SessionListPanel({
               onDoubleClick={() => startRename(s.id)}
             >
               <span className="session-type-icon">
-                {getSessionIcon(s.type, 16, "currentColor")}
+                {getSessionIcon(s.kind, 16, "currentColor")}
               </span>
               {renamingId === s.id ? (
                 <input

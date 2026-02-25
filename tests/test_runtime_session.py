@@ -1,8 +1,8 @@
-"""测试 Session Declaration 体系（Phase 2）
+"""测试 Session Declaration 体系
 
 涵盖：
 - Session Declaration 类层次
-- 类型注册表（mutobj 子类发现 API）
+- 类型注册表（mutobj 子类发现 API + 全限定名）
 - 序列化 / 反序列化
 - 旧持久化格式向后兼容
 - Runtime 分离模式
@@ -14,16 +14,18 @@ from __future__ import annotations
 import mutobj
 import pytest
 
-from mutbot.runtime.session import (
+from mutbot.session import (
     Session,
     AgentSession,
     DocumentSession,
     TerminalSession,
+    get_session_class,
+    _LEGACY_TYPE_MAP,
+)
+from mutbot.runtime.session_impl import (
     SessionManager,
     SessionRuntime,
     AgentSessionRuntime,
-    get_session_class,
-    get_session_type_map,
     _session_from_dict,
 )
 
@@ -47,17 +49,17 @@ class TestSessionHierarchy:
     def test_document_session_inherits_session(self):
         assert issubclass(DocumentSession, Session)
 
-    def test_agent_session_type_default(self):
+    def test_agent_session_type_auto_generated(self):
         s = AgentSession(id="a", workspace_id="w", title="t")
-        assert s.type == "agent"
+        assert s.type == "mutbot.session.AgentSession"
 
-    def test_terminal_session_type_default(self):
+    def test_terminal_session_type_auto_generated(self):
         s = TerminalSession(id="a", workspace_id="w", title="t")
-        assert s.type == "terminal"
+        assert s.type == "mutbot.session.TerminalSession"
 
-    def test_document_session_type_default(self):
+    def test_document_session_type_auto_generated(self):
         s = DocumentSession(id="a", workspace_id="w", title="t")
-        assert s.type == "document"
+        assert s.type == "mutbot.session.DocumentSession"
 
     def test_agent_session_extra_fields(self):
         s = AgentSession(id="a", workspace_id="w", title="t",
@@ -100,36 +102,31 @@ class TestConfigIsolation:
 
 
 # ---------------------------------------------------------------------------
-# 类型注册表
+# 类型注册表（全限定名模式）
 # ---------------------------------------------------------------------------
 
 class TestTypeRegistry:
-    """基于 mutobj.discover_subclasses 的类型注册表"""
+    """基于 mutobj.discover_subclasses + 全限定名的类型查找"""
 
-    def test_type_map_contains_all_builtin_types(self):
-        type_map = get_session_type_map()
-        assert "agent" in type_map
-        assert "terminal" in type_map
-        assert "document" in type_map
+    def test_get_session_class_by_qualified_name(self):
+        assert get_session_class("mutbot.session.AgentSession") is AgentSession
+        assert get_session_class("mutbot.session.TerminalSession") is TerminalSession
+        assert get_session_class("mutbot.session.DocumentSession") is DocumentSession
 
-    def test_type_map_correct_classes(self):
-        type_map = get_session_type_map()
-        assert type_map["agent"] is AgentSession
-        assert type_map["terminal"] is TerminalSession
-        assert type_map["document"] is DocumentSession
-
-    def test_get_session_class_agent(self):
+    def test_get_session_class_legacy_names(self):
+        """旧短名称通过 _LEGACY_TYPE_MAP 兼容"""
         assert get_session_class("agent") is AgentSession
-
-    def test_get_session_class_terminal(self):
         assert get_session_class("terminal") is TerminalSession
-
-    def test_get_session_class_document(self):
         assert get_session_class("document") is DocumentSession
 
     def test_get_session_class_unknown_raises(self):
         with pytest.raises(ValueError, match="Unknown session type"):
             get_session_class("nonexistent")
+
+    def test_legacy_type_map_covers_builtins(self):
+        assert "agent" in _LEGACY_TYPE_MAP
+        assert "terminal" in _LEGACY_TYPE_MAP
+        assert "document" in _LEGACY_TYPE_MAP
 
     def test_discover_subclasses_includes_all(self):
         subs = mutobj.discover_subclasses(Session)
@@ -151,7 +148,7 @@ class TestSerialization:
         )
         d = s.serialize()
         assert d["id"] == "abc"
-        assert d["type"] == "agent"
+        assert d["type"] == "mutbot.session.AgentSession"
         assert d["config"] == {"k": "v"}
         assert d["deleted"] is False
 
@@ -160,7 +157,7 @@ class TestSerialization:
             id="xyz", workspace_id="ws1", title="Term",
         )
         d = s.serialize()
-        assert d["type"] == "terminal"
+        assert d["type"] == "mutbot.session.TerminalSession"
 
     def test_serialize_roundtrip_agent(self):
         original = AgentSession(
@@ -172,7 +169,7 @@ class TestSerialization:
         restored = _session_from_dict(data)
         assert isinstance(restored, AgentSession)
         assert restored.id == original.id
-        assert restored.type == "agent"
+        assert restored.type == "mutbot.session.AgentSession"
         assert restored.config == {"model": "gpt-4"}
         assert restored.status == "active"
         assert restored.created_at == "2026-01-01"
@@ -201,7 +198,7 @@ class TestSerialization:
 # ---------------------------------------------------------------------------
 
 class TestBackwardCompatibility:
-    """从旧 dataclass 格式的 JSON 正确反序列化"""
+    """从旧 dataclass 格式的 JSON 正确反序列化（旧短名称 → 全限定名）"""
 
     def test_old_agent_session_data(self):
         old_data = {
@@ -218,7 +215,8 @@ class TestBackwardCompatibility:
         session = _session_from_dict(old_data)
         assert isinstance(session, AgentSession)
         assert session.id == "abc123"
-        assert session.type == "agent"
+        # 旧短名称 "agent" 被映射为全限定名
+        assert session.type == "mutbot.session.AgentSession"
         assert session.config == {"model": "test"}
 
     def test_old_terminal_session_data(self):
@@ -232,6 +230,7 @@ class TestBackwardCompatibility:
         }
         session = _session_from_dict(old_data)
         assert isinstance(session, TerminalSession)
+        assert session.type == "mutbot.session.TerminalSession"
         assert session.config["terminal_id"] == "tid1"
 
     def test_old_document_session_data(self):
@@ -245,6 +244,7 @@ class TestBackwardCompatibility:
         }
         session = _session_from_dict(old_data)
         assert isinstance(session, DocumentSession)
+        assert session.type == "mutbot.session.DocumentSession"
 
     def test_unknown_type_falls_back_to_session(self):
         data = {"id": "u1", "type": "unknown", "workspace_id": "w", "title": "t"}
@@ -311,29 +311,36 @@ class TestSessionManager:
 
     def test_create_agent_session(self):
         sm = self._make_manager()
-        session = sm.create("ws1", session_type="agent")
+        session = sm.create("ws1", session_type="mutbot.session.AgentSession")
         assert isinstance(session, AgentSession)
-        assert session.type == "agent"
+        assert session.type == "mutbot.session.AgentSession"
         assert session.workspace_id == "ws1"
         assert session.title == "Agent 1"
 
+    def test_create_agent_session_legacy_type(self):
+        """旧短名称仍然可用"""
+        sm = self._make_manager()
+        session = sm.create("ws1", session_type="agent")
+        assert isinstance(session, AgentSession)
+        assert session.type == "mutbot.session.AgentSession"
+
     def test_create_terminal_session(self):
         sm = self._make_manager()
-        session = sm.create("ws1", session_type="terminal")
+        session = sm.create("ws1", session_type="mutbot.session.TerminalSession")
         assert isinstance(session, TerminalSession)
-        assert session.type == "terminal"
+        assert session.type == "mutbot.session.TerminalSession"
         assert session.title == "Terminal 1"
 
     def test_create_document_session(self):
         sm = self._make_manager()
-        session = sm.create("ws1", session_type="document")
+        session = sm.create("ws1", session_type="mutbot.session.DocumentSession")
         assert isinstance(session, DocumentSession)
-        assert session.type == "document"
+        assert session.type == "mutbot.session.DocumentSession"
 
     def test_create_auto_increment_title(self):
         sm = self._make_manager()
-        s1 = sm.create("ws1", session_type="agent")
-        s2 = sm.create("ws1", session_type="agent")
+        s1 = sm.create("ws1", session_type="mutbot.session.AgentSession")
+        s2 = sm.create("ws1", session_type="mutbot.session.AgentSession")
         assert s1.title == "Agent 1"
         assert s2.title == "Agent 2"
 
@@ -397,7 +404,7 @@ class TestSessionManager:
 
     def test_get_agent_runtime_none_initially(self):
         sm = self._make_manager()
-        s = sm.create("ws1", session_type="agent")
+        s = sm.create("ws1")
         assert sm.get_agent_runtime(s.id) is None
 
     def test_create_with_config(self):
