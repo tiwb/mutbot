@@ -52,13 +52,13 @@ def create_llm_router(config: dict[str, Any]) -> APIRouter:
             })
         return JSONResponse({"object": "list", "data": models})
 
-    @router.post("/v1/messages")
+    @router.post("/v1/messages", response_model=None)
     async def proxy_anthropic(request: Request) -> StreamingResponse | JSONResponse:
         """Anthropic Messages 格式代理端点。"""
         body = await request.json()
         return await _proxy_request(body, client_format="anthropic")
 
-    @router.post("/v1/chat/completions")
+    @router.post("/v1/chat/completions", response_model=None)
     async def proxy_openai(request: Request) -> StreamingResponse | JSONResponse:
         """OpenAI Chat Completions 格式代理端点。"""
         body = await request.json()
