@@ -309,8 +309,7 @@ class SessionManager:
         self._sessions: dict[str, Session] = {}
         self._runtimes: dict[str, SessionRuntime] = {}
         self._config: Config | None = None
-        # Set by server.py lifespan for log/API recording
-        self.session_ts: str = ""
+        # Set by server.py lifespan for per-session API recording
         self.log_dir: Path | None = None
         # Set by server.py lifespan for terminal session management
         self.terminal_manager: Any = None
@@ -518,7 +517,7 @@ class SessionManager:
         agent = session.create_agent(
             config=config,
             log_dir=self.log_dir,
-            session_ts=self.session_ts,
+            session_ts=session_id,
             messages=saved_messages if saved_messages else None,
             session_manager=self,
         )

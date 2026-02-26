@@ -11,8 +11,8 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
-# Default root for mutbot persistence
-MUTBOT_DIR = ".mutbot"
+# Default root for mutbot persistence (用户级，所有项目共享)
+MUTBOT_DIR = str(Path.home() / ".mutbot")
 
 
 def _ensure_dir(path: Path) -> None:

@@ -51,7 +51,7 @@ def test_import_runtime_storage():
         append_session_event, load_session_events,
         MUTBOT_DIR,
     )
-    assert MUTBOT_DIR == ".mutbot"
+    assert MUTBOT_DIR.endswith(".mutbot")
 
 
 def test_import_runtime_workspace():

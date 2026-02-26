@@ -141,9 +141,9 @@ async def lifespan(app: FastAPI):
 
     workspace_manager.ensure_default()
 
-    # --- Unified logging setup (mirrors mutagent pattern) ---
+    # --- Unified logging setup ---
     session_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    log_dir = Path(".mutagent/logs")
+    log_dir = Path.home() / ".mutbot" / "logs"
 
     log_store = LogStore()
 
@@ -157,10 +157,10 @@ async def lifespan(app: FastAPI):
         mem_handler.setFormatter(logging.Formatter("%(message)s"))
         root_logger.addHandler(mem_handler)
 
-        # File handler → .mutagent/logs/YYYYMMDD_HHMMSS-log.log
+        # File handler → ~/.mutbot/logs/server-YYYYMMDD_HHMMSS-log.log
         log_dir.mkdir(parents=True, exist_ok=True)
         file_handler = logging.FileHandler(
-            log_dir / f"{session_ts}-log.log", encoding="utf-8",
+            log_dir / f"server-{session_ts}-log.log", encoding="utf-8",
         )
         file_handler.setLevel(logging.DEBUG)
         file_handler.setFormatter(SingleLineFormatter(
@@ -170,8 +170,7 @@ async def lifespan(app: FastAPI):
 
     logger.info("Logging initialized (session=%s, log_dir=%s)", session_ts, log_dir)
 
-    # Pass session_ts and log_dir to SessionManager for API recording
-    session_manager.session_ts = session_ts
+    # Pass log_dir to SessionManager for per-session API recording
     session_manager.log_dir = log_dir
     # Wire terminal_manager for Terminal Session lifecycle
     session_manager.terminal_manager = terminal_manager
