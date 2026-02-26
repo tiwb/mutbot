@@ -983,67 +983,199 @@ body,
 }
 
 /* Chat input */
-.chat-input {
+.chat-input-container {
   display: flex;
-  gap: 8px;
-  padding: 12px 16px;
-  background: var(--bg-sidebar);
-}
-
-.chat-input textarea {
-  flex: 1;
-  resize: none;
+  flex-direction: column;
+  margin: 8px 16px 12px;
   background: var(--bg-input);
   border: 1px solid transparent;
   border-radius: 8px;
-  padding: 10px 12px;
-  color: var(--text);
-  font-family: inherit;
-  font-size: 13px;
-  outline: none;
   transition: border-color 0.2s;
+  cursor: text;
 }
 
-.chat-input textarea:focus {
+.chat-input-container.focused {
   border-color: var(--accent);
 }
 
-.chat-input textarea:disabled {
+.chat-input-container textarea {
+  width: 100%;
+  resize: none;
+  background: transparent;
+  border: none;
+  padding: 10px 12px 4px;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 20px;
+  outline: none;
+  overflow-y: hidden;
+  min-height: 20px;
+  box-sizing: border-box;
+}
+
+.chat-input-container textarea:disabled {
   opacity: 0.5;
 }
 
-.chat-input-buttons {
+/* Toolbar */
+.chat-input-toolbar {
   display: flex;
-  flex-direction: column;
-  gap: 4px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 8px 6px;
+  gap: 8px;
 }
 
-.chat-input button {
-  padding: 10px 20px;
-  background: var(--accent);
+.toolbar-left {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.toolbar-right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* Toolbar icon buttons (placeholder) */
+.toolbar-icon-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  color: var(--text-dim, #888);
+  cursor: not-allowed;
+  opacity: 0.4;
+  transition: opacity 0.15s;
+}
+
+/* Stop button */
+.stop-btn {
+  height: 28px;
+  padding: 0 12px;
+  background: var(--error, #e53935);
   color: white;
   border: none;
-  border-radius: 2px;
+  border-radius: 6px;
   cursor: pointer;
   font-family: inherit;
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 600;
-  transition: opacity 0.2s;
+  transition: opacity 0.15s;
 }
 
-.chat-input button:hover:not(:disabled) {
+.stop-btn:hover:not(:disabled) {
   opacity: 0.85;
 }
 
-.chat-input button:disabled {
+.stop-btn:disabled {
   opacity: 0.4;
   cursor: not-allowed;
 }
 
-.chat-input button.stop-button {
-  background: var(--error, #e53935);
-  padding: 6px 20px;
+/* Send button group */
+.send-btn-group {
+  display: flex;
+  position: relative;
+}
+
+.send-btn {
+  height: 28px;
+  padding: 0 12px;
+  background: var(--accent);
+  color: white;
+  border: none;
+  border-radius: 6px 0 0 6px;
+  cursor: pointer;
+  font-family: inherit;
   font-size: 12px;
+  font-weight: 600;
+  transition: opacity 0.15s;
+}
+
+.send-btn:hover:not(:disabled) {
+  opacity: 0.85;
+}
+
+.send-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.send-dropdown-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 28px;
+  padding: 0;
+  background: var(--accent);
+  color: white;
+  border: none;
+  border-left: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 0 6px 6px 0;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+
+.send-dropdown-btn:hover {
+  opacity: 0.85;
+}
+
+.send-dropdown-btn.dimmed {
+  opacity: 0.4;
+}
+
+.send-dropdown-btn.dimmed:hover {
+  opacity: 0.6;
+}
+
+/* Send mode dropdown menu */
+.send-mode-menu {
+  position: absolute;
+  bottom: calc(100% + 4px);
+  right: 0;
+  background: var(--bg-panel, #2d2d2d);
+  border: 1px solid var(--border, #404040);
+  border-radius: 6px;
+  box-shadow: 0 -4px 12px rgba(0, 0, 0, 0.3);
+  padding: 4px;
+  z-index: 100;
+  min-width: 170px;
+}
+
+.send-mode-menu button {
+  display: block;
+  width: 100%;
+  padding: 6px 10px;
+  background: transparent;
+  color: var(--text);
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 12px;
+  text-align: left;
+  transition: background 0.1s;
+}
+
+.send-mode-menu button:hover {
+  background: var(--bg-hover, #3c3c3c);
+}
+
+.send-mode-menu button.active {
+  color: var(--accent);
+}
+
+.send-mode-menu button.active::before {
+  content: "\2713 ";
 }
 
 /* ----------------------------------------------------------------
