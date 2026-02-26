@@ -43,7 +43,14 @@ class CopilotProvider(LLMProvider):
 
     @classmethod
     def from_config(cls, config: dict) -> "CopilotProvider":
+        github_token = config.get("github_token")
+        if not github_token:
+            raise ValueError(
+                "CopilotProvider requires 'github_token' in model config.\n"
+                "Run the setup wizard or add github_token to your config."
+            )
         auth = CopilotAuth.get_instance()
+        auth.github_token = github_token
         auth.ensure_authenticated()
         return cls(
             auth=auth,

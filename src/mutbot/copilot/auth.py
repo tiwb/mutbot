@@ -1,18 +1,16 @@
 """mutbot.copilot.auth -- GitHub Copilot 认证管理。
 
 认证流程：
-1. GitHub OAuth 设备流获取 GitHub token（持久化到磁盘）
+1. GitHub token 由配置文件（~/.mutbot/config.json）中的 github_token 字段提供
 2. GitHub token 换取 Copilot JWT（仅内存，过期时自动刷新）
+3. 首次认证通过 setup wizard 的 OAuth 设备流完成
 """
 
 from __future__ import annotations
 
-import json
 import logging
 import sys
 import time
-from pathlib import Path
-from typing import Any
 
 import requests
 
@@ -20,10 +18,6 @@ logger = logging.getLogger(__name__)
 
 # VS Code Copilot Chat 使用的 Client ID
 GITHUB_CLIENT_ID = "Iv1.b507a08c87ecfe98"
-
-# Token 存储路径
-TOKEN_DIR = Path.home() / ".local" / "share" / "mutbot" / "copilot"
-TOKEN_PATH = TOKEN_DIR / "github_token"
 
 # Copilot API base URLs（按账户类型）
 COPILOT_BASE_URLS = {
@@ -40,7 +34,7 @@ class CopilotAuth:
     """GitHub Copilot 认证管理（单例）。
 
     管理两层 token：
-    - github_token: 通过 OAuth 设备流获取，持久化到磁盘
+    - github_token: 由调用方（配置或向导）设置
     - copilot_token: 通过 github_token 换取的 JWT，仅在内存中
     """
 
@@ -50,7 +44,6 @@ class CopilotAuth:
         self.github_token: str | None = None
         self.copilot_token: str | None = None
         self.expires_at: float = 0.0
-        self._load_github_token()
 
     @classmethod
     def get_instance(cls) -> CopilotAuth:
@@ -70,7 +63,7 @@ class CopilotAuth:
         """
         if not self.github_token:
             raise RuntimeError(
-                "Not authenticated. Run `python -m mutbot.copilot.auth` to authenticate."
+                "Not authenticated. Run `python -m mutbot` to start the setup wizard."
             )
         if self._is_expired():
             self._refresh_copilot_token()
@@ -107,21 +100,6 @@ class CopilotAuth:
     def _is_expired(self) -> bool:
         """检查 Copilot JWT 是否已过期（提前 5 分钟）。"""
         return self.copilot_token is None or time.time() >= (self.expires_at - 300)
-
-    def _load_github_token(self) -> None:
-        """从磁盘加载 GitHub token。"""
-        if TOKEN_PATH.exists():
-            try:
-                self.github_token = TOKEN_PATH.read_text().strip()
-                logger.info("Loaded GitHub token from %s", TOKEN_PATH)
-            except Exception as e:
-                logger.warning("Failed to load GitHub token: %s", e)
-
-    def _save_github_token(self) -> None:
-        """持久化 GitHub token 到磁盘。"""
-        TOKEN_DIR.mkdir(parents=True, exist_ok=True)
-        TOKEN_PATH.write_text(self.github_token or "")
-        logger.info("Saved GitHub token to %s", TOKEN_PATH)
 
     def _device_flow(self) -> None:
         """GitHub OAuth 设备流。
@@ -182,7 +160,6 @@ class CopilotAuth:
 
             # 成功
             self.github_token = data["access_token"]
-            self._save_github_token()
             logger.info("GitHub authentication successful")
             return
 
@@ -201,12 +178,11 @@ class CopilotAuth:
         )
 
         if resp.status_code == 401:
-            # GitHub token 失效，清除并提示重新认证
             self.github_token = None
             self.copilot_token = None
-            TOKEN_PATH.unlink(missing_ok=True)
             raise RuntimeError(
-                "GitHub token expired. Run `python -m mutbot.copilot.auth` to re-authenticate."
+                "GitHub token expired. Update github_token in ~/.mutbot/config.json "
+                "or re-run the setup wizard."
             )
 
         resp.raise_for_status()
@@ -217,17 +193,13 @@ class CopilotAuth:
         logger.info("Copilot JWT refreshed (expires_at=%.0f)", self.expires_at)
 
 
-def main() -> None:
-    """CLI 入口：交互式认证。"""
+if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(message)s")
-    auth = CopilotAuth.get_instance()
+    auth = CopilotAuth()
     try:
         auth.ensure_authenticated()
-        print("Authentication successful!")
+        print(f"Authentication successful! Token: {auth.github_token}")
+        print("Add this token as 'github_token' in your ~/.mutbot/config.json")
     except Exception as e:
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
-
-
-if __name__ == "__main__":
-    main()

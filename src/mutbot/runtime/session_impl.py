@@ -159,9 +159,10 @@ def setup_environment(config: Config) -> None:
 
 
 def _load_config() -> dict | None:
-    """加载 mutagent 配置文件，返回 models 相关配置 dict。供 proxy 等模块使用。"""
+    """加载 mutbot 配置文件，返回 models 相关配置 dict。供 proxy 等模块使用。"""
     try:
-        config = Config.load(".mutagent/config.json")
+        from mutbot.runtime.config import load_mutbot_config
+        config = load_mutbot_config()
         return {
             "models": config.get("models", {}),
             "default_model": config.get("default_model", ""),
@@ -259,27 +260,6 @@ def build_default_agent(
     return agent
 
 
-# 保持向后兼容的全局工厂函数（已弃用，请使用 session.create_agent()）
-def create_agent(
-    agent_config: dict[str, Any] | None = None,
-    log_dir: Path | None = None,
-    session_ts: str = "",
-    messages: list[Message] | None = None,
-) -> Agent:
-    """Assemble a mutagent Agent from configuration.
-
-    .. deprecated::
-        Use ``AgentSession.create_agent()`` instead.
-    """
-    config = Config.load(".mutagent/config.json")
-    session = AgentSession(
-        id="", workspace_id="", title="",
-        model=(agent_config or {}).get("model", ""),
-        system_prompt=(agent_config or {}).get("system_prompt", ""),
-    )
-    return build_default_agent(session, config, log_dir, session_ts, messages)
-
-
 # ---------------------------------------------------------------------------
 # SessionManager
 # ---------------------------------------------------------------------------
@@ -307,7 +287,8 @@ class SessionManager:
     def _get_config(self) -> Config:
         """懒加载 Config（首次调用时读取配置文件）。"""
         if self._config is None:
-            self._config = Config.load(".mutagent/config.json")
+            from mutbot.runtime.config import load_mutbot_config
+            self._config = load_mutbot_config()
         return self._config
 
     # --- Runtime 访问 ---

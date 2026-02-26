@@ -67,7 +67,7 @@ def test_import_runtime_session_impl():
     """runtime.session_impl 模块可导入且包含 SessionManager"""
     from mutbot.runtime.session_impl import (
         SessionManager, SessionRuntime, AgentSessionRuntime,
-        create_agent, _session_from_dict,
+        _session_from_dict,
     )
     assert hasattr(SessionManager, "create")
     assert hasattr(SessionManager, "start")
