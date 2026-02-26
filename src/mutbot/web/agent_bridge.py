@@ -12,6 +12,7 @@ from typing import Any, Callable, Awaitable
 
 from mutagent.messages import InputEvent, Message, StreamEvent, ToolCall, ToolResult
 
+from mutbot.runtime.session_logging import current_session_id
 from mutbot.web.serializers import serialize_stream_event
 
 logger = logging.getLogger(__name__)
@@ -199,6 +200,7 @@ class AgentBridge:
     def _start_agent_task(self) -> None:
         """Create and start a new agent task."""
         async def _run():
+            current_session_id.set(self.session_id)
             try:
                 async for event in self.agent.run(
                     self._input_stream(),

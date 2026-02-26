@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import tempfile
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -79,6 +80,26 @@ def _mutbot_path(*parts: str) -> Path:
     return Path(MUTBOT_DIR).joinpath(*parts)
 
 
+def _find_session_file(session_id: str, suffix: str) -> Path | None:
+    """按 session_id 查找文件，兼容新旧格式。
+
+    新格式 ``{ts}-{session_id}{suffix}``，旧格式 ``{session_id}{suffix}``，
+    glob ``*{session_id}{suffix}`` 均可匹配。
+    """
+    sess_dir = _mutbot_path("sessions")
+    if not sess_dir.is_dir():
+        return None
+    matches = list(sess_dir.glob(f"*{session_id}{suffix}"))
+    return matches[0] if matches else None
+
+
+def _session_ts_prefix(created_at: str) -> str:
+    """从 ISO UTC 时间戳构建本地时间前缀 ``YYYYMMDD_HHMMSS-``。"""
+    dt_utc = datetime.fromisoformat(created_at)
+    dt_local = dt_utc.astimezone()
+    return dt_local.strftime("%Y%m%d_%H%M%S") + "-"
+
+
 def save_workspace(ws_data: dict) -> None:
     path = _mutbot_path("workspaces", f"{ws_data['id']}.json")
     save_json(path, ws_data)
@@ -97,12 +118,17 @@ def load_all_workspaces() -> list[dict]:
 
 
 def save_session_metadata(session_data: dict) -> None:
-    path = _mutbot_path("sessions", f"{session_data['id']}.json")
+    sid = session_data["id"]
+    prefix = _session_ts_prefix(session_data.get("created_at", ""))
+    path = _mutbot_path("sessions", f"{prefix}{sid}.json")
     save_json(path, session_data)
 
 
 def load_session_metadata(session_id: str) -> dict | None:
-    return load_json(_mutbot_path("sessions", f"{session_id}.json"))
+    path = _find_session_file(session_id, ".json")
+    if path is None:
+        return None
+    return load_json(path)
 
 
 def load_all_sessions() -> list[dict]:
@@ -111,8 +137,6 @@ def load_all_sessions() -> list[dict]:
         return []
     results = []
     for f in sess_dir.glob("*.json"):
-        if f.name.endswith(".events.jsonl"):
-            continue
         data = load_json(f)
         if data and "id" in data:
             results.append(data)
@@ -120,10 +144,21 @@ def load_all_sessions() -> list[dict]:
 
 
 def append_session_event(session_id: str, event_data: dict) -> None:
-    path = _mutbot_path("sessions", f"{session_id}.events.jsonl")
+    path = _find_session_file(session_id, ".events.jsonl")
+    if path is None:
+        # 从同 session 的 .json 文件推导时间戳前缀
+        json_path = _find_session_file(session_id, ".json")
+        if json_path:
+            # {ts}-{id}.json → stem = {ts}-{id}
+            prefix = json_path.stem
+        else:
+            prefix = session_id
+        path = _mutbot_path("sessions", f"{prefix}.events.jsonl")
     append_jsonl(path, event_data)
 
 
 def load_session_events(session_id: str) -> list[dict]:
-    path = _mutbot_path("sessions", f"{session_id}.events.jsonl")
+    path = _find_session_file(session_id, ".events.jsonl")
+    if path is None:
+        return []
     return load_jsonl(path)

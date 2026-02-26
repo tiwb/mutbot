@@ -89,11 +89,68 @@ class AgentSessionRuntime(SessionRuntime):
     """Agent Session 的 runtime 状态"""
     agent: Agent | None = None
     bridge: AgentBridge | None = None
+    log_handler: logging.Handler | None = None  # session 级日志 FileHandler
 
 
 # ---------------------------------------------------------------------------
 # 辅助函数
 # ---------------------------------------------------------------------------
+
+def _build_session_prefix(session: Session, session_id: str) -> str:
+    """从 session.created_at (ISO UTC) 构建文件名前缀。
+
+    返回 ``session-YYYYMMDD_HHMMSS-{session_id}``，时间转为本地时区。
+    如果 created_at 解析失败，回退到当前时间。
+    """
+    ts_str = ""
+    if session.created_at:
+        try:
+            dt_utc = datetime.fromisoformat(session.created_at)
+            dt_local = dt_utc.astimezone()
+            ts_str = dt_local.strftime("%Y%m%d_%H%M%S")
+        except (ValueError, OSError):
+            pass
+    if not ts_str:
+        ts_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return f"session-{ts_str}-{session_id}"
+
+
+def _create_session_log_handler(
+    log_dir: Path | None,
+    session_prefix: str,
+    session_id: str,
+) -> logging.Handler | None:
+    """创建 session 级 FileHandler 并挂到 root logger。
+
+    返回 handler 引用（stop 时需要移除），log_dir 为 None 时返回 None。
+    """
+    if not log_dir:
+        return None
+
+    from mutbot.runtime.session_logging import SessionFilter
+    from mutagent.runtime.log_store import SingleLineFormatter
+
+    log_dir.mkdir(parents=True, exist_ok=True)
+    handler = logging.FileHandler(
+        log_dir / f"{session_prefix}.log", encoding="utf-8",
+    )
+    handler.setLevel(logging.DEBUG)
+    handler.setFormatter(SingleLineFormatter(
+        "%(asctime)s %(levelname)-8s %(name)s - %(message)s"
+    ))
+    handler.addFilter(SessionFilter(session_id))
+
+    logging.getLogger().addHandler(handler)
+    return handler
+
+
+def _remove_session_log_handler(handler: logging.Handler | None) -> None:
+    """从 root logger 移除 session 级 FileHandler 并关闭。"""
+    if handler is None:
+        return
+    logging.getLogger().removeHandler(handler)
+    handler.close()
+
 
 def _deserialize_message(d: dict) -> Message:
     """Reconstruct a Message from a serialized dict."""
@@ -514,10 +571,12 @@ class SessionManager:
             logger.info("Session %s: no saved messages to restore", session_id)
 
         config = self._get_config()
+        # 构建 session 文件名前缀：session-YYYYMMDD_HHMMSS-{session_id}
+        session_prefix = _build_session_prefix(session, session_id)
         agent = session.create_agent(
             config=config,
             log_dir=self.log_dir,
-            session_ts=session_id,
+            session_ts=session_prefix,
             messages=saved_messages if saved_messages else None,
             session_manager=self,
         )
@@ -542,8 +601,15 @@ class SessionManager:
             initial_session_total_tokens=initial_tokens,
         )
 
+        # --- Session 级日志 FileHandler ---
+        session_log_handler = _create_session_log_handler(
+            self.log_dir, session_prefix, session_id,
+        )
+
         # 存储 runtime 状态
-        self._runtimes[session_id] = AgentSessionRuntime(agent=agent, bridge=bridge)
+        self._runtimes[session_id] = AgentSessionRuntime(
+            agent=agent, bridge=bridge, log_handler=session_log_handler,
+        )
 
         bridge.start()
         logger.info("Session %s: agent started", session_id)
@@ -567,6 +633,9 @@ class SessionManager:
             rt = self.get_agent_runtime(session_id)
             if rt and rt.bridge is not None:
                 await rt.bridge.stop()
+            # 移除 session 级日志 handler
+            if rt:
+                _remove_session_log_handler(rt.log_handler)
             # Persist final state before clearing runtime
             self._persist(session)
             self._runtimes.pop(session_id, None)
