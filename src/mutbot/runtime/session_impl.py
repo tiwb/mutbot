@@ -48,8 +48,8 @@ def get_session_class(qualified_name: str) -> type[Session]:
 
 @mutobj.impl(Session.serialize)
 def serialize_session(self: Session) -> dict:
-    """序列化为可持久化的 dict"""
-    return {
+    """序列化为可持久化的 dict（自动包含子类字段）"""
+    d: dict[str, Any] = {
         "id": self.id,
         "workspace_id": self.workspace_id,
         "title": self.title,
@@ -60,6 +60,19 @@ def serialize_session(self: Session) -> dict:
         "config": self.config,
         "deleted": self.deleted,
     }
+    # AgentSession 特有字段
+    if isinstance(self, AgentSession):
+        if self.model:
+            d["model"] = self.model
+        if self.system_prompt:
+            d["system_prompt"] = self.system_prompt
+    # DocumentSession 特有字段
+    if isinstance(self, DocumentSession):
+        if self.file_path:
+            d["file_path"] = self.file_path
+        if self.language:
+            d["language"] = self.language
+    return d
 
 # ---------------------------------------------------------------------------
 # Session Runtime 状态（分离模式）
@@ -114,17 +127,31 @@ def _session_from_dict(data: dict) -> Session:
     except ValueError:
         cls = Session
 
-    return cls(
-        id=data["id"],
-        workspace_id=data.get("workspace_id", ""),
-        title=data.get("title", ""),
-        type=raw_type,
-        status=data.get("status", "ended"),
-        created_at=data.get("created_at", ""),
-        updated_at=data.get("updated_at", ""),
-        config=data.get("config") or {},
-        deleted=data.get("deleted", False),
-    )
+    kwargs: dict[str, Any] = {
+        "id": data["id"],
+        "workspace_id": data.get("workspace_id", ""),
+        "title": data.get("title", ""),
+        "type": raw_type,
+        "status": data.get("status", "ended"),
+        "created_at": data.get("created_at", ""),
+        "updated_at": data.get("updated_at", ""),
+        "config": data.get("config") or {},
+        "deleted": data.get("deleted", False),
+    }
+    # AgentSession 特有字段
+    if issubclass(cls, AgentSession):
+        if "model" in data:
+            kwargs["model"] = data["model"]
+        if "system_prompt" in data:
+            kwargs["system_prompt"] = data["system_prompt"]
+    # DocumentSession 特有字段
+    if issubclass(cls, DocumentSession):
+        if "file_path" in data:
+            kwargs["file_path"] = data["file_path"]
+        if "language" in data:
+            kwargs["language"] = data["language"]
+
+    return cls(**kwargs)
 
 
 def setup_environment(config: Config) -> None:
@@ -202,9 +229,17 @@ def create_llm_client(
     provider_cls = mutobj.resolve_class(provider_path, base_cls=LLMProvider)
     provider = provider_cls.from_config(model)
 
+    # context_window: 配置优先，内置查找表兜底
+    from mutagent.client import get_model_context_window
+    model_id = model.get("model_id", "")
+    context_window = model.get("context_window")
+    if context_window is None:
+        context_window = get_model_context_window(model_id)
+
     return LLMClient(
         provider=provider,
-        model=model.get("model_id", ""),
+        model=model_id,
+        context_window=context_window,
         api_recorder=api_recorder,
     )
 
@@ -476,6 +511,8 @@ class SessionManager:
         saved_messages = self._load_agent_messages(session_id)
         if saved_messages:
             logger.info("Session %s: restoring %d messages", session_id, len(saved_messages))
+        else:
+            logger.info("Session %s: no saved messages to restore", session_id)
 
         config = self._get_config()
         agent = session.create_agent(
@@ -492,9 +529,18 @@ class SessionManager:
         def _event_recorder(data):
             sm.record_event(session_id, data)
 
+        # 从历史事件恢复累计 token
+        initial_tokens = 0
+        events = self.get_session_events(session_id)
+        for ev in reversed(events):
+            if ev.get("type") == "token_usage":
+                initial_tokens = ev.get("session_total_tokens", 0)
+                break
+
         bridge = AgentBridge(
             session_id, agent, loop, broadcast_fn,
             event_recorder=_event_recorder,
+            initial_session_total_tokens=initial_tokens,
         )
 
         # 存储 runtime 状态

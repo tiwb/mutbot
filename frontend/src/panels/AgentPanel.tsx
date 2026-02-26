@@ -7,11 +7,21 @@ import MessageList, { type ChatMessage } from "../components/MessageList";
 import ChatInput from "../components/ChatInput";
 import type { ToolGroupData } from "../components/ToolCallCard";
 
-const DEBUG = true;
+const DEBUG = false;
 
 // Session-level message cache — survives session switching (in-memory only)
 const messageCache = new Map<string, ChatMessage[]>();
 const pendingTextCache = new Map<string, string>();
+
+type AgentStatus = "idle" | "thinking" | "tool_calling";
+
+interface TokenUsage {
+  contextUsed: number;
+  contextWindow: number | null;
+  contextPercent: number | null;
+  sessionTotalTokens: number;
+  model: string;
+}
 
 interface Props {
   sessionId: string;
@@ -25,6 +35,9 @@ export default function AgentPanel({ sessionId, rpc, onSessionLink }: Props) {
   );
   const [connected, setConnected] = useState(false);
   const [connectionCount, setConnectionCount] = useState(0);
+  const [agentStatus, setAgentStatus] = useState<AgentStatus>("idle");
+  const [toolName, setToolName] = useState("");
+  const [tokenUsage, setTokenUsage] = useState<TokenUsage | null>(null);
   const wsRef = useRef<ReconnectingWebSocket | null>(null);
   const pendingTextRef = useRef(pendingTextCache.get(sessionId) ?? "");
   const messagesRef = useRef<ChatMessage[]>(messages);
@@ -175,6 +188,23 @@ export default function AgentPanel({ sessionId, rpc, onSessionLink }: Props) {
           content: text,
         },
       ]);
+    } else if (eventType === "agent_status") {
+      const status = data.status as AgentStatus;
+      setAgentStatus(status);
+      if (status === "tool_calling") {
+        setToolName((data.tool_name as string) || "");
+      }
+    } else if (eventType === "agent_cancelled") {
+      setAgentStatus("idle");
+      pendingTextRef.current = "";
+    } else if (eventType === "token_usage") {
+      setTokenUsage({
+        contextUsed: data.context_used as number,
+        contextWindow: data.context_window as number | null,
+        contextPercent: data.context_percent as number | null,
+        sessionTotalTokens: data.session_total_tokens as number,
+        model: data.model as string,
+      });
     } else if (eventType === "connection_count") {
       setConnectionCount(data.count as number);
     } else {
@@ -191,6 +221,9 @@ export default function AgentPanel({ sessionId, rpc, onSessionLink }: Props) {
     pendingTextRef.current = cachedPending;
     toolCallMapRef.current.clear();
     processedEventIds.current.clear();
+    setAgentStatus("idle");
+    setToolName("");
+    setTokenUsage(null);
 
     // Track whether this session was already replayed from cache
     const hadCache = !!cached && cached.length > 0;
@@ -248,6 +281,12 @@ export default function AgentPanel({ sessionId, rpc, onSessionLink }: Props) {
     if (DEBUG) rlog.debug("send:", text.slice(0, 80));
     pendingTextRef.current = "";
     wsRef.current?.send({ type: "message", text });
+    // 乐观更新：立即切 thinking 状态
+    setAgentStatus("thinking");
+  }, []);
+
+  const handleCancel = useCallback(() => {
+    wsRef.current?.send({ type: "cancel" });
   }, []);
 
   return (
@@ -263,10 +302,41 @@ export default function AgentPanel({ sessionId, rpc, onSessionLink }: Props) {
             ({connectionCount})
           </span>
         )}
+        {tokenUsage && <TokenUsageDisplay usage={tokenUsage} />}
         {DEBUG && <span style={{ marginLeft: "auto", opacity: 0.5, fontSize: "0.8em" }}>msgs: {messages.length}</span>}
       </div>
-      <MessageList messages={messages} onSessionLink={onSessionLink} />
-      <ChatInput onSend={handleSend} disabled={!connected} />
+      <MessageList messages={messages} onSessionLink={onSessionLink} agentStatus={agentStatus} toolName={toolName} />
+      <ChatInput onSend={handleSend} onCancel={handleCancel} disabled={!connected} isBusy={agentStatus !== "idle"} />
     </div>
+  );
+}
+
+function formatTokenCount(tokens: number): string {
+  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M`;
+  if (tokens >= 1_000) return `${(tokens / 1_000).toFixed(1)}K`;
+  return `${tokens}`;
+}
+
+function TokenUsageDisplay({ usage }: { usage: TokenUsage }) {
+  const percentColor =
+    usage.contextPercent == null ? undefined
+    : usage.contextPercent > 80 ? "var(--error)"
+    : usage.contextPercent > 50 ? "var(--warning)"
+    : "var(--success)";
+
+  const contextText = usage.contextPercent != null
+    ? `${usage.contextPercent}%`
+    : formatTokenCount(usage.contextUsed);
+
+  return (
+    <span className="token-usage">
+      <span title={`${usage.contextUsed.toLocaleString()} / ${usage.contextWindow?.toLocaleString() ?? "?"} tokens`}>
+        Context: <span style={percentColor ? { color: percentColor } : undefined}>{contextText}</span>
+      </span>
+      <span className="token-usage-sep">|</span>
+      <span title={`Session total: ${usage.sessionTotalTokens.toLocaleString()} tokens`}>
+        Session: {formatTokenCount(usage.sessionTotalTokens)}
+      </span>
+    </span>
   );
 }

@@ -12,9 +12,11 @@ export type ChatMessage =
 interface Props {
   messages: ChatMessage[];
   onSessionLink?: (sessionId: string) => void;
+  agentStatus?: "idle" | "thinking" | "tool_calling";
+  toolName?: string;
 }
 
-export default function MessageList({ messages, onSessionLink }: Props) {
+export default function MessageList({ messages, onSessionLink, agentStatus, toolName }: Props) {
   const endRef = useRef<HTMLDivElement>(null);
   const [contextMenu, setContextMenu] = useState<{
     position: { x: number; y: number };
@@ -59,6 +61,9 @@ export default function MessageList({ messages, onSessionLink }: Props) {
   return (
     <div className="message-list" onContextMenu={handleContextMenu}>
       {messages.map((msg) => renderMessage(msg, onSessionLink))}
+      {agentStatus === "thinking" && (
+        <AgentStatusIndicator status={agentStatus} toolName={toolName} />
+      )}
       <div ref={endRef} />
       {contextMenu && (
         <ContextMenu
@@ -103,4 +108,15 @@ function renderMessage(msg: ChatMessage, onSessionLink?: (sessionId: string) => 
         </div>
       );
   }
+}
+
+function AgentStatusIndicator(_props: { status: "thinking"; toolName?: string }) {
+  return (
+    <div className="agent-status-indicator">
+      <span className="thinking-dots">
+        <span /><span /><span />
+        </span>
+      <span>思考中...</span>
+    </div>
+  );
 }

@@ -588,6 +588,8 @@ async def websocket_session(websocket: WebSocket, session_id: str):
                 data = raw.get("data")
                 if text:
                     bridge.send_message(text, data)
+            elif msg_type == "cancel":
+                await bridge.cancel()
             elif msg_type == "log":
                 # Frontend log forwarding
                 level = raw.get("level", "debug")

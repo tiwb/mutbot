@@ -463,6 +463,66 @@ body,
   background: var(--accent-green);
 }
 
+/* Token usage in header */
+.token-usage {
+  margin-left: auto;
+  font-size: 0.8em;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.token-usage-sep {
+  opacity: 0.4;
+  margin: 0 2px;
+}
+
+/* Agent status indicator */
+.agent-status-indicator {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 0;
+  color: var(--text-dim);
+  font-size: 13px;
+}
+
+.thinking-dots {
+  display: inline-flex;
+  gap: 3px;
+}
+
+.thinking-dots span {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--text-dim);
+  animation: thinking-pulse 1.4s infinite;
+}
+
+.thinking-dots span:nth-child(2) {
+  animation-delay: 0.2s;
+}
+
+.thinking-dots span:nth-child(3) {
+  animation-delay: 0.4s;
+}
+
+@keyframes thinking-pulse {
+  0%, 80%, 100% { opacity: 0.3; }
+  40% { opacity: 1; }
+}
+
+.tool-icon {
+  font-size: 14px;
+  animation: tool-spin 2s linear infinite;
+}
+
+@keyframes tool-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
 /* Message list */
 .message-list {
   flex: 1;
@@ -952,6 +1012,12 @@ body,
   opacity: 0.5;
 }
 
+.chat-input-buttons {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
 .chat-input button {
   padding: 10px 20px;
   background: var(--accent);
@@ -972,6 +1038,12 @@ body,
 .chat-input button:disabled {
   opacity: 0.4;
   cursor: not-allowed;
+}
+
+.chat-input button.stop-button {
+  background: var(--error, #e53935);
+  padding: 6px 20px;
+  font-size: 12px;
 }
 
 /* ----------------------------------------------------------------
