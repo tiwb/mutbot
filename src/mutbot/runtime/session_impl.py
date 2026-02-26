@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import queue
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -29,7 +28,7 @@ from mutbot.session import (
     DocumentSession,
 )
 from mutbot.runtime import storage
-from mutbot.web.agent_bridge import AgentBridge, WebUserIO
+from mutbot.web.agent_bridge import AgentBridge
 from mutbot.web.serializers import serialize_message
 
 logger = logging.getLogger(__name__)
@@ -487,20 +486,14 @@ class SessionManager:
             session_manager=self,
         )
 
-        input_q: queue.Queue = queue.Queue()
-
-        def _event_callback(data):
-            loop.call_soon_threadsafe(bridge._event_queue.put_nowait, data)
-
         # Create event recorder bound to this session
         sm = self
 
         def _event_recorder(data):
             sm.record_event(session_id, data)
 
-        web_userio = WebUserIO(input_queue=input_q, event_callback=_event_callback)
         bridge = AgentBridge(
-            session_id, agent, web_userio, loop, broadcast_fn,
+            session_id, agent, loop, broadcast_fn,
             event_recorder=_event_recorder,
         )
 

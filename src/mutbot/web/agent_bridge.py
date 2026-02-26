@@ -1,20 +1,18 @@
 """Agent bridge — connects mutagent Agent to WebSocket transport.
 
-WebUserIO: a UserIO-like object that bridges Agent I/O to async queues.
-AgentBridge: manages the Agent thread and event forwarder for one session.
+AgentBridge: manages one session's Agent as an asyncio task (no worker thread).
+The Agent is now fully async, so the bridge runs in the same event loop.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-import queue
-import threading
 from typing import Any, Callable, Awaitable
 
-from mutagent.messages import Content, InputEvent, StreamEvent
+from mutagent.messages import InputEvent, StreamEvent
 
-from mutbot.web.serializers import serialize_content, serialize_stream_event
+from mutbot.web.serializers import serialize_stream_event
 
 logger = logging.getLogger(__name__)
 
@@ -22,59 +20,16 @@ logger = logging.getLogger(__name__)
 BroadcastFn = Callable[[str, dict[str, Any]], Awaitable[None]]
 
 
-class WebUserIO:
-    """Bridges Agent I/O to async WebSocket transport.
-
-    The Agent runs synchronously in a worker thread.  This object provides:
-    - ``input_stream()`` — blocking generator consumed by Agent.run()
-    - ``present(content)`` — callback when Agent produces Content output.
-    """
-
-    def __init__(
-        self,
-        input_queue: queue.Queue,
-        event_callback: Callable[[dict[str, Any]], None],
-    ) -> None:
-        self.input_queue = input_queue
-        self.event_callback = event_callback
-        self._stop_event = threading.Event()
-
-    def request_stop(self) -> None:
-        """Signal the input stream to stop."""
-        self._stop_event.set()
-
-    def input_stream(self):
-        """Blocking generator that yields InputEvent objects."""
-        while True:
-            try:
-                item = self.input_queue.get(timeout=0.5)
-            except queue.Empty:
-                if self._stop_event.is_set():
-                    return
-                continue
-            if item is None:
-                # Sentinel: stop iteration
-                return
-            yield item
-
-    def present(self, content: Content) -> None:
-        """Forward Content to the WebSocket via callback."""
-        self.event_callback({
-            "type": "present",
-            "content": serialize_content(content),
-        })
-
-
 class AgentBridge:
-    """Manages one Session's Agent thread and event forwarding.
+    """Manages one Session's Agent as an asyncio task.
 
-    The bridge owns both the agent worker thread and the event forwarder task.
-    This ensures one forwarder per session (not per WebSocket connection),
-    preventing event loss from competing consumers.
+    With the async Agent, no worker thread is needed. The bridge runs
+    the Agent as an asyncio task in the same event loop, using
+    asyncio.Queue for input and direct await for broadcasting.
 
     Lifecycle:
-        bridge = AgentBridge(session_id, agent, web_userio, loop, broadcast_fn)
-        bridge.start()           # launches agent thread + event forwarder
+        bridge = AgentBridge(session_id, agent, loop, broadcast_fn)
+        bridge.start()           # launches agent task
         bridge.send_message(text) # feed user input
         await bridge.stop()      # graceful shutdown
     """
@@ -83,135 +38,71 @@ class AgentBridge:
         self,
         session_id: str,
         agent,
-        web_userio: WebUserIO,
         loop: asyncio.AbstractEventLoop,
         broadcast_fn: BroadcastFn,
         event_recorder: Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
         self.session_id = session_id
         self.agent = agent
-        self.web_userio = web_userio
         self.loop = loop
         self.broadcast_fn = broadcast_fn
         self.event_recorder = event_recorder
-        self._event_queue: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
+        self._input_queue: asyncio.Queue[InputEvent | None] = asyncio.Queue()
         self._agent_task: asyncio.Task | None = None
-        self._forwarder_task: asyncio.Task | None = None
+
+    async def _input_stream(self):
+        """Async generator: read InputEvent objects from asyncio.Queue."""
+        while True:
+            item = await self._input_queue.get()
+            if item is None:
+                return
+            yield item
 
     def start(self) -> None:
-        """Launch the agent thread and event forwarder task."""
-        # 使用 daemon thread 直接运行 agent，绕过 ThreadPoolExecutor
-        # 的 _python_exit atexit handler（避免 t.join() 阻塞进程退出）
-        future: asyncio.Future = self.loop.create_future()
-
-        def _thread_target():
+        """Launch the agent task in the event loop."""
+        async def _run():
             try:
-                self._run_agent()
-            except Exception:
-                pass
-            # Future 结果仅用于 asyncio 侧感知线程结束；
-            # stop() 可能已 cancel 了 future（通过 task 取消链），
-            # 此时 future 不再是 PENDING，set_result 会抛 InvalidStateError。
-            def _resolve():
-                if not future.done():
-                    future.set_result(None)
-            try:
-                self.loop.call_soon_threadsafe(_resolve)
-            except RuntimeError:
-                pass
-
-        t = threading.Thread(
-            target=_thread_target,
-            daemon=True,
-            name=f"agent-{self.session_id}",
-        )
-        t.start()
-
-        async def _await_agent():
-            try:
-                await future
+                async for event in self.agent.run(self._input_stream()):
+                    data = serialize_stream_event(event)
+                    if self.event_recorder:
+                        try:
+                            self.event_recorder(data)
+                        except Exception:
+                            logger.exception("Event recording failed for session %s", self.session_id)
+                    await self.broadcast_fn(self.session_id, data)
+                await self.broadcast_fn(self.session_id, {"type": "agent_done"})
             except asyncio.CancelledError:
-                pass
-
-        self._agent_task = self.loop.create_task(_await_agent())
-        self._forwarder_task = self.loop.create_task(
-            self._forward_events()
-        )
-
-    async def _forward_events(self) -> None:
-        """Read events from the internal queue and broadcast to all WS clients."""
-        event_count = 0
-        try:
-            while True:
-                data = await self._event_queue.get()
-                if data is None:
-                    logger.info("Session %s: forwarder done after %d events", self.session_id, event_count)
-                    await self.broadcast_fn(self.session_id, {"type": "agent_done"})
-                    break
-                # Record event to disk before broadcasting
-                if self.event_recorder:
-                    try:
-                        self.event_recorder(data)
-                    except Exception:
-                        logger.exception("Event recording failed for session %s", self.session_id)
-                event_count += 1
-                etype = data.get("type", "?")
-                logger.debug("Session %s: forward #%d type=%s", self.session_id, event_count, etype)
-                await self.broadcast_fn(self.session_id, data)
-        except asyncio.CancelledError:
-            logger.info("Session %s: forwarder cancelled after %d events", self.session_id, event_count)
-
-    def _run_agent(self) -> None:
-        """Synchronous agent loop — runs in a worker thread."""
-        try:
-            for event in self.agent.run(self.web_userio.input_stream()):
-                data = serialize_stream_event(event)
+                logger.info("Session %s: agent task cancelled", self.session_id)
+            except Exception as exc:
+                logger.exception("Agent error in session %s", self.session_id)
+                error_data = {"type": "error", "error": str(exc)}
                 try:
-                    self.loop.call_soon_threadsafe(self._event_queue.put_nowait, data)
-                except RuntimeError:
-                    break  # Event loop closed during shutdown
-        except Exception as exc:
-            logger.exception("Agent error in session %s", self.session_id)
-            error_data = {"type": "error", "error": str(exc)}
-            try:
-                self.loop.call_soon_threadsafe(self._event_queue.put_nowait, error_data)
-            except RuntimeError:
-                pass
-        finally:
-            # Signal that the agent has finished
-            try:
-                self.loop.call_soon_threadsafe(self._event_queue.put_nowait, None)
-            except RuntimeError:
-                pass
+                    await self.broadcast_fn(self.session_id, error_data)
+                    await self.broadcast_fn(self.session_id, {"type": "agent_done"})
+                except Exception:
+                    pass
+
+        self._agent_task = self.loop.create_task(_run())
 
     def send_message(self, text: str, data: dict | None = None) -> None:
         """Feed a user message into the Agent."""
         event = InputEvent(type="user_message", text=text, data=data or {})
-        self.web_userio.input_queue.put(event)
-        # Broadcast user message to all connected clients.
-        # Recording to disk happens in _forward_events() when it processes
-        # this event from the queue — no need to record here.
+        self._input_queue.put_nowait(event)
+        # Broadcast user message to all connected clients
         user_event = {"type": "user_message", "text": text, "data": data or {}}
-        self.loop.call_soon_threadsafe(self._event_queue.put_nowait, user_event)
+        if self.event_recorder:
+            try:
+                self.event_recorder(user_event)
+            except Exception:
+                pass
+        asyncio.ensure_future(self.broadcast_fn(self.session_id, user_event))
 
     async def stop(self) -> None:
-        """Graceful shutdown: signal stop, cancel tasks, await completion."""
-        # Signal the input stream to exit
-        self.web_userio.request_stop()
-        self.web_userio.input_queue.put(None)
-
-        tasks: list[asyncio.Task] = []
-        if self._forwarder_task and not self._forwarder_task.done():
-            self._forwarder_task.cancel()
-            tasks.append(self._forwarder_task)
+        """Graceful shutdown: signal stop, cancel task, await completion."""
+        self._input_queue.put_nowait(None)  # stop input_stream
         if self._agent_task and not self._agent_task.done():
             self._agent_task.cancel()
-            tasks.append(self._agent_task)
-
-        if tasks:
-            done, pending = await asyncio.wait(tasks, timeout=3)
-            if pending:
-                logger.warning(
-                    "Session %s: %d task(s) did not finish within timeout",
-                    self.session_id, len(pending),
-                )
+            try:
+                await self._agent_task
+            except asyncio.CancelledError:
+                pass

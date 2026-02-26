@@ -32,7 +32,7 @@ class ConnectionManager:
         if not conns:
             return
         dead = []
-        for ws in conns:
+        for ws in list(conns):
             if ws is exclude:
                 continue
             try:
