@@ -30,37 +30,10 @@ import { panelFactory } from "./panels/PanelFactory";
 import SessionListPanel from "./panels/SessionListPanel";
 import RpcMenu, { type MenuExecResult } from "./components/RpcMenu";
 import { WorkspaceRpc } from "./lib/workspace-rpc";
+import { getSessionIcon } from "./components/SessionIcons";
+import IconPicker from "./components/IconPicker";
 
-// ---------- Tab icons (inline SVG, 16px) ----------
-
-function TabIcon({ type }: { type: string }) {
-  const color = "#858585";
-  const size = 16;
-  switch (type) {
-    case "agent":
-      return (
-        <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-          <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-        </svg>
-      );
-    case "terminal":
-      return (
-        <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-          <polyline points="4 17 10 11 4 5" />
-          <line x1="12" y1="19" x2="20" y2="19" />
-        </svg>
-      );
-    case "document":
-      return (
-        <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-          <polyline points="14 2 14 8 20 8" />
-        </svg>
-      );
-    default:
-      return null;
-  }
-}
+// ---------- Types ----------
 
 interface Workspace {
   id: string;
@@ -75,6 +48,7 @@ interface Session {
   title: string;
   type: string;
   kind: string;  // 短类型名，供 UI switch/display 使用
+  icon: string;  // Lucide 图标名（优先级：用户自定义 > 类声明 > 空串由前端回退）
   status: string;
   config?: Record<string, unknown> | null;
 }
@@ -219,6 +193,12 @@ export default function App() {
   const [tabContextMenu, setTabContextMenu] = useState<{
     position: { x: number; y: number };
     nodeId: string;
+  } | null>(null);
+
+  // Icon picker state (shared by tab and session list context menus)
+  const [iconPicker, setIconPicker] = useState<{
+    position: { x: number; y: number };
+    sessionId: string;
   } | null>(null);
 
   // Sidebar collapsed state
@@ -747,9 +727,16 @@ export default function App() {
         for (const id of toClose) {
           model.doAction(Actions.deleteTab(id));
         }
+      } else if (action === "change_icon") {
+        if (tabContextSession?.session) {
+          setIconPicker({
+            position: tabContextMenu.position,
+            sessionId: tabContextSession.session.id,
+          });
+        }
       }
     },
-    [tabContextMenu],
+    [tabContextMenu, tabContextSession],
   );
 
   const handleTabMenuResult = useCallback(
@@ -762,6 +749,37 @@ export default function App() {
     },
     [tabContextMenu],
   );
+
+  // --- Icon Picker handlers ---
+
+  const handleIconSelect = useCallback(
+    async (iconName: string) => {
+      if (!iconPicker || !rpc) return;
+      try {
+        await rpc.call("session.update", {
+          session_id: iconPicker.sessionId,
+          config: { icon: iconName },
+        });
+      } catch { /* silent */ }
+      setIconPicker(null);
+    },
+    [iconPicker, rpc],
+  );
+
+  const handleIconReset = useCallback(async () => {
+    if (!iconPicker || !rpc) return;
+    try {
+      await rpc.call("session.update", {
+        session_id: iconPicker.sessionId,
+        config: { icon: null },
+      });
+    } catch { /* silent */ }
+    setIconPicker(null);
+  }, [iconPicker, rpc]);
+
+  const handleIconPickerClose = useCallback(() => {
+    setIconPicker(null);
+  }, []);
 
   // ------------------------------------------------------------------
   // Tabset "+" button rendering
@@ -797,18 +815,26 @@ export default function App() {
 
   const onRenderTab = useCallback(
     (node: TabNode, renderValues: ITabRenderValues) => {
-      const component = node.getComponent();
-      // Determine session type from component
-      let type: string | null = null;
-      if (component === PANEL_AGENT_CHAT) type = "agent";
-      else if (component === PANEL_TERMINAL) type = "terminal";
-      else if (component === PANEL_CODE_EDITOR) type = "document";
+      // 优先从 session kind 获取图标，回退到 component 类型
+      const config = node.getConfig() as Record<string, unknown> | undefined;
+      const sessionId = config?.sessionId as string | undefined;
+      const session = sessionId ? sessions.find((s) => s.id === sessionId) : undefined;
 
-      if (type) {
-        renderValues.leading = <TabIcon type={type} />;
+      let kind: string | null = null;
+      if (session) {
+        kind = session.kind;
+      } else {
+        const component = node.getComponent();
+        if (component === PANEL_AGENT_CHAT) kind = "agent";
+        else if (component === PANEL_TERMINAL) kind = "terminal";
+        else if (component === PANEL_CODE_EDITOR) kind = "document";
+      }
+
+      if (kind) {
+        renderValues.leading = getSessionIcon(kind, 16, "#858585", session?.icon);
       }
     },
-    [],
+    [sessions],
   );
 
   // ------------------------------------------------------------------
@@ -858,6 +884,7 @@ export default function App() {
             onCloseSession={handleEndSession}
             onDeleteSession={handleDeleteSession}
             onRenameSession={handleRenameSession}
+            onChangeIcon={(sessionId, position) => setIconPicker({ sessionId, position })}
           />
         </div>
         {!sidebarCollapsed && (
@@ -900,6 +927,14 @@ export default function App() {
           onClose={() => setTabContextMenu(null)}
           onResult={handleTabMenuResult}
           onClientAction={handleTabClientAction}
+        />
+      )}
+      {iconPicker && (
+        <IconPicker
+          position={iconPicker.position}
+          onSelect={handleIconSelect}
+          onReset={handleIconReset}
+          onClose={handleIconPickerClose}
         />
       )}
     </div>

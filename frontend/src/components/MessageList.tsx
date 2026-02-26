@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { forwardRef, useCallback, useRef, useState } from "react";
+import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import Markdown from "./Markdown";
 import ToolCallCard, { type ToolGroupData } from "./ToolCallCard";
 import ContextMenu, { type ContextMenuItem } from "./ContextMenu";
@@ -16,15 +17,20 @@ interface Props {
   toolName?: string;
 }
 
+/** Virtuoso scroller 容器，添加 className 以便 CSS 定位滚动条样式 */
+const VirtuosoScroller = forwardRef<HTMLDivElement, React.HTMLAttributes<HTMLDivElement>>(
+  function VirtuosoScroller(props, ref) {
+    return <div {...props} ref={ref} className={`virtuoso-scroller ${props.className || ""}`} />;
+  },
+);
+
 export default function MessageList({ messages, onSessionLink, agentStatus, toolName }: Props) {
-  const endRef = useRef<HTMLDivElement>(null);
+  const virtuosoRef = useRef<VirtuosoHandle>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+  const [atBottom, setAtBottom] = useState(true);
   const [contextMenu, setContextMenu] = useState<{
     position: { x: number; y: number };
   } | null>(null);
-
-  useEffect(() => {
-    endRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
 
   const handleContextMenu = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
@@ -46,10 +52,9 @@ export default function MessageList({ messages, onSessionLink, agentStatus, tool
       label: "Select All",
       shortcut: "Ctrl+A",
       onClick: () => {
-        const el = endRef.current?.parentElement;
-        if (el) {
+        if (listRef.current) {
           const range = document.createRange();
-          range.selectNodeContents(el);
+          range.selectNodeContents(listRef.current);
           const sel = window.getSelection();
           sel?.removeAllRanges();
           sel?.addRange(range);
@@ -59,12 +64,35 @@ export default function MessageList({ messages, onSessionLink, agentStatus, tool
   ];
 
   return (
-    <div className="message-list" onContextMenu={handleContextMenu}>
-      {messages.map((msg) => renderMessage(msg, onSessionLink))}
-      {agentStatus === "thinking" && (
-        <AgentStatusIndicator status={agentStatus} toolName={toolName} />
+    <div className="message-list" ref={listRef} onContextMenu={handleContextMenu}>
+      <Virtuoso
+        ref={virtuosoRef}
+        data={messages}
+        initialTopMostItemIndex={messages.length > 0 ? messages.length - 1 : 0}
+        followOutput="smooth"
+        atBottomThreshold={150}
+        atBottomStateChange={setAtBottom}
+        itemContent={(_index, msg) => renderMessage(msg, onSessionLink)}
+        components={{
+          Scroller: VirtuosoScroller,
+          Footer: () =>
+            agentStatus === "thinking" ? (
+              <AgentStatusIndicator status={agentStatus} toolName={toolName} />
+            ) : null,
+        }}
+        style={{ height: "100%", width: "100%" }}
+      />
+      {!atBottom && (
+        <button
+          className="scroll-to-bottom"
+          onClick={() => virtuosoRef.current?.scrollToIndex({ index: "LAST", align: "end", behavior: "smooth" })}
+          title="滚动到底部"
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <polyline points="6 9 12 15 18 9" />
+          </svg>
+        </button>
       )}
-      <div ref={endRef} />
       {contextMenu && (
         <ContextMenu
           items={menuItems}
@@ -80,7 +108,7 @@ function renderMessage(msg: ChatMessage, onSessionLink?: (sessionId: string) => 
   switch (msg.type) {
     case "text":
       return (
-        <div key={msg.id} className={`message ${msg.role} text`}>
+        <div className={`message ${msg.role} text`}>
           {msg.role === "assistant" ? (
             <Markdown content={msg.content} onSessionLink={onSessionLink} />
           ) : (
@@ -93,14 +121,14 @@ function renderMessage(msg: ChatMessage, onSessionLink?: (sessionId: string) => 
 
     case "tool_group":
       return (
-        <div key={msg.id} className="message assistant tool-group">
+        <div className="message assistant tool-group">
           <ToolCallCard data={msg.data} />
         </div>
       );
 
     case "error":
       return (
-        <div key={msg.id} className="message assistant error">
+        <div className="message assistant error">
           <div className="tool-label">Error</div>
           <div className="message-content">
             <pre>{msg.content}</pre>

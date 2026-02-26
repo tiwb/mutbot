@@ -9,28 +9,19 @@ from mutbot.web.rpc import RpcContext
 
 
 # ---------------------------------------------------------------------------
-# Session 类型显示信息：全限定名 → (显示名, 图标)
+# Session 类型显示信息：从类属性读取
 # ---------------------------------------------------------------------------
 
-_SESSION_DISPLAY: dict[str, tuple[str, str]] = {
-    "mutbot.builtins.guide.GuideSession": ("Guide", "guide"),
-    "mutbot.builtins.researcher.ResearcherSession": ("Researcher", "researcher"),
-    "mutbot.session.AgentSession": ("Agent Session", "agent"),
-    "mutbot.session.TerminalSession": ("Terminal", "terminal"),
-    "mutbot.session.DocumentSession": ("Document", "document"),
-}
-
-
 def _session_display(cls: type) -> tuple[str, str]:
-    """获取 Session 子类的 (显示名, 图标)，未注册时从类名推导。"""
-    qualified = f"{cls.__module__}.{cls.__qualname__}"
-    if qualified in _SESSION_DISPLAY:
-        return _SESSION_DISPLAY[qualified]
-    # 回退：从类名推导 ("GuideSession" → "Guide Session")
-    name = cls.__name__
-    if name.endswith("Session"):
-        name = name[:-7] + " Session"
-    return (name, "")
+    """获取 Session 子类的 (显示名, 图标)，未声明时从类名推导。"""
+    name = getattr(cls, "display_name", "") or ""
+    icon = getattr(cls, "display_icon", "") or ""
+    if not name:
+        # 回退：从类名推导 ("GuideSession" → "Guide Session")
+        name = cls.__name__
+        if name.endswith("Session"):
+            name = name[:-7] + " Session"
+    return (name, icon)
 
 
 # ---------------------------------------------------------------------------
@@ -135,19 +126,28 @@ class AddSessionMenu(Menu):
 class RenameSessionMenu(Menu):
     """Tab 右键菜单 — 重命名"""
     display_name = "Rename"
-    display_icon = "rename"
+    display_icon = "pencil"
     display_category = "Tab/Context"
     display_order = "0basic:0"
     display_shortcut = "F2"
     client_action = "start_rename"
 
 
+class ChangeIconTabMenu(Menu):
+    """Tab 右键菜单 — 更换图标"""
+    display_name = "Change Icon"
+    display_icon = "palette"
+    display_category = "Tab/Context"
+    display_order = "0basic:1"
+    client_action = "change_icon"
+
+
 class CloseTabMenu(Menu):
     """Tab 右键菜单 — 关闭 Tab"""
     display_name = "Close"
-    display_icon = "close"
+    display_icon = "x"
     display_category = "Tab/Context"
-    display_order = "0basic:1"
+    display_order = "0basic:2"
     client_action = "close_tab"
 
 
@@ -155,14 +155,14 @@ class CloseOthersMenu(Menu):
     """Tab 右键菜单 — 关闭其他 Tab"""
     display_name = "Close Others"
     display_category = "Tab/Context"
-    display_order = "0basic:2"
+    display_order = "0basic:3"
     client_action = "close_others"
 
 
 class EndSessionMenu(Menu):
     """Tab 右键菜单 — 结束 Session"""
     display_name = "End Session"
-    display_icon = "stop"
+    display_icon = "square"
     display_category = "Tab/Context"
     display_order = "1manage:0"
 
@@ -192,6 +192,15 @@ class RenameSessionListMenu(Menu):
     display_category = "SessionList/Context"
     display_order = "0basic:0"
     client_action = "start_rename"
+
+
+class ChangeIconSessionListMenu(Menu):
+    """Session 列表右键菜单 — 更换图标"""
+    display_name = "Change Icon"
+    display_icon = "palette"
+    display_category = "SessionList/Context"
+    display_order = "0basic:1"
+    client_action = "change_icon"
 
 
 class EndSessionListMenu(Menu):

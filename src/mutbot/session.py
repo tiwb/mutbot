@@ -24,6 +24,10 @@ if TYPE_CHECKING:
 class Session(mutobj.Declaration):
     """所有 Session 的基类"""
 
+    # UI 元数据（无类型注解，不参与 mutobj 字段处理）
+    display_name = ""    # 空串时从类名推导
+    display_icon = ""    # Lucide 图标名，空串时用 kind 回退默认
+
     id: str
     workspace_id: str
     title: str
@@ -54,6 +58,9 @@ class Session(mutobj.Declaration):
 class AgentSession(Session):
     """Agent 对话 Session"""
 
+    display_name = "Agent"
+    display_icon = "message-square"
+
     model: str = ""
     system_prompt: str = ""
 
@@ -77,11 +84,15 @@ class AgentSession(Session):
 class TerminalSession(Session):
     """终端 Session"""
 
-    pass
+    display_name = "Terminal"
+    display_icon = "terminal"
 
 
 class DocumentSession(Session):
     """文档编辑 Session"""
+
+    display_name = "Document"
+    display_icon = "file-text"
 
     file_path: str = ""
     language: str = ""

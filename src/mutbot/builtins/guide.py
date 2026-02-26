@@ -21,6 +21,9 @@ if TYPE_CHECKING:
 class GuideSession(AgentSession):
     """向导 Agent Session"""
 
+    display_name = "Guide"
+    display_icon = "circle-question-mark"
+
     system_prompt: str = (
         "你是 MutBot 的向导，帮助用户了解和使用 MutBot 的各项功能。\n"
         "\n"

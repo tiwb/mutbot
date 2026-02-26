@@ -23,6 +23,9 @@ if TYPE_CHECKING:
 class ResearcherSession(AgentSession):
     """研究员 Agent Session"""
 
+    display_name = "Researcher"
+    display_icon = "search"
+
     system_prompt: str = (
         "你是一个研究分析助手，擅长信息检索和分析。\n"
         "\n"

@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import RpcMenu, { type MenuExecResult } from "../components/RpcMenu";
+import { getSessionIcon } from "../components/SessionIcons";
 import type { WorkspaceRpc } from "../lib/workspace-rpc";
 
 interface Session {
@@ -7,6 +8,7 @@ interface Session {
   title: string;
   type: string;
   kind: string;
+  icon: string;
   status: string;
 }
 
@@ -19,64 +21,7 @@ interface Props {
   onCloseSession?: (id: string) => void;
   onDeleteSession?: (id: string) => void;
   onRenameSession?: (id: string, newTitle: string) => void;
-}
-
-// ---------- Codicon-style SVG icons ----------
-
-function ChatIcon({ size = 24, color = "currentColor" }: { size?: number; color?: string }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-    </svg>
-  );
-}
-
-function TerminalIcon({ size = 24, color = "currentColor" }: { size?: number; color?: string }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-      <polyline points="4 17 10 11 4 5" />
-      <line x1="12" y1="19" x2="20" y2="19" />
-    </svg>
-  );
-}
-
-function FileIcon({ size = 24, color = "currentColor" }: { size?: number; color?: string }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-      <polyline points="14 2 14 8 20 8" />
-    </svg>
-  );
-}
-
-function GuideIcon({ size = 24, color = "currentColor" }: { size?: number; color?: string }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-      <circle cx="12" cy="12" r="10" />
-      <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3" />
-      <line x1="12" y1="17" x2="12.01" y2="17" />
-    </svg>
-  );
-}
-
-function ResearcherIcon({ size = 24, color = "currentColor" }: { size?: number; color?: string }) {
-  return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-      <circle cx="11" cy="11" r="8" />
-      <line x1="21" y1="21" x2="16.65" y2="16.65" />
-    </svg>
-  );
-}
-
-function getSessionIcon(kind: string, size = 24, color = "currentColor") {
-  switch (kind) {
-    case "guide": return <GuideIcon size={size} color={color} />;
-    case "researcher": return <ResearcherIcon size={size} color={color} />;
-    case "agent": return <ChatIcon size={size} color={color} />;
-    case "terminal": return <TerminalIcon size={size} color={color} />;
-    case "document": return <FileIcon size={size} color={color} />;
-    default: return <ChatIcon size={size} color={color} />;
-  }
+  onChangeIcon?: (sessionId: string, position: { x: number; y: number }) => void;
 }
 
 const STORAGE_KEY = "mutbot-sidebar-collapsed";
@@ -88,6 +33,7 @@ export default function SessionListPanel({
   onSelect,
   onModeChange,
   onRenameSession,
+  onChangeIcon,
 }: Props) {
   const [collapsed, setCollapsed] = useState(() => {
     try {
@@ -167,8 +113,10 @@ export default function SessionListPanel({
     if (!contextMenu) return;
     if (action === "start_rename") {
       startRename(contextMenu.sessionId);
+    } else if (action === "change_icon") {
+      onChangeIcon?.(contextMenu.sessionId, contextMenu.position);
     }
-  }, [contextMenu, startRename]);
+  }, [contextMenu, startRename, onChangeIcon]);
 
   // Handle menu.execute results from RpcMenu
   // 状态更新由 App.tsx 的 event handler 统一处理，无需额外操作
@@ -214,7 +162,7 @@ export default function SessionListPanel({
               onContextMenu={(e) => handleContextMenu(e, s.id)}
               title={`${s.title} (${s.status})`}
             >
-              {getSessionIcon(s.kind, 24, "#cccccc")}
+              {getSessionIcon(s.kind, 24, "#cccccc", s.icon)}
             </div>
           ))}
         </div>
@@ -263,7 +211,7 @@ export default function SessionListPanel({
               onDoubleClick={() => startRename(s.id)}
             >
               <span className="session-type-icon">
-                {getSessionIcon(s.kind, 16, "currentColor")}
+                {getSessionIcon(s.kind, 16, "currentColor", s.icon)}
               </span>
               {renamingId === s.id ? (
                 <input

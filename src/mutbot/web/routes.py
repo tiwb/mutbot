@@ -434,14 +434,17 @@ def _workspace_dict(ws) -> dict[str, Any]:
 
 
 def _session_dict(s) -> dict[str, Any]:
-    # kind: 从全限定名推导短类型名，供前端 switch/display 使用
+    # kind: 从类名推导短类型名，供前端 switch/display 使用
     kind = _session_kind(s.type)
+    # icon: 用户自定义 > 类声明 > 空串（前端用 kind 回退）
+    icon = s.config.get("icon") or getattr(type(s), "display_icon", "") or ""
     return {
         "id": s.id,
         "workspace_id": s.workspace_id,
         "title": s.title,
         "type": s.type,
         "kind": kind,
+        "icon": icon,
         "status": s.status,
         "created_at": s.created_at,
         "updated_at": s.updated_at,
@@ -449,21 +452,9 @@ def _session_dict(s) -> dict[str, Any]:
     }
 
 
-# 全限定名 → 短类型名映射（前端 switch 使用）
-_KIND_MAP: dict[str, str] = {
-    "mutbot.builtins.guide.GuideSession": "guide",
-    "mutbot.builtins.researcher.ResearcherSession": "researcher",
-    "mutbot.session.AgentSession": "agent",
-    "mutbot.session.TerminalSession": "terminal",
-    "mutbot.session.DocumentSession": "document",
-}
-
-
 def _session_kind(session_type: str) -> str:
     """从全限定类型名推导短类型名。"""
-    if session_type in _KIND_MAP:
-        return _KIND_MAP[session_type]
-    # 回退：从类名推导 ("GuideSession" → "guide")
+    # 从类名推导 ("mutbot.builtins.guide.GuideSession" → "guide")
     parts = session_type.rsplit(".", 1)
     name = parts[-1] if parts else session_type
     if name.endswith("Session"):
@@ -471,25 +462,19 @@ def _session_kind(session_type: str) -> str:
     return name.lower()
 
 
-# 全限定名 → (显示名, 图标) 映射
-_TYPE_DISPLAY: dict[str, tuple[str, str]] = {
-    "mutbot.builtins.guide.GuideSession": ("Guide", "guide"),
-    "mutbot.builtins.researcher.ResearcherSession": ("Researcher", "researcher"),
-    "mutbot.session.AgentSession": ("Agent", "agent"),
-    "mutbot.session.TerminalSession": ("Terminal", "terminal"),
-    "mutbot.session.DocumentSession": ("Document", "document"),
-}
-
-
 def _session_type_display(qualified: str, cls: type) -> tuple[str, str]:
     """获取 Session 类型的 (显示名, 图标)。"""
-    if qualified in _TYPE_DISPLAY:
-        return _TYPE_DISPLAY[qualified]
-    # 回退：从类名推导
-    name = cls.__name__
-    if name.endswith("Session"):
-        name = name[:-7]
-    return (name, _session_kind(qualified))
+    name = getattr(cls, "display_name", "") or ""
+    icon = getattr(cls, "display_icon", "") or ""
+    if not name:
+        # 回退：从类名推导
+        raw = cls.__name__
+        if raw.endswith("Session"):
+            raw = raw[:-7]
+        name = raw
+    if not icon:
+        icon = _session_kind(qualified)
+    return (name, icon)
 # ---------------------------------------------------------------------------
 
 @router.get("/api/health")
