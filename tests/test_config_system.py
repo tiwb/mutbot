@@ -33,8 +33,12 @@ class TestLoadMutbotConfig:
         mutbot_dir = tmp_path / "fake_home" / ".mutbot"
         mutbot_dir.mkdir(parents=True)
         (mutbot_dir / "config.json").write_text(json.dumps({
-            "default_model": "mutbot-model",
-            "models": {"from_mutbot": {"model_id": "m2"}},
+            "default_model": "user-model",
+            "providers": {"anthropic": {
+                "provider": "AnthropicProvider",
+                "auth_token": "user-key",
+                "models": ["claude-sonnet-4"],
+            }},
         }), encoding="utf-8")
 
         # 模拟 .mutbot/config.json（最高优先级）
@@ -42,7 +46,11 @@ class TestLoadMutbotConfig:
         project_dir.mkdir()
         (project_dir / "config.json").write_text(json.dumps({
             "default_model": "project-model",
-            "models": {"from_project": {"model_id": "m3"}},
+            "providers": {"openai": {
+                "provider": "OpenAIProvider",
+                "auth_token": "proj-key",
+                "models": ["gpt-4.1"],
+            }},
         }), encoding="utf-8")
 
         # 使用显式路径列表（避免依赖 Path.home()）
@@ -53,14 +61,14 @@ class TestLoadMutbotConfig:
 
         # default_model: 最高优先级 wins
         assert config.get("default_model") == "project-model"
-        # models: 两层合并
-        models = config.get("models")
-        assert "from_mutbot" in models
-        assert "from_project" in models
+        # providers: 两层合并
+        providers = config.get("providers")
+        assert "anthropic" in providers
+        assert "openai" in providers
 
 
 # ---------------------------------------------------------------------------
-# _write_config() tests
+# _write_config() tests (providers format)
 # ---------------------------------------------------------------------------
 
 class TestWriteConfig:
@@ -70,36 +78,82 @@ class TestWriteConfig:
         monkeypatch.setattr("mutbot.cli.setup.MUTBOT_CONFIG_PATH", tmp_path / "config.json")
 
         _write_config({
-            "default_model": "test",
-            "models": {"test": {"model_id": "m"}},
+            "default_model": "claude-sonnet-4",
+            "providers": {
+                "anthropic": {
+                    "provider": "AnthropicProvider",
+                    "auth_token": "sk-test",
+                    "models": ["claude-sonnet-4"],
+                }
+            },
         })
 
         data = json.loads((tmp_path / "config.json").read_text(encoding="utf-8"))
-        assert data["default_model"] == "test"
-        assert "test" in data["models"]
+        assert data["default_model"] == "claude-sonnet-4"
+        assert "anthropic" in data["providers"]
+        assert data["providers"]["anthropic"]["models"] == ["claude-sonnet-4"]
 
-    def test_write_merges_with_existing(self, tmp_path, monkeypatch):
+    def test_write_merges_providers(self, tmp_path, monkeypatch):
         monkeypatch.setattr("mutbot.cli.setup.MUTBOT_USER_DIR", tmp_path)
         monkeypatch.setattr("mutbot.cli.setup.MUTBOT_CONFIG_PATH", tmp_path / "config.json")
 
         # 写入初始配置
         (tmp_path / "config.json").write_text(json.dumps({
-            "default_model": "existing",
-            "models": {"existing": {"model_id": "e"}},
+            "default_model": "claude-sonnet-4",
+            "providers": {
+                "anthropic": {
+                    "provider": "AnthropicProvider",
+                    "models": ["claude-sonnet-4"],
+                }
+            },
         }), encoding="utf-8")
 
-        # 追加新模型
+        # 追加新 provider
         _write_config({
-            "default_model": "new",
-            "models": {"new": {"model_id": "n"}},
+            "default_model": "gpt-4.1",
+            "providers": {
+                "openai": {
+                    "provider": "OpenAIProvider",
+                    "models": ["gpt-4.1"],
+                }
+            },
         })
 
         data = json.loads((tmp_path / "config.json").read_text(encoding="utf-8"))
         # default_model 保留已有的
-        assert data["default_model"] == "existing"
-        # models 合并
-        assert "existing" in data["models"]
-        assert "new" in data["models"]
+        assert data["default_model"] == "claude-sonnet-4"
+        # providers 合并
+        assert "anthropic" in data["providers"]
+        assert "openai" in data["providers"]
+
+    def test_write_same_provider_overwrites(self, tmp_path, monkeypatch):
+        """同名 provider 覆盖已有的。"""
+        monkeypatch.setattr("mutbot.cli.setup.MUTBOT_USER_DIR", tmp_path)
+        monkeypatch.setattr("mutbot.cli.setup.MUTBOT_CONFIG_PATH", tmp_path / "config.json")
+
+        (tmp_path / "config.json").write_text(json.dumps({
+            "providers": {
+                "openai": {
+                    "provider": "OpenAIProvider",
+                    "auth_token": "old-key",
+                    "models": ["gpt-4.1"],
+                }
+            },
+        }), encoding="utf-8")
+
+        _write_config({
+            "providers": {
+                "openai": {
+                    "provider": "OpenAIProvider",
+                    "auth_token": "new-key",
+                    "models": ["gpt-4.1", "gpt-4.1-mini"],
+                }
+            },
+        })
+
+        data = json.loads((tmp_path / "config.json").read_text(encoding="utf-8"))
+        assert data["providers"]["openai"]["auth_token"] == "new-key"
+        assert len(data["providers"]["openai"]["models"]) == 2
 
 
 # ---------------------------------------------------------------------------

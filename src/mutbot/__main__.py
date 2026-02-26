@@ -22,7 +22,7 @@ def main():
     # 首次启动向导：无模型配置时引导用户完成配置
     from mutbot.runtime.config import load_mutbot_config
     config = load_mutbot_config()
-    if not config.get("models"):
+    if not config.get("providers"):
         from mutbot.cli.setup import run_setup_wizard
         run_setup_wizard()
 

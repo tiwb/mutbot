@@ -182,19 +182,19 @@ async def lifespan(app: FastAPI):
     _install_double_ctrlc_handler()
 
     # --- LLM proxy routes (optional, loaded via modules config) ---
+    # 注意：proxy config 在 lifespan 中加载，但 router 在模块级注册（见文件末尾）
     try:
-        from mutbot.proxy import create_llm_router
-        # 读取 config 以获取 models 配置
+        from mutbot.proxy.routes import _providers_config as _pc
         from mutbot.runtime.session_impl import _load_config
         proxy_config = _load_config()
         if proxy_config is not None:
-            router = create_llm_router(proxy_config)
-            app.include_router(router, prefix="/llm")
-            logger.info("LLM proxy routes mounted at /llm")
-    except ImportError:
-        pass  # proxy 模块未安装或未配置，跳过
+            from mutbot.proxy.routes import _providers_config
+            import mutbot.proxy.routes as _proxy_routes
+            _proxy_routes._providers_config = proxy_config.get("providers", {})
+            logger.info("LLM proxy config loaded (%d providers)",
+                        len(_proxy_routes._providers_config))
     except Exception:
-        logger.warning("Failed to load LLM proxy routes", exc_info=True)
+        logger.warning("Failed to load LLM proxy config", exc_info=True)
 
     yield
 
@@ -281,6 +281,18 @@ app.add_middleware(AuthMiddleware)
 
 from mutbot.web.routes import router as api_router  # noqa: E402
 app.include_router(api_router)
+
+
+# ---------------------------------------------------------------------------
+# LLM proxy routes (module-level registration, config loaded in lifespan)
+# ---------------------------------------------------------------------------
+
+try:
+    from mutbot.proxy import create_llm_router
+    _llm_router = create_llm_router({})  # config 在 lifespan 中填充
+    app.include_router(_llm_router, prefix="/llm")
+except ImportError:
+    pass
 
 
 # ---------------------------------------------------------------------------

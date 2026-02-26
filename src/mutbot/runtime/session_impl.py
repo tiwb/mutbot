@@ -159,12 +159,12 @@ def setup_environment(config: Config) -> None:
 
 
 def _load_config() -> dict | None:
-    """加载 mutbot 配置文件，返回 models 相关配置 dict。供 proxy 等模块使用。"""
+    """加载 mutbot 配置文件，返回 providers 相关配置 dict。供 proxy 等模块使用。"""
     try:
         from mutbot.runtime.config import load_mutbot_config
         config = load_mutbot_config()
         return {
-            "models": config.get("models", {}),
+            "providers": config.get("providers", {}),
             "default_model": config.get("default_model", ""),
         }
     except Exception:
