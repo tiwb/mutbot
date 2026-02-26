@@ -238,3 +238,66 @@ class DeleteSessionMenu(Menu):
             return MenuResult(action="error", data={"message": "missing session_manager or session_id"})
         # 实际的 async stop + delete 由 handle_menu_execute 处理
         return MenuResult(action="session_deleted", data={"session_id": session_id})
+
+
+# ---------------------------------------------------------------------------
+# 内置菜单：消息列表右键菜单 (MessageList/Context)
+# ---------------------------------------------------------------------------
+
+def _is_assistant_text(context: dict) -> bool:
+    return context.get("message_role") == "assistant" and context.get("message_type") == "text"
+
+
+class CopySelectionMenu(Menu):
+    """消息列表右键菜单 — 复制选中文本"""
+    display_name = "Copy"
+    display_icon = "copy"
+    display_category = "MessageList/Context"
+    display_order = "0edit:0"
+    display_shortcut = "Ctrl+C"
+    client_action = "copy_selection"
+
+
+class SelectAllMenu(Menu):
+    """消息列表右键菜单 — 全选"""
+    display_name = "Select All"
+    display_category = "MessageList/Context"
+    display_order = "0edit:1"
+    display_shortcut = "Ctrl+A"
+    client_action = "select_all"
+
+
+class CopyMarkdownMenu(Menu):
+    """消息列表右键菜单 — 复制 Markdown 源码（仅 assistant text 可见）"""
+    display_name = "Copy Markdown"
+    display_category = "MessageList/Context"
+    display_order = "1markdown:0"
+    client_action = "copy_markdown"
+
+    @classmethod
+    def check_visible(cls, context: dict) -> bool | None:
+        return _is_assistant_text(context)
+
+
+class ToggleMarkdownModeMenu(Menu):
+    """消息列表右键菜单 — 切换 Markdown 渲染/源码显示（仅 assistant text 可见）"""
+    display_name = "Toggle Markdown Mode"
+    display_category = "MessageList/Context"
+    display_order = "1markdown:1"
+    client_action = "toggle_markdown_mode"
+
+    @classmethod
+    def check_visible(cls, context: dict) -> bool | None:
+        return _is_assistant_text(context)
+
+    @classmethod
+    def dynamic_items(cls, context: RpcContext) -> list[MenuItem]:
+        menu_ctx = getattr(context, "_menu_context", {})
+        mode = menu_ctx.get("markdown_mode", "rendered")
+        name = "View Source" if mode == "rendered" else "View Rendered"
+        return [MenuItem(
+            id=f"{cls.__module__}.{cls.__qualname__}",
+            name=name,
+            order="1markdown:1",
+            client_action="toggle_markdown_mode",
+        )]

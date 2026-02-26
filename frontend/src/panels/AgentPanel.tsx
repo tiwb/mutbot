@@ -305,7 +305,7 @@ export default function AgentPanel({ sessionId, rpc, onSessionLink }: Props) {
         {tokenUsage && <TokenUsageDisplay usage={tokenUsage} />}
         {DEBUG && <span style={{ marginLeft: "auto", opacity: 0.5, fontSize: "0.8em" }}>msgs: {messages.length}</span>}
       </div>
-      <MessageList messages={messages} onSessionLink={onSessionLink} agentStatus={agentStatus} toolName={toolName} />
+      <MessageList messages={messages} rpc={rpc ?? null} onSessionLink={onSessionLink} agentStatus={agentStatus} toolName={toolName} />
       <ChatInput onSend={handleSend} onCancel={handleCancel} disabled={!connected} isBusy={agentStatus !== "idle"} />
     </div>
   );
