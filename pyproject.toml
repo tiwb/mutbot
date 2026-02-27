@@ -14,7 +14,7 @@ authors = [
 ]
 keywords = ["ai", "agent", "llm", "runtime", "hot-reload"]
 dependencies = [
-    "mutagent>=0.1.0",
+    "mutagent>=0.1.1",
     "fastapi>=0.100.0",
     "uvicorn[standard]>=0.20.0",
     "pywinpty>=2.0.0; sys_platform == 'win32'",
