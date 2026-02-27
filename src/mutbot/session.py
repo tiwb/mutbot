@@ -36,7 +36,6 @@ class Session(mutobj.Declaration):
     created_at: str = ""
     updated_at: str = ""
     config: dict = mutobj.field(default_factory=dict)
-    deleted: bool = False
 
     def __init__(self, **kwargs: Any) -> None:
         # type 未提供或为空时，自动使用全限定名

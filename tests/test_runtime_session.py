@@ -77,7 +77,6 @@ class TestSessionHierarchy:
         assert s.created_at == ""
         assert s.updated_at == ""
         assert s.config == {}
-        assert s.deleted is False
 
 
 # ---------------------------------------------------------------------------
@@ -137,7 +136,6 @@ class TestSerialization:
         assert d["id"] == "abc"
         assert d["type"] == "mutbot.session.AgentSession"
         assert d["config"] == {"k": "v"}
-        assert d["deleted"] is False
 
     def test_terminal_session_serialize(self):
         s = TerminalSession(
@@ -288,13 +286,12 @@ class TestSessionManager:
         sm = self._make_manager()
         assert sm.update("nonexistent", title="x") is None
 
-    def test_delete_soft_delete(self):
+    def test_delete_removes_session(self):
         sm = self._make_manager()
         s = sm.create("ws1", session_type="mutbot.session.AgentSession")
         assert sm.delete(s.id) is True
-        assert s.deleted is True
-        # 仍可通过 get 获取
-        assert sm.get(s.id) is s
+        # 已从内存中移除
+        assert sm.get(s.id) is None
 
     def test_delete_nonexistent_returns_false(self):
         sm = self._make_manager()

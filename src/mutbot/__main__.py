@@ -35,7 +35,10 @@ def main():
 
     server.startup = _startup_with_banner
 
-    server.run()
+    try:
+        server.run()
+    except KeyboardInterrupt:
+        pass
 
 
 main()

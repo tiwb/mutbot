@@ -117,3 +117,16 @@ def load_all_sessions() -> list[dict]:
         if data and "id" in data:
             results.append(data)
     return results
+
+
+def load_sessions(session_ids: set[str]) -> list[dict]:
+    """只加载指定 ID 集合中的 session。"""
+    sess_dir = _mutbot_path("sessions")
+    if not sess_dir.is_dir():
+        return []
+    results = []
+    for f in sess_dir.glob("*.json"):
+        data = load_json(f)
+        if data and data.get("id") in session_ids:
+            results.append(data)
+    return results

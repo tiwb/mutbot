@@ -112,11 +112,11 @@ def _install_double_ctrlc_handler():
 
 
 async def _shutdown_cleanup():
-    """Stop all active sessions and terminals."""
+    """Stop sessions that have active runtimes."""
     if terminal_manager is not None:
         terminal_manager.kill_all()
     if session_manager is not None:
-        for sid in list(session_manager._sessions):
+        for sid in list(session_manager._runtimes):
             await session_manager.stop(sid)
 
 
@@ -201,7 +201,12 @@ async def lifespan(app: FastAPI):
 
     # --- Load persisted state ---
     workspace_manager.load_from_disk()
-    session_manager.load_from_disk()
+
+    # 收集所有 workspace 引用的 session ID，按需加载
+    all_session_ids: set[str] = set()
+    for ws in workspace_manager._workspaces.values():
+        all_session_ids.update(ws.sessions)
+    session_manager.load_from_disk(all_session_ids)
 
     # 服务器重启：所有旧 session 标记为 ended（无运行中的 agent）
     _ended = 0

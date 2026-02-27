@@ -180,6 +180,13 @@ async def handle_menu_execute(params: dict, ctx: RpcContext) -> dict:
     elif result.action == "session_deleted" and sm and session_id:
         await sm.stop(session_id)
         sm.delete(session_id)
+        # 从 workspace.sessions 列表移除
+        wm = ctx.managers.get("workspace_manager")
+        if wm:
+            ws = wm.get(ctx.workspace_id)
+            if ws and session_id in ws.sessions:
+                ws.sessions.remove(session_id)
+                wm.update(ws)
         await ctx.broadcast_event("session_deleted", {"session_id": session_id})
 
     return result_dict
@@ -329,14 +336,21 @@ async def handle_session_stop(params: dict, ctx: RpcContext) -> dict:
 
 @workspace_rpc.method("session.delete")
 async def handle_session_delete(params: dict, ctx: RpcContext) -> dict:
-    """删除 Session（先停止后删除）"""
+    """删除 Session（先停止后删除，同步更新 workspace）"""
     sm = ctx.managers.get("session_manager")
+    wm = ctx.managers.get("workspace_manager")
     if not sm:
         return {"error": "session_manager not available"}
     session_id = params.get("session_id", "")
     await sm.stop(session_id)
     if not sm.delete(session_id):
         return {"error": "session not found"}
+    # 从 workspace.sessions 列表移除
+    if wm:
+        ws = wm.get(ctx.workspace_id)
+        if ws and session_id in ws.sessions:
+            ws.sessions.remove(session_id)
+            wm.update(ws)
     await ctx.broadcast_event("session_deleted", {"session_id": session_id})
     return {"status": "deleted"}
 

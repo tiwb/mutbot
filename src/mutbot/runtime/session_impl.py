@@ -58,7 +58,6 @@ def serialize_session(self: Session) -> dict:
         "created_at": self.created_at,
         "updated_at": self.updated_at,
         "config": self.config,
-        "deleted": self.deleted,
     }
     # AgentSession 特有字段
     if isinstance(self, AgentSession):
@@ -199,7 +198,6 @@ def _session_from_dict(data: dict) -> Session:
         "created_at": data.get("created_at", ""),
         "updated_at": data.get("updated_at", ""),
         "config": data.get("config") or {},
-        "deleted": data.get("deleted", False),
     }
     # AgentSession 特有字段
     if issubclass(cls, AgentSession):
@@ -404,9 +402,17 @@ class SessionManager:
 
     # --- 持久化 ---
 
-    def load_from_disk(self) -> None:
-        """Load all sessions from .mutbot/sessions/*.json (metadata only)."""
-        for data in storage.load_all_sessions():
+    def load_from_disk(self, session_ids: set[str] | None = None) -> None:
+        """Load sessions from disk.
+
+        Args:
+            session_ids: 要加载的 session ID 集合。为 None 时加载全部（兼容旧调用）。
+        """
+        if session_ids is not None:
+            raw_list = storage.load_sessions(session_ids)
+        else:
+            raw_list = storage.load_all_sessions()
+        for data in raw_list:
             session = _session_from_dict(data)
             self._sessions[session.id] = session
         if self._sessions:
@@ -451,13 +457,11 @@ class SessionManager:
         return session
 
     def delete(self, session_id: str) -> bool:
-        """Soft-delete a session."""
-        session = self._sessions.get(session_id)
-        if not session:
+        """从内存中移除 session（磁盘文件保留，便于恢复）。"""
+        if session_id not in self._sessions:
             return False
-        session.deleted = True
-        session.updated_at = datetime.now(timezone.utc).isoformat()
-        self._persist(session)
+        self._sessions.pop(session_id)
+        self._runtimes.pop(session_id, None)
         return True
 
     def create(
@@ -498,7 +502,7 @@ class SessionManager:
     def list_by_workspace(self, workspace_id: str) -> list[Session]:
         return [
             s for s in self._sessions.values()
-            if s.workspace_id == workspace_id and not s.deleted
+            if s.workspace_id == workspace_id
         ]
 
     # --- 跨线程广播 ---
