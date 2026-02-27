@@ -12,7 +12,7 @@ import logging
 import sys
 import time
 
-import requests
+import httpx
 
 logger = logging.getLogger(__name__)
 
@@ -112,7 +112,7 @@ class CopilotAuth:
         logger.info("Starting GitHub OAuth device flow")
 
         # 1. 请求设备码
-        resp = requests.post(
+        resp = httpx.post(
             "https://github.com/login/device/code",
             headers={"Accept": "application/json"},
             data={
@@ -134,7 +134,7 @@ class CopilotAuth:
         # 2. 轮询获取 access token
         while True:
             time.sleep(interval)
-            resp = requests.post(
+            resp = httpx.post(
                 "https://github.com/login/oauth/access_token",
                 headers={"Accept": "application/json"},
                 data={
@@ -168,7 +168,7 @@ class CopilotAuth:
         if not self.github_token:
             raise RuntimeError("No GitHub token available")
 
-        resp = requests.get(
+        resp = httpx.get(
             "https://api.github.com/copilot_internal/v2/token",
             headers={
                 "Authorization": f"token {self.github_token}",

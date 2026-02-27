@@ -1,4 +1,4 @@
-"""Tests for mutbot config system (runtime/config.py and cli/setup.py)."""
+"""Tests for mutbot config system (runtime/config.py and setup_provider)."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ import pytest
 import mutagent.builtins  # noqa: F401  -- register @impl
 from mutagent.config import Config
 from mutbot.runtime.config import MUTBOT_CONFIG_FILES, load_mutbot_config
-from mutbot.cli.setup import _write_config, MUTBOT_CONFIG_PATH
+from mutbot.builtins.setup_provider import _write_config, MUTBOT_CONFIG_PATH
 
 
 # ---------------------------------------------------------------------------
@@ -74,8 +74,8 @@ class TestLoadMutbotConfig:
 class TestWriteConfig:
 
     def test_write_creates_new_config(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("mutbot.cli.setup.MUTBOT_USER_DIR", tmp_path)
-        monkeypatch.setattr("mutbot.cli.setup.MUTBOT_CONFIG_PATH", tmp_path / "config.json")
+        monkeypatch.setattr("mutbot.builtins.setup_provider.MUTBOT_USER_DIR", tmp_path)
+        monkeypatch.setattr("mutbot.builtins.setup_provider.MUTBOT_CONFIG_PATH", tmp_path / "config.json")
 
         _write_config({
             "default_model": "claude-sonnet-4",
@@ -94,8 +94,8 @@ class TestWriteConfig:
         assert data["providers"]["anthropic"]["models"] == ["claude-sonnet-4"]
 
     def test_write_merges_providers(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("mutbot.cli.setup.MUTBOT_USER_DIR", tmp_path)
-        monkeypatch.setattr("mutbot.cli.setup.MUTBOT_CONFIG_PATH", tmp_path / "config.json")
+        monkeypatch.setattr("mutbot.builtins.setup_provider.MUTBOT_USER_DIR", tmp_path)
+        monkeypatch.setattr("mutbot.builtins.setup_provider.MUTBOT_CONFIG_PATH", tmp_path / "config.json")
 
         # 写入初始配置
         (tmp_path / "config.json").write_text(json.dumps({
@@ -128,8 +128,8 @@ class TestWriteConfig:
 
     def test_write_same_provider_overwrites(self, tmp_path, monkeypatch):
         """同名 provider 覆盖已有的。"""
-        monkeypatch.setattr("mutbot.cli.setup.MUTBOT_USER_DIR", tmp_path)
-        monkeypatch.setattr("mutbot.cli.setup.MUTBOT_CONFIG_PATH", tmp_path / "config.json")
+        monkeypatch.setattr("mutbot.builtins.setup_provider.MUTBOT_USER_DIR", tmp_path)
+        monkeypatch.setattr("mutbot.builtins.setup_provider.MUTBOT_CONFIG_PATH", tmp_path / "config.json")
 
         (tmp_path / "config.json").write_text(json.dumps({
             "providers": {

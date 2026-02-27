@@ -4,8 +4,7 @@
 - 状态机各状态转换
 - 模型发现（fetch 成功 / 失败 / chat_filter）
 - 模型选择（编号解析、all、a 展开、手动输入）
-- Sync → Async generator adapter
-- send() 代理（sync/async provider 兼容）
+- send() 代理（async provider）
 - 配置构建与合并
 - 模型优先级排序
 """
@@ -21,7 +20,7 @@ from mutbot.builtins.setup_provider import (
     SetupProvider,
     _model_family,
     _prioritize_models,
-    _wrap_sync_iter,
+    _write_config,
 )
 
 
@@ -408,71 +407,7 @@ async def _mock_activate(provider: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Sync → Async adapter
-# ---------------------------------------------------------------------------
-
-class TestWrapSyncIter:
-    """测试 _wrap_sync_iter 同步→异步 generator 适配。"""
-
-    @pytest.mark.asyncio
-    async def test_basic_iteration(self):
-        """正常迭代同步 generator。"""
-        def gen():
-            yield 1
-            yield 2
-            yield 3
-
-        result = []
-        async for item in _wrap_sync_iter(gen()):
-            result.append(item)
-        assert result == [1, 2, 3]
-
-    @pytest.mark.asyncio
-    async def test_empty_generator(self):
-        """空 generator。"""
-        def gen():
-            return
-            yield  # noqa: unreachable — makes it a generator
-
-        result = []
-        async for item in _wrap_sync_iter(gen()):
-            result.append(item)
-        assert result == []
-
-    @pytest.mark.asyncio
-    async def test_exception_propagation(self):
-        """同步 generator 抛异常 → 异步侧收到相同异常。"""
-        def gen():
-            yield 1
-            raise ValueError("test error")
-
-        result = []
-        with pytest.raises(ValueError, match="test error"):
-            async for item in _wrap_sync_iter(gen()):
-                result.append(item)
-        assert result == [1]
-
-    @pytest.mark.asyncio
-    async def test_stream_events(self):
-        """StreamEvent 对象正确传递。"""
-        def gen():
-            yield StreamEvent(type="text_delta", text="hello")
-            yield StreamEvent(type="response_done", response=Response(
-                message=Message(role="assistant", content="hello"),
-                stop_reason="end_turn",
-            ))
-
-        events = []
-        async for item in _wrap_sync_iter(gen()):
-            events.append(item)
-        assert len(events) == 2
-        assert events[0].type == "text_delta"
-        assert events[0].text == "hello"
-        assert events[1].type == "response_done"
-
-
-# ---------------------------------------------------------------------------
-# send() 代理 — sync/async 兼容
+# send() 代理
 # ---------------------------------------------------------------------------
 
 class TestSendProxy:
@@ -500,29 +435,6 @@ class TestSendProxy:
         )
         assert len(events) == 2
         assert events[0].text == "async-hello"
-
-    @pytest.mark.asyncio
-    async def test_proxy_sync_provider(self):
-        """代理 sync generator provider（如 CopilotProvider）。"""
-        p = SetupProvider()
-
-        class SyncProvider:
-            def send(self, model, messages, tools,
-                     system_prompt="", stream=True):
-                yield StreamEvent(type="text_delta", text="sync-hello")
-                yield StreamEvent(type="response_done", response=Response(
-                    message=Message(role="assistant", content="sync-hello"),
-                    stop_reason="end_turn",
-                ))
-
-        p._real_provider = SyncProvider()
-        p._real_model = "test-model"
-
-        events = await _collect_events(
-            p.send("m", [Message(role="user", content="hi")], [])
-        )
-        assert len(events) == 2
-        assert events[0].text == "sync-hello"
 
 
 # ---------------------------------------------------------------------------
@@ -597,17 +509,16 @@ class TestConfigBuild:
 # 配置保存与合并
 # ---------------------------------------------------------------------------
 
-class TestSaveConfig:
-    """测试 _save_config 配置文件写入与合并。"""
+class TestWriteConfig:
+    """测试 _write_config 配置文件写入与合并。"""
 
-    def test_save_new_config(self, tmp_path, monkeypatch):
+    def test_write_new_config(self, tmp_path, monkeypatch):
         """全新写入配置文件。"""
         import mutbot.builtins.setup_provider as sp
         monkeypatch.setattr(sp, "MUTBOT_CONFIG_PATH", tmp_path / "config.json")
         monkeypatch.setattr(sp, "MUTBOT_USER_DIR", tmp_path)
 
-        p = SetupProvider()
-        p._save_config({
+        _write_config({
             "default_model": "test-model",
             "providers": {"test": {"provider": "T", "models": ["test-model"]}},
         })
@@ -617,7 +528,7 @@ class TestSaveConfig:
         assert "test" in saved["providers"]
 
     def test_merge_preserves_existing(self, tmp_path, monkeypatch):
-        """合并写入时保留已有 providers。"""
+        """合并写入时保留已有 providers 和 default_model。"""
         import mutbot.builtins.setup_provider as sp
         config_path = tmp_path / "config.json"
         config_path.write_text(json.dumps({
@@ -627,14 +538,14 @@ class TestSaveConfig:
         monkeypatch.setattr(sp, "MUTBOT_CONFIG_PATH", config_path)
         monkeypatch.setattr(sp, "MUTBOT_USER_DIR", tmp_path)
 
-        p = SetupProvider()
-        p._save_config({
+        _write_config({
             "default_model": "new-model",
             "providers": {"new": {"provider": "New", "models": ["new"]}},
         })
 
         saved = json.loads(config_path.read_text())
-        assert saved["default_model"] == "new-model"
+        # default_model 保留已有的
+        assert saved["default_model"] == "old-model"
         assert "existing" in saved["providers"]
         assert "new" in saved["providers"]
 

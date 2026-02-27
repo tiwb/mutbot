@@ -12,7 +12,7 @@ import json
 import logging
 import re
 from collections import defaultdict
-from typing import AsyncIterator, Iterator
+from typing import AsyncIterator
 
 from mutagent.messages import Message, Response, StreamEvent
 from mutagent.provider import LLMProvider
@@ -30,45 +30,6 @@ _MAX_NUMBERED_MODELS = 10
 _CHAT_MODEL_PREFIXES = ("gpt-", "o1", "o3", "o4", "chatgpt-")
 _FEATURED_FAMILIES_PER_PREFIX = 2
 _VARIANT_SUFFIXES = ("-mini", "-nano", "-turbo", "-latest", "-preview", "-realtime")
-
-
-# ---------------------------------------------------------------------------
-# Sync → Async generator adapter
-# ---------------------------------------------------------------------------
-
-async def _wrap_sync_iter(sync_gen: Iterator) -> AsyncIterator:
-    """Wrap a synchronous iterator for async consumption.
-
-    Runs the sync iteration in a thread pool worker to avoid blocking
-    the event loop (important when the sync generator does HTTP I/O).
-    """
-    loop = asyncio.get_running_loop()
-    q: asyncio.Queue = asyncio.Queue()
-
-    class _Done:
-        pass
-
-    class _Error:
-        def __init__(self, exc: BaseException):
-            self.exc = exc
-
-    def _producer() -> None:
-        try:
-            for item in sync_gen:
-                loop.call_soon_threadsafe(q.put_nowait, item)
-            loop.call_soon_threadsafe(q.put_nowait, _Done())
-        except Exception as exc:
-            loop.call_soon_threadsafe(q.put_nowait, _Error(exc))
-
-    loop.run_in_executor(None, _producer)
-
-    while True:
-        item = await q.get()
-        if isinstance(item, _Done):
-            return
-        if isinstance(item, _Error):
-            raise item.exc
-        yield item
 
 
 # ---------------------------------------------------------------------------
@@ -161,16 +122,10 @@ class SetupProvider(LLMProvider):
     ) -> AsyncIterator[StreamEvent]:
         # 已完成配置 → 代理到真实 provider
         if self._real_provider:
-            gen = self._real_provider.send(
+            async for event in self._real_provider.send(
                 self._real_model, messages, tools, system_prompt, stream
-            )
-            # 兼容同步 generator（如 CopilotProvider）和异步 generator
-            if hasattr(gen, '__aiter__'):
-                async for event in gen:
-                    yield event
-            else:
-                async for event in _wrap_sync_iter(gen):
-                    yield event
+            ):
+                yield event
             return
 
         # Setup 阶段 → 状态机
@@ -404,11 +359,11 @@ class SetupProvider(LLMProvider):
         ))
 
     async def _request_device_code(self) -> dict:
-        """请求 GitHub device code（在线程中执行同步 HTTP）。"""
-        import requests
+        """请求 GitHub device code。"""
+        import httpx
 
-        def _request():
-            resp = requests.post(
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
                 "https://github.com/login/device/code",
                 headers={"Accept": "application/json"},
                 data={"client_id": GITHUB_CLIENT_ID, "scope": "read:user"},
@@ -416,14 +371,12 @@ class SetupProvider(LLMProvider):
             resp.raise_for_status()
             return resp.json()
 
-        return await asyncio.get_event_loop().run_in_executor(None, _request)
-
     async def _poll_github_token(self, device_code: str) -> str | None:
-        """单次轮询 GitHub token（在线程中执行同步 HTTP）。"""
-        import requests
+        """单次轮询 GitHub token。"""
+        import httpx
 
-        def _poll():
-            resp = requests.post(
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
                 "https://github.com/login/oauth/access_token",
                 headers={"Accept": "application/json"},
                 data={
@@ -439,8 +392,6 @@ class SetupProvider(LLMProvider):
             if error:
                 raise RuntimeError(f"OAuth error: {error}")
             return data.get("access_token")
-
-        return await asyncio.get_event_loop().run_in_executor(None, _poll)
 
     # ------------------------------------------------------------------
     # API Key 流程 (Standard Anthropic / OpenAI)
@@ -659,49 +610,48 @@ class SetupProvider(LLMProvider):
         尝试 OpenAI 格式端点。返回按 family 优先级排序的模型 ID 列表，
         失败返回空列表（由调用方决定 fallback 策略）。
         """
-        import requests
+        import httpx
 
-        def _fetch() -> list[str]:
-            headers = {"Authorization": f"Bearer {api_key}"}
-            urls = [f"{base_url}/models", f"{base_url}/v1/models"]
-            data = None
-            for url in urls:
-                try:
-                    resp = requests.get(url, headers=headers, timeout=15)
-                    if resp.status_code == 200:
-                        data = resp.json()
-                        break
-                except Exception:
-                    continue
-
-            if data is None:
-                return []
-
-            raw_models: list[tuple[str, int]] = []
-            for item in data.get("data", []):
-                model_id = item.get("id", "")
-                if model_id:
-                    created = item.get("created", 0)
-                    raw_models.append((model_id, created))
-
-            if not raw_models:
-                return []
-
-            if chat_filter:
-                filtered = [
-                    (m, c) for m, c in raw_models
-                    if any(m.startswith(p) for p in _CHAT_MODEL_PREFIXES)
-                ]
-                if filtered:
-                    raw_models = filtered
-
-            return _prioritize_models(raw_models)
+        headers = {"Authorization": f"Bearer {api_key}"}
+        urls = [f"{base_url}/models", f"{base_url}/v1/models"]
+        data = None
 
         try:
-            return await asyncio.get_event_loop().run_in_executor(None, _fetch)
+            async with httpx.AsyncClient(timeout=15) as client:
+                for url in urls:
+                    try:
+                        resp = await client.get(url, headers=headers)
+                        if resp.status_code == 200:
+                            data = resp.json()
+                            break
+                    except Exception:
+                        continue
         except Exception as exc:
             logger.warning("Model fetch failed for %s: %s", base_url, exc)
             return []
+
+        if data is None:
+            return []
+
+        raw_models: list[tuple[str, int]] = []
+        for item in data.get("data", []):
+            model_id = item.get("id", "")
+            if model_id:
+                created = item.get("created", 0)
+                raw_models.append((model_id, created))
+
+        if not raw_models:
+            return []
+
+        if chat_filter:
+            filtered = [
+                (m, c) for m, c in raw_models
+                if any(m.startswith(p) for p in _CHAT_MODEL_PREFIXES)
+            ]
+            if filtered:
+                raw_models = filtered
+
+        return _prioritize_models(raw_models)
 
     # ------------------------------------------------------------------
     # 配置保存与 Provider 切换
@@ -710,7 +660,7 @@ class SetupProvider(LLMProvider):
     async def _activate(self, provider: str) -> str:
         """保存配置并切换到真实 LLM provider。"""
         config_data = self._build_provider_config(provider)
-        self._save_config(config_data)
+        _write_config(config_data)
 
         # 创建真实 LLMProvider — 后续 send() 直接代理
         from mutbot.runtime.session_impl import create_llm_client
@@ -802,36 +752,38 @@ class SetupProvider(LLMProvider):
             },
         }
 
-    def _save_config(self, new_data: dict) -> None:
-        """合并写入 ~/.mutbot/config.json。"""
-        MUTBOT_USER_DIR.mkdir(parents=True, exist_ok=True)
 
-        existing: dict = {}
-        if MUTBOT_CONFIG_PATH.exists():
-            try:
-                existing = json.loads(MUTBOT_CONFIG_PATH.read_text(encoding="utf-8"))
-            except (json.JSONDecodeError, OSError):
-                pass
+# ---------------------------------------------------------------------------
+# Config I/O (module-level, testable)
+# ---------------------------------------------------------------------------
 
-        # 合并 providers
-        existing_providers = existing.get("providers", {})
-        new_providers = new_data.get("providers", {})
-        existing_providers.update(new_providers)
-        existing["providers"] = existing_providers
+def _write_config(new_data: dict) -> None:
+    """合并写入 ~/.mutbot/config.json。
 
-        # 设置 default_model
-        new_default = new_data.get("default_model")
-        if new_default:
-            existing["default_model"] = new_default
-        elif "default_model" not in existing:
-            for prov in existing_providers.values():
-                models = prov.get("models", [])
-                if models:
-                    existing["default_model"] = models[0]
-                    break
+    - providers: 已有保留，同名覆盖
+    - default_model: 仅在已有配置没有时设置
+    """
+    MUTBOT_USER_DIR.mkdir(parents=True, exist_ok=True)
 
-        MUTBOT_CONFIG_PATH.write_text(
-            json.dumps(existing, indent=2, ensure_ascii=False) + "\n",
-            encoding="utf-8",
-        )
-        logger.info("Config written to %s", MUTBOT_CONFIG_PATH)
+    existing: dict = {}
+    if MUTBOT_CONFIG_PATH.exists():
+        try:
+            existing = json.loads(MUTBOT_CONFIG_PATH.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    # 合并 providers
+    existing_providers = existing.get("providers", {})
+    new_providers = new_data.get("providers", {})
+    existing_providers.update(new_providers)
+    existing["providers"] = existing_providers
+
+    # default_model: 仅在没有时设置
+    if "default_model" not in existing and "default_model" in new_data:
+        existing["default_model"] = new_data["default_model"]
+
+    MUTBOT_CONFIG_PATH.write_text(
+        json.dumps(existing, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    logger.info("Config written to %s", MUTBOT_CONFIG_PATH)

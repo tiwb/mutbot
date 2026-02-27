@@ -1,13 +1,13 @@
 # Web 配置向导 — 实施规范
 
 **状态**：✅ 已完成
-**日期**：2026-02-26
+**日期**：2026-02-27
 **类型**：功能设计
 **总体规划**：[mutbot.ai feature-website-github-pages.md](../../mutbot.ai/docs/specifications/feature-website-github-pages.md) Phase 4
 
 ## 1. 背景
 
-当前 mutbot 首次运行无 LLM 配置时，使用 CLI 交互式向导（`mutbot/cli/setup.py`）完成 provider 配置。用户必须在终端中选择 provider、输入 API Key，完成后重启进入 Web 界面。
+当前 mutbot 首次运行无 LLM 配置时，~~使用 CLI 交互式向导（`mutbot/cli/setup.py`）完成 provider 配置~~（CLI 向导已删除）。用户通过 Web 聊天界面完成首次配置。
 
 **目标**：mutbot 无 LLM 配置时直接启动 Web 服务器，用户通过聊天界面完成首次配置。配置完成后，同一 session 无缝切换为真实 LLM 驱动，用户可直接对话测试。
 
@@ -264,27 +264,26 @@ async def _do_copilot_auth(self) -> AsyncIterator[StreamEvent]:
 
 **取消处理**：轮询期间用户点击取消按钮 → `AgentBridge.cancel()` 取消 asyncio task → `CancelledError` 在 `asyncio.sleep()` 处传播 → `send()` 中断 → `AgentBridge._commit_partial_state()` 提交部分消息。下一条用户消息时，`_dispatch()` 检测到 `_state == "COPILOT_POLLING"` → 重置为 `AWAIT_CHOICE`。
 
-**GitHub API 异步调用**：
+**GitHub API 异步调用**（使用 `httpx.AsyncClient`，无需 `run_in_executor`）：
 
 ```python
 async def _request_device_code(self) -> dict:
-    """请求 GitHub device code（在线程中执行同步 HTTP）。"""
-    import asyncio, requests
-    def _request():
-        resp = requests.post(
+    """请求 GitHub device code。"""
+    import httpx
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(
             "https://github.com/login/device/code",
             headers={"Accept": "application/json"},
             data={"client_id": GITHUB_CLIENT_ID, "scope": "read:user"},
         )
         resp.raise_for_status()
         return resp.json()
-    return await asyncio.get_event_loop().run_in_executor(None, _request)
 
 async def _poll_github_token(self, device_code: str) -> str | None:
-    """单次轮询 GitHub token（在线程中执行同步 HTTP）。"""
-    import asyncio, requests
-    def _poll():
-        resp = requests.post(
+    """单次轮询 GitHub token。"""
+    import httpx
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(
             "https://github.com/login/oauth/access_token",
             headers={"Accept": "application/json"},
             data={
@@ -300,7 +299,6 @@ async def _poll_github_token(self, device_code: str) -> str | None:
         if error:
             raise RuntimeError(f"OAuth error: {error}")
         return data.get("access_token")
-    return await asyncio.get_event_loop().run_in_executor(None, _poll)
 ```
 
 #### API Key 流程 — 模型发现替代验证
@@ -333,42 +331,13 @@ Select models (type numbers separated by commas, or **all** to select all):
 
 Custom API 获取模型失败时，提示用户手动输入 model ID。
 
-#### Sync → Async Generator 兼容
-
-部分 LLMProvider（如 CopilotProvider）的 `send()` 返回同步 generator。SetupProvider 代理时通过 `_wrap_sync_iter()` 在线程中运行同步迭代，避免阻塞事件循环：
-
-```python
-async def _wrap_sync_iter(sync_gen):
-    """Wrap sync iterator for async consumption (runs in thread pool)."""
-    loop = asyncio.get_running_loop()
-    q = asyncio.Queue()
-    def _producer():
-        for item in sync_gen:
-            loop.call_soon_threadsafe(q.put_nowait, item)
-        loop.call_soon_threadsafe(q.put_nowait, _DONE)
-    loop.run_in_executor(None, _producer)
-    while True:
-        item = await q.get()
-        if isinstance(item, _Done): return
-        yield item
-```
-
-`send()` 代理逻辑：
-```python
-gen = self._real_provider.send(...)
-if hasattr(gen, '__aiter__'):
-    async for event in gen: yield event  # Async provider
-else:
-    async for event in _wrap_sync_iter(gen): yield event  # Sync provider
-```
-
 #### 配置保存与 Provider 切换
 
 ```python
 async def _activate(self, provider: str) -> str:
     """保存配置并切换到真实 LLM provider。"""
     config_data = self._build_provider_config(provider)
-    self._save_config(config_data)
+    _write_config(config_data)
 
     # 创建真实 LLMProvider — 后续 send() 直接代理
     from mutbot.runtime.session_impl import create_llm_client
@@ -387,8 +356,7 @@ async def _activate(self, provider: str) -> str:
 
 def _save_config(self, data: dict) -> None:
     """合并写入 ~/.mutbot/config.json。"""
-    # 复用 cli/setup.py 中的 merge 逻辑
-    ...
+    _write_config(data)
 ```
 
 ### 2.4 为什么集成到 GuideSession
@@ -659,6 +627,110 @@ wsRpc.on("open_session", async (data) => {
 
 **修复方案**：AgentPanel 每次 WS `onOpen` 时都调用 `session.events` RPC 加载事件（event_id 去重机制已存在），确保 catch up 所有历史事件。此修复为通用可靠性改进，不限于 setup 向导场景。
 
+### 2.11 Bugfix: 移除 `requests` 依赖 + CopilotProvider async 化
+
+**问题**：部署环境缺少 `requests` 库导致运行时报错。`requests` 未声明在 `mutbot/pyproject.toml` 依赖中，开发环境因其他包的传递依赖碰巧可用。
+
+**根因分析**：`requests` 的使用源于 `CopilotProvider.send()` 是 sync 实现。但 `LLMProvider.send()` 基类接口本身是 async 的，`CopilotProvider` 是唯一不合规的 provider。它 sync `yield from` 调用 async 函数（`_send_stream`/`_send_no_stream`），靠 `_wrap_sync_iter` 适配器勉强工作。
+
+**方案**：移除 `requests`，全部替换为 `httpx`（已通过 `mutagent` 依赖可用，`httpx>=0.27`）。同时修正 `CopilotProvider` 的 async 合规性，删除不再需要的 CLI 向导。
+
+**影响文件**：
+
+| 文件 | 操作 | 说明 |
+|------|------|------|
+| `cli/setup.py` | **删除** | Web 向导已完全替代 CLI 向导 |
+| `copilot/provider.py` | async 化 | `send()` 改为 async，删除残留 `import requests` |
+| `copilot/auth.py` | `requests` → `httpx` sync | token 刷新频率低，`from_config()` 是 sync classmethod |
+| `builtins/setup_provider.py` | `requests` → `httpx.AsyncClient` | 移除 `run_in_executor` 包装，删除 `_wrap_sync_iter` 适配器 |
+| `tests/test_config_system.py` | 迁移 import | `cli.setup` → `setup_provider` |
+| `tests/test_setup_provider.py` | 简化 | 删除 sync adapter 测试，mock 目标改为 `httpx` |
+
+#### CopilotProvider async 化
+
+```python
+# 修改前（sync，不合规）
+from typing import Any, Iterator
+
+def send(self, model, messages, tools, ...) -> Iterator[StreamEvent]:
+    headers = self.auth.get_headers()
+    base_url = self.auth.get_base_url(self.account_type)
+    if stream:
+        yield from _send_stream(base_url, payload, headers)  # ← async 函数
+
+# 修改后（async，合规）
+from typing import Any, AsyncIterator
+
+async def send(self, model, messages, tools, ...) -> AsyncIterator[StreamEvent]:
+    headers = self.auth.get_headers()  # sync，OK
+    base_url = self.auth.get_base_url(self.account_type)  # sync，OK
+    if stream:
+        async for event in _send_stream(base_url, payload, headers):
+            yield event
+```
+
+`CopilotAuth` 保持 sync：`from_config()` 是 sync classmethod 会调用 `ensure_authenticated()`，token 刷新频率低（~30 分钟），不值得为此改造 provider 创建链路。
+
+#### SetupProvider 简化
+
+```python
+# 修改前（需要 sync/async 适配器）
+if self._real_provider:
+    gen = self._real_provider.send(...)
+    if hasattr(gen, '__aiter__'):
+        async for event in gen: yield event
+    else:
+        async for event in _wrap_sync_iter(gen): yield event
+
+# 修改后（所有 provider 都是 async，无需适配）
+if self._real_provider:
+    async for event in self._real_provider.send(...):
+        yield event
+```
+
+删除 `_wrap_sync_iter()` 及相关辅助代码（~35 行）。
+
+#### setup_provider.py HTTP 调用
+
+`requests` + `run_in_executor` → `httpx.AsyncClient` 原生异步：
+
+```python
+# 修改前
+async def _request_device_code(self) -> dict:
+    import requests
+    def _request():
+        resp = requests.post(...)
+        resp.raise_for_status()
+        return resp.json()
+    return await asyncio.get_event_loop().run_in_executor(None, _request)
+
+# 修改后
+async def _request_device_code(self) -> dict:
+    import httpx
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(
+            "https://github.com/login/device/code",
+            headers={"Accept": "application/json"},
+            data={"client_id": GITHUB_CLIENT_ID, "scope": "read:user"},
+        )
+        resp.raise_for_status()
+        return resp.json()
+```
+
+#### copilot/auth.py
+
+`requests` → `httpx`（sync client）。API 基本兼容：
+
+```python
+# 修改前
+import requests
+resp = requests.get(url, headers=headers)
+
+# 修改后
+import httpx
+resp = httpx.get(url, headers=headers)
+```
+
 ## 3. 后续任务
 
 ### 重新配置 / 添加 Provider
@@ -727,9 +799,42 @@ wsRpc.on("open_session", async (data) => {
   - [x] 消息顺序正确、hidden 消息不显示、思考状态正确
   - 状态：✅ 已完成
 
+### 阶段四：Bugfix — 移除 requests 依赖 + async 化 [✅ 已完成]
+- [x] **Task 4.1**: 删除 `cli/setup.py`
+  - [x] 删除 `src/mutbot/cli/setup.py`
+  - [x] `tests/test_config_system.py` import 从 `cli.setup` 迁移到 `setup_provider`
+  - [x] `setup_provider.py` 提取模块级 `_write_config()` 函数
+  - 状态：✅ 已完成
+
+- [x] **Task 4.2**: `copilot/provider.py` — async 化
+  - [x] `send()` 签名改为 `async def send(...) -> AsyncIterator[StreamEvent]`
+  - [x] `yield from _send_stream(...)` → `async for event in _send_stream(...): yield event`
+  - [x] 删除 `import requests`，`Iterator` → `AsyncIterator`
+  - 状态：✅ 已完成
+
+- [x] **Task 4.3**: `copilot/auth.py` — `requests` → `httpx`（sync）
+  - [x] `import requests` → `import httpx`
+  - [x] `requests.post()` → `httpx.post()`，`requests.get()` → `httpx.get()`
+  - 状态：✅ 已完成
+
+- [x] **Task 4.4**: `setup_provider.py` — `requests` → `httpx.AsyncClient` + 删除 sync 适配器
+  - [x] `_request_device_code()`：移除 `run_in_executor`，改用 `httpx.AsyncClient`
+  - [x] `_poll_github_token()`：同上
+  - [x] `_fetch_models_async()`：同上
+  - [x] 删除 `_wrap_sync_iter()` 及 `_Done`/`_Error` 辅助类（~35 行）
+  - [x] `send()` 代理逻辑简化：移除 `hasattr(gen, '__aiter__')` 分支
+  - 状态：✅ 已完成
+
+- [x] **Task 4.5**: 更新测试
+  - [x] 删除 `_wrap_sync_iter` import 和 `TestWrapSyncIter` 类（4 tests）
+  - [x] 删除 `test_proxy_sync_provider` 测试
+  - [x] `TestSaveConfig` → `TestWriteConfig`，改用模块级 `_write_config()`
+  - [x] 验证所有 59 个测试通过（49 + 10）
+  - 状态：✅ 已完成
+
 ## 5. 测试验证
 
-### 单元测试（55 tests — `test_setup_provider.py` + `test_setup_integration.py`）
+### 单元测试（49 tests — `test_setup_provider.py` + `test_setup_integration.py` + `test_config_system.py`）
 
 **SetupProvider 状态机**（11 tests）：
 - [x] WELCOME → AWAIT_CHOICE 转换 + 欢迎消息内容
@@ -753,12 +858,12 @@ wsRpc.on("open_session", async (data) => {
 - [x] 空输入/去重
 - [x] 手动模型输入（AWAIT_MANUAL_MODEL）
 
-**Sync→Async adapter**（4 tests）：
-- [x] 基本迭代、空 generator、异常传播、StreamEvent 传递
+**Sync→Async adapter**（阶段四删除）：
+- [x] ~~基本迭代、空 generator、异常传播、StreamEvent 传递~~
 
-**send() 代理**（2 tests）：
+**send() 代理**（2 tests → 阶段四简化为 1 test）：
 - [x] Async generator provider
-- [x] Sync generator provider（如 CopilotProvider）
+- [x] ~~Sync generator provider（如 CopilotProvider）~~ → 阶段四后 CopilotProvider 已 async 化
 
 **配置**（9 tests）：
 - [x] 5 种 provider 配置构建
