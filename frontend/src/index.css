@@ -234,6 +234,15 @@ body,
   background-image: none !important;
 }
 
+/* 最大化状态：tabbar_outer 同时带 flexlayout__tabset-maximized 类 */
+.flexlayout__tabset_tabbar_outer.flexlayout__tabset-maximized {
+  background: var(--tab-inactive-bg) !important;
+}
+
+.flexlayout__tabset_maximized .flexlayout__tab {
+  background: var(--bg) !important;
+}
+
 /* ----------------------------------------------------------------
    Scrollbar (VS Code style)
    ---------------------------------------------------------------- */
@@ -497,49 +506,27 @@ body,
   margin: 0 2px;
 }
 
-/* Agent status indicator */
-.agent-status-indicator {
+/* Agent status bar (outside scroll area, between MessageList and ChatInput) */
+.agent-status-bar {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 8px 0;
+  padding: 4px 16px;
   color: var(--text-dim);
-  font-size: 13px;
+  font-size: 12px;
+  flex-shrink: 0;
 }
 
-.thinking-dots {
-  display: inline-flex;
-  gap: 3px;
-}
-
-.thinking-dots span {
-  width: 5px;
-  height: 5px;
+.status-spinner {
+  width: 12px;
+  height: 12px;
+  border: 1.5px solid var(--text-dim);
+  border-top-color: transparent;
   border-radius: 50%;
-  background: var(--text-dim);
-  animation: thinking-pulse 1.4s infinite;
+  animation: spin 0.8s linear infinite;
 }
 
-.thinking-dots span:nth-child(2) {
-  animation-delay: 0.2s;
-}
-
-.thinking-dots span:nth-child(3) {
-  animation-delay: 0.4s;
-}
-
-@keyframes thinking-pulse {
-  0%, 80%, 100% { opacity: 0.3; }
-  40% { opacity: 1; }
-}
-
-.tool-icon {
-  font-size: 14px;
-  animation: tool-spin 2s linear infinite;
-}
-
-@keyframes tool-spin {
-  from { transform: rotate(0deg); }
+@keyframes spin {
   to { transform: rotate(360deg); }
 }
 

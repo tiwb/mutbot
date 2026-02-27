@@ -86,8 +86,8 @@ export default function ChatInput({ onSend, onCancel, disabled, isBusy }: Props)
   }, []);
 
   const placeholder = sendMode === "enter"
-    ? "输入消息... (Shift+Enter 换行)"
-    : "输入消息... (Ctrl+Enter 发送)";
+    ? "Type a message... (Shift+Enter for newline)"
+    : "Type a message... (Ctrl+Enter to send)";
 
   return (
     <div
@@ -108,18 +108,18 @@ export default function ChatInput({ onSend, onCancel, disabled, isBusy }: Props)
       />
       <div className="chat-input-toolbar">
         <div className="toolbar-left">
-          <button className="toolbar-icon-btn" disabled title="即将支持">
+          <button className="toolbar-icon-btn" disabled title="Coming soon">
             <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
               <path d="M14 4.5V14a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V2a2 2 0 0 1 2-2h5.5L14 4.5zM4 1a1 1 0 0 0-1 1v12a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1V5H9.5a.5.5 0 0 1-.5-.5V1H4z"/>
             </svg>
           </button>
-          <button className="toolbar-icon-btn" disabled title="即将支持">
+          <button className="toolbar-icon-btn" disabled title="Coming soon">
             <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
               <path d="M6.002 5.5a1.5 1.5 0 1 1-3 0 1.5 1.5 0 0 1 3 0z"/>
               <path d="M2.002 1a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V3a2 2 0 0 0-2-2h-12zm12 1a1 1 0 0 1 1 1v6.5l-3.777-1.947a.5.5 0 0 0-.577.093l-3.71 3.71-2.66-1.772a.5.5 0 0 0-.63.062L1.002 12V3a1 1 0 0 1 1-1h12z"/>
             </svg>
           </button>
-          <button className="toolbar-icon-btn" disabled title="即将支持">
+          <button className="toolbar-icon-btn" disabled title="Coming soon">
             <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
               <path d="M8 15A7 7 0 1 1 8 1a7 7 0 0 1 0 14zm0 1A8 8 0 1 0 8 0a8 8 0 0 0 0 16z"/>
               <path d="M4.285 9.567a.5.5 0 0 1 .683.183A3.498 3.498 0 0 0 8 11.5a3.498 3.498 0 0 0 3.032-1.75.5.5 0 1 1 .866.5A4.498 4.498 0 0 1 8 12.5a4.498 4.498 0 0 1-3.898-2.25.5.5 0 0 1 .183-.683zM7 6.5C7 7.328 6.552 8 6 8s-1-.672-1-1.5S5.448 5 6 5s1 .672 1 1.5zm4 0c0 .828-.448 1.5-1 1.5s-1-.672-1-1.5S9.448 5 10 5s1 .672 1 1.5z"/>
@@ -132,9 +132,9 @@ export default function ChatInput({ onSend, onCancel, disabled, isBusy }: Props)
               className="stop-btn"
               onClick={onCancel}
               disabled={disabled}
-              title="停止"
+              title="Stop"
             >
-              停止
+              Stop
             </button>
           )}
           <div className="send-btn-group" ref={menuRef}>
@@ -143,7 +143,7 @@ export default function ChatInput({ onSend, onCancel, disabled, isBusy }: Props)
               onClick={handleSend}
               disabled={disabled || !text.trim()}
             >
-              发送
+              Send
             </button>
             <button
               className={`send-dropdown-btn${disabled || !text.trim() ? " dimmed" : ""}`}
@@ -159,13 +159,13 @@ export default function ChatInput({ onSend, onCancel, disabled, isBusy }: Props)
                   className={sendMode === "enter" ? "active" : ""}
                   onClick={() => handleSetSendMode("enter")}
                 >
-                  按 Enter 发送
+                  Send with Enter
                 </button>
                 <button
                   className={sendMode === "ctrl-enter" ? "active" : ""}
                   onClick={() => handleSetSendMode("ctrl-enter")}
                 >
-                  按 Ctrl+Enter 发送
+                  Send with Ctrl+Enter
                 </button>
               </div>
             )}

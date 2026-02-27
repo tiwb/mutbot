@@ -159,6 +159,14 @@ class CloseOthersMenu(Menu):
     client_action = "close_others"
 
 
+class CloseAllMenu(Menu):
+    """Tab 右键菜单 — 关闭所有 Tab"""
+    display_name = "Close All"
+    display_category = "Tab/Context"
+    display_order = "0basic:4"
+    client_action = "close_all"
+
+
 class EndSessionMenu(Menu):
     """Tab 右键菜单 — 结束 Session"""
     display_name = "End Session"

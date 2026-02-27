@@ -115,14 +115,14 @@ export default function IconPicker({ position, onSelect, onReset, onClose }: Ico
         <input
           ref={inputRef}
           type="text"
-          placeholder="搜索图标..."
+          placeholder="Search icons..."
           value={search}
           onChange={(e) => setSearch(e.target.value)}
         />
       </div>
       <div className="icon-picker-body">
         {filtered.length === 0 ? (
-          <div className="icon-picker-empty">无匹配图标</div>
+          <div className="icon-picker-empty">No matching icons</div>
         ) : (
           <VirtuosoGrid
             totalCount={filtered.length}
@@ -149,7 +149,7 @@ export default function IconPicker({ position, onSelect, onReset, onClose }: Ico
       </div>
       <div className="icon-picker-footer">
         <button className="icon-picker-reset" onClick={onReset}>
-          重置为默认
+          Reset to default
         </button>
       </div>
     </div>,

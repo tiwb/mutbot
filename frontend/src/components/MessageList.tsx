@@ -1,4 +1,4 @@
-import { forwardRef, useCallback, useRef, useState } from "react";
+import { forwardRef, useCallback, useEffect, useRef, useState } from "react";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import type { WorkspaceRpc } from "../lib/workspace-rpc";
 import Markdown from "./Markdown";
@@ -28,8 +28,7 @@ interface Props {
   messages: ChatMessage[];
   rpc: WorkspaceRpc | null;
   onSessionLink?: (sessionId: string) => void;
-  agentStatus?: "idle" | "thinking" | "tool_calling";
-  toolName?: string;
+  scrollToBottomSignal?: number;
 }
 
 /** Virtuoso scroller 容器，添加 className 以便 CSS 定位滚动条样式 */
@@ -39,7 +38,7 @@ const VirtuosoScroller = forwardRef<HTMLDivElement, React.HTMLAttributes<HTMLDiv
   },
 );
 
-export default function MessageList({ messages, rpc, onSessionLink, agentStatus, toolName }: Props) {
+export default function MessageList({ messages, rpc, onSessionLink, scrollToBottomSignal }: Props) {
   const virtuosoRef = useRef<VirtuosoHandle>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const [atBottom, setAtBottom] = useState(true);
@@ -48,6 +47,16 @@ export default function MessageList({ messages, rpc, onSessionLink, agentStatus,
     position: { x: number; y: number };
     msgId: string | null;
   } | null>(null);
+
+  // Scroll to bottom when send signal changes
+  useEffect(() => {
+    if (scrollToBottomSignal && scrollToBottomSignal > 0) {
+      setAtBottom(true);
+      requestAnimationFrame(() => {
+        virtuosoRef.current?.scrollToIndex({ index: "LAST", align: "end", behavior: "smooth" });
+      });
+    }
+  }, [scrollToBottomSignal]);
 
   // 从 messages 数组中查找消息
   const findMessage = useCallback(
@@ -116,16 +125,12 @@ export default function MessageList({ messages, rpc, onSessionLink, agentStatus,
         ref={virtuosoRef}
         data={messages}
         initialTopMostItemIndex={messages.length > 0 ? messages.length - 1 : 0}
-        followOutput="smooth"
+        followOutput={(isAtBottom: boolean) => (isAtBottom ? "smooth" : false)}
         atBottomThreshold={150}
         atBottomStateChange={setAtBottom}
         itemContent={(_index, msg) => renderMessage(msg, markdownMode, onSessionLink)}
         components={{
           Scroller: VirtuosoScroller,
-          Footer: () =>
-            agentStatus === "thinking" ? (
-              <AgentStatusIndicator status={agentStatus} toolName={toolName} />
-            ) : null,
         }}
         style={{ height: "100%", width: "100%" }}
       />
@@ -133,7 +138,7 @@ export default function MessageList({ messages, rpc, onSessionLink, agentStatus,
         <button
           className="scroll-to-bottom"
           onClick={() => virtuosoRef.current?.scrollToIndex({ index: "LAST", align: "end", behavior: "smooth" })}
-          title="滚动到底部"
+          title="Scroll to bottom"
         >
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <polyline points="6 9 12 15 18 9" />
@@ -194,15 +199,4 @@ function renderMessage(
         </div>
       );
   }
-}
-
-function AgentStatusIndicator(_props: { status: "thinking"; toolName?: string }) {
-  return (
-    <div className="agent-status-indicator">
-      <span className="thinking-dots">
-        <span /><span /><span />
-        </span>
-      <span>思考中...</span>
-    </div>
-  );
 }

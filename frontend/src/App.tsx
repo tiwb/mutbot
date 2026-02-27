@@ -729,6 +729,23 @@ export default function App() {
             sessionId: tabContextSession.session.id,
           });
         }
+      } else if (action === "close_all") {
+        let parentId: string | null = null;
+        model.visitNodes((node) => {
+          if (node.getId() === nodeId && node.getType() === "tab") {
+            parentId = node.getParent()?.getId() ?? null;
+          }
+        });
+        if (!parentId) return;
+        const toClose: string[] = [];
+        model.visitNodes((node) => {
+          if (node.getType() === "tab" && node.getParent()?.getId() === parentId) {
+            toClose.push(node.getId());
+          }
+        });
+        for (const id of toClose) {
+          model.doAction(Actions.deleteTab(id));
+        }
       }
     },
     [tabContextMenu, tabContextSession],

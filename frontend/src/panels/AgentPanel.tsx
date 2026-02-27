@@ -4,6 +4,7 @@ import type { WorkspaceRpc } from "../lib/workspace-rpc";
 import { rlog, setLogSocket } from "../lib/remote-log";
 import MessageList, { type ChatMessage } from "../components/MessageList";
 import ChatInput from "../components/ChatInput";
+import AgentStatusBar from "../components/AgentStatusBar";
 import type { ToolGroupData } from "../components/ToolCallCard";
 
 const DEBUG = false;
@@ -35,8 +36,8 @@ export default function AgentPanel({ sessionId, rpc, onSessionLink }: Props) {
   const [connected, setConnected] = useState(false);
   const [connectionCount, setConnectionCount] = useState(0);
   const [agentStatus, setAgentStatus] = useState<AgentStatus>("idle");
-  const [toolName, setToolName] = useState("");
   const [tokenUsage, setTokenUsage] = useState<TokenUsage | null>(null);
+  const [scrollSignal, setScrollSignal] = useState(0);
   const wsRef = useRef<ReconnectingWebSocket | null>(null);
   const pendingTextRef = useRef(pendingTextCache.get(sessionId) ?? "");
   const messagesRef = useRef<ChatMessage[]>(messages);
@@ -190,9 +191,6 @@ export default function AgentPanel({ sessionId, rpc, onSessionLink }: Props) {
     } else if (eventType === "agent_status") {
       const status = data.status as AgentStatus;
       setAgentStatus(status);
-      if (status === "tool_calling") {
-        setToolName((data.tool_name as string) || "");
-      }
     } else if (eventType === "agent_cancelled") {
       setAgentStatus("idle");
       pendingTextRef.current = "";
@@ -221,7 +219,6 @@ export default function AgentPanel({ sessionId, rpc, onSessionLink }: Props) {
     toolCallMapRef.current.clear();
     processedEventIds.current.clear();
     setAgentStatus("idle");
-    setToolName("");
     setTokenUsage(null);
 
     // Track whether this session was already replayed from cache
@@ -346,6 +343,7 @@ export default function AgentPanel({ sessionId, rpc, onSessionLink }: Props) {
     wsRef.current?.send({ type: "message", text });
     // 乐观更新：立即切 thinking 状态
     setAgentStatus("thinking");
+    setScrollSignal((s) => s + 1);
   }, []);
 
   const handleCancel = useCallback(() => {
@@ -368,7 +366,8 @@ export default function AgentPanel({ sessionId, rpc, onSessionLink }: Props) {
         {tokenUsage && <TokenUsageDisplay usage={tokenUsage} />}
         {DEBUG && <span style={{ marginLeft: "auto", opacity: 0.5, fontSize: "0.8em" }}>msgs: {messages.length}</span>}
       </div>
-      <MessageList messages={messages} rpc={rpc ?? null} onSessionLink={onSessionLink} agentStatus={agentStatus} toolName={toolName} />
+      <MessageList messages={messages} rpc={rpc ?? null} onSessionLink={onSessionLink} scrollToBottomSignal={scrollSignal} />
+      <AgentStatusBar isBusy={agentStatus !== "idle"} />
       <ChatInput onSend={handleSend} onCancel={handleCancel} disabled={!connected} isBusy={agentStatus !== "idle"} />
     </div>
   );
