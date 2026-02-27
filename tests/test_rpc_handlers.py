@@ -81,7 +81,8 @@ class FakeSessionManager:
 class FakeWorkspace:
     def __init__(self, id="ws_test", name="Test", project_path="/tmp/test",
                  sessions=None, layout=None,
-                 created_at="2026-01-01T00:00:00", updated_at="2026-01-01T00:00:00"):
+                 created_at="2026-01-01T00:00:00", updated_at="2026-01-01T00:00:00",
+                 last_accessed_at="2026-01-01T00:00:00"):
         self.id = id
         self.name = name
         self.project_path = project_path
@@ -89,6 +90,7 @@ class FakeWorkspace:
         self.layout = layout
         self.created_at = created_at
         self.updated_at = updated_at
+        self.last_accessed_at = last_accessed_at
 
 
 class FakeWorkspaceManager:
