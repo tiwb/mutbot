@@ -537,28 +537,29 @@ body,
   position: relative;
 }
 
-/* Virtuoso 内部滚动容器的滚动条样式 */
-.message-list .virtuoso-scroller {
+.message-list-scroller {
+  height: 100%;
+  overflow-y: auto;
   scrollbar-width: thin;
   scrollbar-color: transparent transparent;
   transition: scrollbar-color 0.3s ease;
   scrollbar-gutter: stable;
 }
 
-.agent-panel:hover .message-list .virtuoso-scroller {
+.agent-panel:hover .message-list-scroller {
   scrollbar-color: var(--scrollbar-bg) transparent;
 }
 
 /* Webkit fallback (no transition support for pseudo-elements) */
-.message-list .virtuoso-scroller::-webkit-scrollbar-thumb {
+.message-list-scroller::-webkit-scrollbar-thumb {
   background: transparent;
 }
 
-.agent-panel:hover .message-list .virtuoso-scroller::-webkit-scrollbar-thumb {
+.agent-panel:hover .message-list-scroller::-webkit-scrollbar-thumb {
   background: var(--scrollbar-bg);
 }
 
-.agent-panel:hover .message-list .virtuoso-scroller::-webkit-scrollbar-thumb:hover {
+.agent-panel:hover .message-list-scroller::-webkit-scrollbar-thumb:hover {
   background: var(--scrollbar-hover);
 }
 

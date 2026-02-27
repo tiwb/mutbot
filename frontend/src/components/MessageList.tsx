@@ -1,5 +1,4 @@
-import { forwardRef, useCallback, useEffect, useRef, useState } from "react";
-import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { WorkspaceRpc } from "../lib/workspace-rpc";
 import Markdown from "./Markdown";
 import ToolCallCard, { type ToolGroupData } from "./ToolCallCard";
@@ -31,29 +30,46 @@ interface Props {
   scrollToBottomSignal?: number;
 }
 
-/** Virtuoso scroller 容器，添加 className 以便 CSS 定位滚动条样式 */
-const VirtuosoScroller = forwardRef<HTMLDivElement, React.HTMLAttributes<HTMLDivElement>>(
-  function VirtuosoScroller(props, ref) {
-    return <div {...props} ref={ref} className={`virtuoso-scroller ${props.className || ""}`} />;
-  },
-);
+const AT_BOTTOM_THRESHOLD = 150;
 
 export default function MessageList({ messages, rpc, onSessionLink, scrollToBottomSignal }: Props) {
-  const virtuosoRef = useRef<VirtuosoHandle>(null);
+  const scrollRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const [atBottom, setAtBottom] = useState(true);
+  const atBottomRef = useRef(true);
   const [markdownMode, setMarkdownMode] = useState<MarkdownMode>(loadMarkdownMode);
   const [contextMenu, setContextMenu] = useState<{
     position: { x: number; y: number };
     msgId: string | null;
   } | null>(null);
 
-  // Scroll to bottom when send signal changes
+  // Track atBottom via scroll events
+  const handleScroll = useCallback(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const isAtBottom = el.scrollHeight - el.scrollTop - el.clientHeight < AT_BOTTOM_THRESHOLD;
+    atBottomRef.current = isAtBottom;
+    setAtBottom(isAtBottom);
+  }, []);
+
+  // Auto-scroll when new content arrives (if user is at bottom)
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    if (atBottomRef.current) {
+      el.scrollTop = el.scrollHeight;
+    }
+  }, [messages]);
+
+  // Force scroll to bottom on send signal
   useEffect(() => {
     if (scrollToBottomSignal && scrollToBottomSignal > 0) {
+      const el = scrollRef.current;
+      if (!el) return;
+      atBottomRef.current = true;
       setAtBottom(true);
       requestAnimationFrame(() => {
-        virtuosoRef.current?.scrollToIndex({ index: "LAST", align: "end", behavior: "smooth" });
+        el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
       });
     }
   }, [scrollToBottomSignal]);
@@ -119,25 +135,26 @@ export default function MessageList({ messages, rpc, onSessionLink, scrollToBott
     [contextMenu, findMessage],
   );
 
+  const scrollToBottom = useCallback(() => {
+    const el = scrollRef.current;
+    if (el) el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+  }, []);
+
   return (
-    <div className="message-list" ref={listRef} onContextMenu={handleContextMenu}>
-      <Virtuoso
-        ref={virtuosoRef}
-        data={messages}
-        initialTopMostItemIndex={messages.length > 0 ? messages.length - 1 : 0}
-        followOutput={(isAtBottom: boolean) => (isAtBottom ? "smooth" : false)}
-        atBottomThreshold={150}
-        atBottomStateChange={setAtBottom}
-        itemContent={(_index, msg) => renderMessage(msg, markdownMode, onSessionLink)}
-        components={{
-          Scroller: VirtuosoScroller,
-        }}
-        style={{ height: "100%", width: "100%" }}
-      />
+    <div className="message-list" onContextMenu={handleContextMenu}>
+      <div className="message-list-scroller" ref={scrollRef} onScroll={handleScroll}>
+        <div ref={listRef}>
+          {messages.map((msg) => (
+            <div key={msg.id}>
+              {renderMessage(msg, markdownMode, onSessionLink)}
+            </div>
+          ))}
+        </div>
+      </div>
       {!atBottom && (
         <button
           className="scroll-to-bottom"
-          onClick={() => virtuosoRef.current?.scrollToIndex({ index: "LAST", align: "end", behavior: "smooth" })}
+          onClick={scrollToBottom}
           title="Scroll to bottom"
         >
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
