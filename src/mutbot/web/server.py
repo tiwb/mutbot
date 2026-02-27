@@ -281,6 +281,7 @@ _AUTH_SKIP_PATHS = frozenset({
     "/api/auth/login",
     "/api/auth/status",
     "/api/health",
+    "/ws/app",
 })
 
 _AUTH_SKIP_PREFIXES = ("/docs", "/openapi", "/redoc", "/llm")

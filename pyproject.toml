@@ -30,6 +30,9 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 
+[project.scripts]
+mutbot = "mutbot.__main__:main"
+
 [project.urls]
 Homepage = "https://github.com/tiwb/mutbot"
 Repository = "https://github.com/tiwb/mutbot"

@@ -8,13 +8,11 @@ import {
   type TabNode,
   type TabSetNode,
   type BorderNode,
-  type IJsonModel,
   type ITabSetRenderValues,
   type ITabRenderValues,
 } from "flexlayout-react";
 import "flexlayout-react/style/dark.css";
 import {
-  fetchWorkspaces,
   checkAuthStatus,
   login,
   setAuthToken,
@@ -30,28 +28,13 @@ import { panelFactory } from "./panels/PanelFactory";
 import SessionListPanel from "./panels/SessionListPanel";
 import RpcMenu, { type MenuExecResult } from "./components/RpcMenu";
 import { WorkspaceRpc } from "./lib/workspace-rpc";
+import { AppRpc } from "./lib/app-rpc";
 import { getSessionIcon } from "./components/SessionIcons";
 import IconPicker from "./components/IconPicker";
+import WorkspaceSelector from "./components/WorkspaceSelector";
+import type { Workspace, Session } from "./lib/types";
 
-// ---------- Types ----------
-
-interface Workspace {
-  id: string;
-  name: string;
-  sessions: string[];
-  layout?: IJsonModel | null;
-}
-
-interface Session {
-  id: string;
-  workspace_id: string;
-  title: string;
-  type: string;
-  kind: string;  // 短类型名，供 UI switch/display 使用
-  icon: string;  // Lucide 图标名（优先级：用户自定义 > 类声明 > 空串由前端回退）
-  status: string;
-  config?: Record<string, unknown> | null;
-}
+// ---------- Helpers ----------
 
 /** Find the active tabset, or fall back to the first tabset in the model. */
 function getTargetTabset(model: Model): TabSetNode | undefined {
@@ -176,6 +159,7 @@ export default function App() {
   const [authenticated, setAuthenticated] = useState(false);
 
   const [workspace, setWorkspace] = useState<Workspace | null>(null);
+  const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [sessions, setSessions] = useState<Session[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const modelRef = useRef<Model | null>(null);
@@ -210,6 +194,10 @@ export default function App() {
   const rpcRef = useRef<WorkspaceRpc | null>(null);
   const [rpc, setRpc] = useState<WorkspaceRpc | null>(null);
 
+  // App RPC 连接（/ws/app，用于工作区列表和创建）
+  const appRpcRef = useRef<AppRpc | null>(null);
+  const [appRpc, setAppRpc] = useState<AppRpc | null>(null);
+
   // Initialize model once workspace is available
   if (!modelRef.current) {
     modelRef.current = createModel();
@@ -232,24 +220,71 @@ export default function App() {
       });
   }, []);
 
-  // Load default workspace once authenticated
+  // 连接 /ws/app 获取工作区列表 + hash 路由
   useEffect(() => {
     if (!authenticated) return;
-    fetchWorkspaces().then((wss: Workspace[]) => {
-      if (wss.length > 0) {
-        const ws = wss[0]!;
-        setWorkspace(ws);
-        if (ws.layout) {
+
+    const rpcInst = new AppRpc({
+      tokenFn: getAuthToken,
+      onOpen: () => {
+        rpcInst
+          .call<Workspace[]>("workspace.list")
+          .then((wss) => {
+            setWorkspaces(wss);
+
+            const wsName = location.hash.replace(/^#\/?/, "");
+            if (wsName) {
+              const target = wss.find((w) => w.name === wsName);
+              if (target) {
+                setWorkspace(target);
+                if (target.layout) {
+                  try {
+                    modelRef.current = createModel(target.layout);
+                    forceUpdate((n) => n + 1);
+                  } catch {
+                    // fallback to default layout
+                  }
+                }
+              }
+            }
+          })
+          .catch(() => {});
+      },
+    });
+    appRpcRef.current = rpcInst;
+    setAppRpc(rpcInst);
+
+    return () => {
+      rpcInst.close();
+      appRpcRef.current = null;
+      setAppRpc(null);
+    };
+  }, [authenticated]);
+
+  // hash 变化监听
+  useEffect(() => {
+    const onHashChange = () => {
+      const wsName = location.hash.replace(/^#\/?/, "");
+      if (!wsName) {
+        setWorkspace(null);
+        return;
+      }
+      const target = workspaces.find((w) => w.name === wsName);
+      if (target) {
+        setWorkspace(target);
+        if (target.layout) {
           try {
-            modelRef.current = createModel(ws.layout);
+            modelRef.current = createModel(target.layout);
             forceUpdate((n) => n + 1);
           } catch {
-            // Fall back to default layout on parse error
+            // fallback to default layout
           }
         }
       }
-    });
-  }, [authenticated]);
+    };
+    window.addEventListener("hashchange", onHashChange);
+    return () => window.removeEventListener("hashchange", onHashChange);
+  }, [workspaces]);
 
   // Initialize WorkspaceRpc when workspace is available
   useEffect(() => {
@@ -874,6 +909,25 @@ export default function App() {
   // Show login screen if auth is required and not yet authenticated
   if (authRequired && !authenticated) {
     return <LoginScreen onLogin={() => setAuthenticated(true)} />;
+  }
+
+  // 无工作区 → 显示工作区选择器
+  if (!workspace) {
+    return (
+      <WorkspaceSelector
+        workspaces={workspaces}
+        appRpc={appRpc}
+        onSelect={(ws) => {
+          location.hash = ws.name;
+          setWorkspace(ws);
+        }}
+        onCreated={(ws) => {
+          setWorkspaces((prev) => [...prev, ws]);
+          location.hash = ws.name;
+          setWorkspace(ws);
+        }}
+      />
+    );
   }
 
   const model = modelRef.current;

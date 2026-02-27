@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from fastapi.responses import JSONResponse
@@ -23,6 +25,104 @@ workspace_connection_manager = ConnectionManager()
 
 # Workspace RPC dispatcher
 workspace_rpc = RpcDispatcher()
+
+# App-level RPC dispatcher (用于 /ws/app 全局端点)
+app_rpc = RpcDispatcher()
+
+# ---------------------------------------------------------------------------
+# Origin 校验 — 接受 mutbot.ai 和 localhost
+# ---------------------------------------------------------------------------
+
+_ALLOWED_ORIGINS = {"https://mutbot.ai", "http://mutbot.ai"}
+
+
+def _check_ws_origin(origin: str | None) -> bool:
+    """校验 WebSocket Origin，接受 mutbot.ai 和 localhost。"""
+    if not origin:
+        return True  # 非浏览器客户端无 Origin
+    if origin in _ALLOWED_ORIGINS:
+        return True
+    parsed = urlparse(origin)
+    hostname = parsed.hostname or ""
+    if hostname in ("localhost", "127.0.0.1", "::1"):
+        return True
+    return False
+
+
+# ---------------------------------------------------------------------------
+# App-level RPC handlers (workspace.list / workspace.create / filesystem.browse)
+# ---------------------------------------------------------------------------
+
+@app_rpc.method("workspace.list")
+async def handle_app_workspace_list(params: dict, ctx: RpcContext) -> list[dict]:
+    """列出所有工作区。"""
+    wm = ctx.managers.get("workspace_manager")
+    if not wm:
+        return []
+    return [_workspace_dict(ws) for ws in wm.list_all()]
+
+
+@app_rpc.method("workspace.create")
+async def handle_app_workspace_create(params: dict, ctx: RpcContext) -> dict:
+    """创建工作区。
+
+    params:
+      - project_path (必填): 项目目录绝对路径
+      - name (可选): 指定名称，否则从路径末段自动生成
+    """
+    wm = ctx.managers.get("workspace_manager")
+    if not wm:
+        return {"error": "workspace_manager not available"}
+
+    project_path = params.get("project_path", "")
+    if not project_path:
+        return {"error": "missing project_path"}
+
+    p = Path(project_path)
+    if not p.is_absolute():
+        return {"error": "project_path must be absolute"}
+    if not p.is_dir():
+        return {"error": "project_path does not exist or is not a directory"}
+
+    name = params.get("name") or p.name
+    ws = wm.create(name, str(p))
+    return _workspace_dict(ws)
+
+
+@app_rpc.method("filesystem.browse")
+async def handle_filesystem_browse(params: dict, ctx: RpcContext) -> dict:
+    """列出目录内容（仅子目录）。
+
+    params:
+      - path (可选): 目录路径，空则返回用户主目录
+    """
+    path_str = params.get("path", "")
+    if not path_str:
+        target = Path.home()
+    else:
+        target = Path(path_str)
+
+    if not target.is_dir():
+        return {"error": f"not a directory: {path_str}"}
+
+    resolved = target.resolve()
+    parent = str(resolved.parent) if resolved.parent != resolved else None
+
+    entries: list[dict[str, str]] = []
+    try:
+        for entry in sorted(resolved.iterdir(), key=lambda e: e.name.lower()):
+            if entry.name.startswith('.'):
+                continue
+            if entry.is_dir():
+                entries.append({"name": entry.name, "type": "dir"})
+    except PermissionError:
+        return {"error": f"permission denied: {resolved}"}
+
+    return {
+        "path": str(resolved),
+        "parent": parent,
+        "entries": entries,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -430,6 +530,7 @@ def _workspace_dict(ws) -> dict[str, Any]:
         "layout": ws.layout,
         "created_at": ws.created_at,
         "updated_at": ws.updated_at,
+        "last_accessed_at": ws.last_accessed_at,
     }
 
 
@@ -778,6 +879,47 @@ _LANG_MAP = {
 
 
 # ---------------------------------------------------------------------------
+# App-level WebSocket RPC endpoint (全局，无需指定 workspace)
+# ---------------------------------------------------------------------------
+
+@router.websocket("/ws/app")
+async def websocket_app(websocket: WebSocket):
+    """全局 WebSocket：工作区列表、创建工作区、目录浏览。
+
+    消息格式与 /ws/workspace/{id} 一致（JSON-RPC）。
+    """
+    # Origin 校验
+    origin = websocket.headers.get("origin")
+    if not _check_ws_origin(origin):
+        await websocket.close(code=4403, reason="origin not allowed")
+        return
+
+    wm, sm = _get_managers()
+    await websocket.accept()
+    logger.info("App WS connected (origin=%s)", origin or "none")
+
+    async def broadcast(data: dict) -> None:
+        pass  # app 级连接不需要广播
+
+    context = RpcContext(
+        workspace_id="",
+        broadcast=broadcast,
+        managers={"workspace_manager": wm},
+    )
+
+    try:
+        while True:
+            raw = await websocket.receive_json()
+            response = await app_rpc.dispatch(raw, context)
+            if response is not None:
+                await websocket.send_json(response)
+    except WebSocketDisconnect:
+        logger.info("App WS disconnected")
+    except Exception:
+        logger.exception("App WS error")
+
+
+# ---------------------------------------------------------------------------
 # Workspace WebSocket RPC endpoint
 # ---------------------------------------------------------------------------
 
@@ -797,6 +939,7 @@ async def websocket_workspace(websocket: WebSocket, workspace_id: str):
         await websocket.close(code=4004, reason="workspace not found")
         return
 
+    wm.touch_accessed(ws)
     await workspace_connection_manager.connect(workspace_id, websocket)
     logger.info("Workspace WS connected: workspace=%s", workspace_id)
 

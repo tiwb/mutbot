@@ -19,9 +19,23 @@ def main():
     )
     # The LogStore handler (DEBUG, full capture) is set up in server.py lifespan
 
-    # 始终启动 Web 服务器，无 LLM 配置时通过 Web 向导完成配置
     import uvicorn
-    uvicorn.run("mutbot.web.server:app", host=args.host, port=args.port, log_level="info")
+
+    config = uvicorn.Config(
+        "mutbot.web.server:app", host=args.host, port=args.port, log_level="info",
+    )
+    server = uvicorn.Server(config)
+
+    # Override startup to print banner after uvicorn's own startup message
+    _original_startup = server.startup
+
+    async def _startup_with_banner(sockets=None):
+        await _original_startup(sockets=sockets)
+        print(f"\n  Open https://mutbot.ai to get started\n")
+
+    server.startup = _startup_with_banner
+
+    server.run()
 
 
 main()
