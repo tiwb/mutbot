@@ -3,7 +3,6 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import "@xterm/xterm/css/xterm.css";
-import { getAuthToken } from "../lib/api";
 import type { WorkspaceRpc } from "../lib/workspace-rpc";
 import ContextMenu, { type ContextMenuItem } from "../components/ContextMenu";
 
@@ -17,12 +16,10 @@ interface Props {
   onTerminalExited?: (sessionId: string) => void;
 }
 
-/** Build WS URL with optional auth token and terminal dimensions. */
+/** Build WS URL with terminal dimensions. */
 function buildWsUrl(termId: string, rows?: number, cols?: number): string {
   const protocol = location.protocol === "https:" ? "wss:" : "ws:";
   const params = new URLSearchParams();
-  const token = getAuthToken();
-  if (token) params.set("token", token);
   if (rows) params.set("rows", String(rows));
   if (cols) params.set("cols", String(cols));
   const qs = params.toString();

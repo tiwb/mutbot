@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ReconnectingWebSocket } from "../lib/websocket";
-import { getAuthToken } from "../lib/api";
 import type { WorkspaceRpc } from "../lib/workspace-rpc";
 import { rlog, setLogSocket } from "../lib/remote-log";
 import MessageList, { type ChatMessage } from "../components/MessageList";
@@ -325,7 +324,6 @@ export default function AgentPanel({ sessionId, rpc, onSessionLink }: Props) {
           if (DEBUG) rlog.debug("WS close");
           setConnected(false);
         },
-        tokenFn: getAuthToken,
       },
     );
     wsRef.current = ws;

@@ -25,9 +25,12 @@ export class RpcError extends Error {
   }
 }
 
+type EventCallback = (data: unknown) => void;
+
 export class AppRpc {
   private ws: ReconnectingWebSocket;
   private pending = new Map<string, PendingCall>();
+  private listeners = new Map<string, Set<EventCallback>>();
   private nextId = 1;
 
   constructor(opts?: {
@@ -75,12 +78,33 @@ export class AppRpc {
     });
   }
 
+  /** 注册事件监听器，返回取消订阅函数。 */
+  on(event: string, cb: EventCallback): () => void {
+    let set = this.listeners.get(event);
+    if (!set) {
+      set = new Set();
+      this.listeners.set(event, set);
+    }
+    set.add(cb);
+    return () => set!.delete(cb);
+  }
+
   close() {
     this.ws.close();
   }
 
   private handleMessage(msg: Record<string, unknown>) {
     const type = msg.type as string;
+
+    if (type === "event") {
+      const event = msg.event as string;
+      const data = msg.data;
+      const cbs = this.listeners.get(event);
+      if (cbs) {
+        for (const cb of cbs) cb(data);
+      }
+      return;
+    }
 
     if (type === "rpc_result") {
       const pending = this.pending.get(msg.id as string);

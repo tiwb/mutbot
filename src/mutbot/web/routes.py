@@ -10,7 +10,6 @@ from typing import Any
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
-from fastapi.responses import JSONResponse
 
 from mutbot.web.connection import ConnectionManager
 from mutbot.web.rpc import RpcDispatcher, RpcContext, make_event
@@ -525,11 +524,6 @@ def _get_terminal_manager():
     return terminal_manager
 
 
-def _get_auth_manager():
-    from mutbot.web.server import auth_manager
-    return auth_manager
-
-
 def _workspace_dict(ws) -> dict[str, Any]:
     return {
         "id": ws.id,
@@ -585,59 +579,6 @@ def _session_type_display(qualified: str, cls: type) -> tuple[str, str]:
     if not icon:
         icon = _session_kind(qualified)
     return (name, icon)
-# ---------------------------------------------------------------------------
-
-@router.get("/api/health")
-async def health():
-    from mutbot.runtime.config import load_mutbot_config
-    config = load_mutbot_config()
-    setup_required = not bool(config.get("providers"))
-    return {
-        "status": "ok",
-        "setup_required": setup_required,
-    }
-
-
-# ---------------------------------------------------------------------------
-# Auth endpoints
-# ---------------------------------------------------------------------------
-
-@router.get("/api/auth/status")
-async def auth_status():
-    am = _get_auth_manager()
-    return {"auth_required": am.enabled if am else False}
-
-
-@router.post("/api/auth/login")
-async def auth_login(body: dict[str, Any]):
-    am = _get_auth_manager()
-    if am is None or not am.enabled:
-        return {"token": "", "message": "auth not required"}
-    username = body.get("username", "")
-    password = body.get("password", "")
-    token = am.verify_credentials(username, password)
-    if token is None:
-        return JSONResponse({"error": "invalid credentials"}, status_code=401)
-    return {"token": token, "username": username}
-
-
-# ---------------------------------------------------------------------------
-# Workspace endpoints (REST — 仅保留 WS 连接前必需的接口)
-# ---------------------------------------------------------------------------
-
-@router.get("/api/workspaces")
-async def list_workspaces():
-    wm, _ = _get_managers()
-    return [_workspace_dict(ws) for ws in wm.list_all()]
-
-
-@router.post("/api/workspaces")
-async def create_workspace(body: dict[str, Any]):
-    wm, _ = _get_managers()
-    name = body.get("name", "untitled")
-    project_path = body.get("project_path", ".")
-    ws = wm.create(name, project_path)
-    return _workspace_dict(ws)
 
 
 # ---------------------------------------------------------------------------
@@ -913,6 +854,17 @@ async def websocket_app(websocket: WebSocket):
     wm, sm = _get_managers()
     await websocket.accept()
     logger.info("App WS connected (origin=%s)", origin or "none")
+
+    # 推送 welcome 事件：应用状态（setup_required 等）
+    from mutbot.runtime.config import load_mutbot_config
+    _cfg = load_mutbot_config()
+    await websocket.send_json({
+        "type": "event",
+        "event": "welcome",
+        "data": {
+            "setup_required": not bool(_cfg.get("providers")),
+        },
+    })
 
     async def broadcast(data: dict) -> None:
         pass  # app 级连接不需要广播

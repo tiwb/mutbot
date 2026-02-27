@@ -11,17 +11,14 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import FastAPI, Request, Response
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
-from starlette.middleware.base import BaseHTTPMiddleware
 
 from mutagent.runtime.log_store import LogStore, LogStoreHandler, SingleLineFormatter
 
 from mutbot.runtime.workspace import WorkspaceManager
 from mutbot.runtime.session_impl import SessionManager
 from mutbot.runtime.terminal import TerminalManager
-from mutbot.web.auth import AuthManager
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +30,6 @@ workspace_manager: WorkspaceManager | None = None
 session_manager: SessionManager | None = None
 log_store: LogStore | None = None
 terminal_manager: TerminalManager | None = None
-auth_manager: AuthManager | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -198,14 +194,10 @@ async def _watch_config_changes() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global workspace_manager, session_manager, log_store, terminal_manager, auth_manager
+    global workspace_manager, session_manager, log_store, terminal_manager
     workspace_manager = WorkspaceManager()
     session_manager = SessionManager()
     terminal_manager = TerminalManager()
-
-    # --- Auth setup ---
-    auth_manager = AuthManager()
-    auth_manager.load_config()
 
     # --- Load persisted state ---
     workspace_manager.load_from_disk()
@@ -316,61 +308,7 @@ async def lifespan(app: FastAPI):
     )
 
 
-# ---------------------------------------------------------------------------
-# Auth middleware
-# ---------------------------------------------------------------------------
-
-# Paths that never require authentication
-_AUTH_SKIP_PATHS = frozenset({
-    "/api/auth/login",
-    "/api/auth/status",
-    "/api/health",
-    "/ws/app",
-})
-
-_AUTH_SKIP_PREFIXES = ("/docs", "/openapi", "/redoc", "/llm")
-
-
-class AuthMiddleware(BaseHTTPMiddleware):
-    """Check Bearer token on /api/* and /ws/* paths."""
-
-    async def dispatch(self, request: Request, call_next):
-        am = auth_manager
-        if am is None or not am.enabled:
-            return await call_next(request)
-
-        path = request.url.path
-
-        # Skip auth for whitelisted paths
-        if path in _AUTH_SKIP_PATHS or path.startswith(_AUTH_SKIP_PREFIXES):
-            return await call_next(request)
-
-        # Skip auth for static files (non-API, non-WS)
-        if not path.startswith("/api/") and not path.startswith("/ws/"):
-            return await call_next(request)
-
-        # Skip for localhost when configured
-        client_host = request.client.host if request.client else ""
-        if am.should_skip_auth(client_host):
-            return await call_next(request)
-
-        # Check token
-        token = None
-        auth_header = request.headers.get("authorization", "")
-        if auth_header.startswith("Bearer "):
-            token = auth_header[7:]
-        if not token:
-            # Also check query param (for WebSocket connections)
-            token = request.query_params.get("token")
-
-        if not token or am.verify_token(token) is None:
-            return JSONResponse({"error": "unauthorized"}, status_code=401)
-
-        return await call_next(request)
-
-
 app = FastAPI(title="MutBot", version="0.1.0", lifespan=lifespan)
-app.add_middleware(AuthMiddleware)
 
 
 # ---------------------------------------------------------------------------

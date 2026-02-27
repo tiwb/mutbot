@@ -13,12 +13,6 @@ import {
 } from "flexlayout-react";
 import "flexlayout-react/style/dark.css";
 import {
-  checkAuthStatus,
-  login,
-  setAuthToken,
-  getAuthToken,
-} from "./lib/api";
-import {
   createModel,
   PANEL_AGENT_CHAT,
   PANEL_TERMINAL,
@@ -55,61 +49,6 @@ function resolveSessionId(
     if (match) sessionId = match.id;
   }
   return sessionId;
-}
-
-// ---------------------------------------------------------------------------
-// Login screen
-// ---------------------------------------------------------------------------
-
-function LoginScreen({ onLogin }: { onLogin: () => void }) {
-  const [username, setUsername] = useState("");
-  const [password, setPassword] = useState("");
-  const [error, setError] = useState("");
-  const [loading, setLoading] = useState(false);
-
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setError("");
-    setLoading(true);
-    try {
-      const result = await login(username, password);
-      if (result.token) {
-        setAuthToken(result.token);
-        onLogin();
-      } else if (result.error) {
-        setError(result.error);
-      }
-    } catch {
-      setError("Login failed");
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  return (
-    <div className="login-screen">
-      <form className="login-form" onSubmit={handleSubmit}>
-        <h2>MutBot Login</h2>
-        {error && <div className="login-error">{error}</div>}
-        <input
-          type="text"
-          placeholder="Username"
-          value={username}
-          onChange={(e) => setUsername(e.target.value)}
-          autoFocus
-        />
-        <input
-          type="password"
-          placeholder="Password"
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-        />
-        <button type="submit" disabled={loading}>
-          {loading ? "Logging in..." : "Login"}
-        </button>
-      </form>
-    </div>
-  );
 }
 
 // ---------------------------------------------------------------------------
@@ -154,10 +93,6 @@ function ConfirmDialog({
 // ---------------------------------------------------------------------------
 
 export default function App() {
-  const [authChecked, setAuthChecked] = useState(false);
-  const [authRequired, setAuthRequired] = useState(false);
-  const [authenticated, setAuthenticated] = useState(false);
-
   const [workspace, setWorkspace] = useState<Workspace | null>(null);
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [sessions, setSessions] = useState<Session[]>([]);
@@ -213,29 +148,9 @@ export default function App() {
     modelRef.current = createModel();
   }
 
-  // Check auth status on mount
-  useEffect(() => {
-    checkAuthStatus()
-      .then((status) => {
-        setAuthRequired(status.auth_required);
-        if (!status.auth_required) {
-          setAuthenticated(true);
-        }
-        setAuthChecked(true);
-      })
-      .catch(() => {
-        // If we can't reach the server, proceed without auth
-        setAuthChecked(true);
-        setAuthenticated(true);
-      });
-  }, []);
-
   // 连接 /ws/app 获取工作区列表 + hash 路由
   useEffect(() => {
-    if (!authenticated) return;
-
     const rpcInst = new AppRpc({
-      tokenFn: getAuthToken,
       onOpen: () => {
         rpcInst
           .call<Workspace[]>("workspace.list")
@@ -269,7 +184,7 @@ export default function App() {
       appRpcRef.current = null;
       setAppRpc(null);
     };
-  }, [authenticated]);
+  }, []);
 
   // hash 变化监听
   useEffect(() => {
@@ -300,7 +215,6 @@ export default function App() {
   useEffect(() => {
     if (!workspace) return;
     const wsRpc = new WorkspaceRpc(workspace.id, {
-      tokenFn: getAuthToken,
       onOpen: () => {
         // 连接建立后通过 RPC 获取 session 列表
         wsRpc.call<Session[]>("session.list", { workspace_id: workspace.id }).then(setSessions).catch(() => {});
@@ -936,16 +850,6 @@ export default function App() {
     },
     [sessions, activeSessionId, workspace, rpc, handleSelectSession, handleUpdateTabConfig, handleTerminalExited],
   );
-
-  // Show nothing while checking auth
-  if (!authChecked) {
-    return null;
-  }
-
-  // Show login screen if auth is required and not yet authenticated
-  if (authRequired && !authenticated) {
-    return <LoginScreen onLogin={() => setAuthenticated(true)} />;
-  }
 
   // 无工作区 → 显示工作区选择器
   if (!workspace) {

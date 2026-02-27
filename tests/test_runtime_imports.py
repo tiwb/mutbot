@@ -118,11 +118,10 @@ def test_import_web_server():
     assert app.title == "MutBot"
 
 
-def test_import_web_auth():
-    """web.auth 使用新的 storage import 路径"""
-    from mutbot.web.auth import AuthManager
-    am = AuthManager()
-    assert hasattr(am, "load_config")
+def test_import_web_routes():
+    """web.routes 可导入"""
+    from mutbot.web.routes import workspace_rpc
+    assert workspace_rpc is not None
 
 
 # ---------------------------------------------------------------------------
