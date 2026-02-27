@@ -528,7 +528,7 @@ class TestWriteConfig:
         assert "test" in saved["providers"]
 
     def test_merge_preserves_existing(self, tmp_path, monkeypatch):
-        """合并写入时保留已有 providers 和 default_model。"""
+        """合并写入时保留已有 providers，default_model 更新为新值。"""
         import mutbot.builtins.setup_provider as sp
         config_path = tmp_path / "config.json"
         config_path.write_text(json.dumps({
@@ -544,8 +544,8 @@ class TestWriteConfig:
         })
 
         saved = json.loads(config_path.read_text())
-        # default_model 保留已有的
-        assert saved["default_model"] == "old-model"
+        # default_model 更新为新值
+        assert saved["default_model"] == "new-model"
         assert "existing" in saved["providers"]
         assert "new" in saved["providers"]
 

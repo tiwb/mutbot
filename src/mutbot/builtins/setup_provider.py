@@ -673,10 +673,13 @@ class SetupProvider(LLMProvider):
         selected = self._context.get("selected_models", [])
         models_str = ", ".join(selected) if selected else self._real_model
 
+        config_path = str(MUTBOT_CONFIG_PATH)
         return (
             f"✅ Configuration complete! "
             f"Using **{self._real_model}** as default model.\n"
             f"Selected models: {models_str}\n\n"
+            f"📁 Config saved to: `{config_path}`\n"
+            f"You can edit this file manually to adjust settings.\n\n"
             f"You can now chat with me — I'm powered by a real AI! "
             f"Try saying something to test the connection."
         )
@@ -778,8 +781,8 @@ def _write_config(new_data: dict) -> None:
     existing_providers.update(new_providers)
     existing["providers"] = existing_providers
 
-    # default_model: 仅在没有时设置
-    if "default_model" not in existing and "default_model" in new_data:
+    # default_model: 始终更新为新配置的值
+    if "default_model" in new_data:
         existing["default_model"] = new_data["default_model"]
 
     MUTBOT_CONFIG_PATH.write_text(

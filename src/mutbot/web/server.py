@@ -162,6 +162,40 @@ def _ensure_setup_session(ws, sm, wm) -> None:
     )
 
 
+async def _watch_config_changes() -> None:
+    """Background task: poll ~/.mutbot/config.json mtime every 5s.
+
+    On change, reload the SessionManager's cached config and broadcast
+    a ``config_changed`` event to all workspace WebSocket clients.
+    """
+    from mutbot.runtime.config import MUTBOT_USER_DIR, load_mutbot_config
+    from mutbot.web.routes import workspace_connection_manager
+    from mutbot.web.rpc import make_event
+
+    config_path = MUTBOT_USER_DIR / "config.json"
+    last_mtime: float = 0.0
+    try:
+        last_mtime = config_path.stat().st_mtime
+    except OSError:
+        pass
+
+    while True:
+        await asyncio.sleep(5)
+        try:
+            current_mtime = config_path.stat().st_mtime
+        except OSError:
+            continue
+        if current_mtime != last_mtime:
+            last_mtime = current_mtime
+            logger.info("Config file changed, reloading")
+            # Invalidate SessionManager's cached config
+            if session_manager is not None:
+                session_manager._config = None
+            await workspace_connection_manager.broadcast_all(
+                make_event("config_changed", {})
+            )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global workspace_manager, session_manager, log_store, terminal_manager, auth_manager
@@ -249,7 +283,17 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.warning("Failed to load LLM proxy config", exc_info=True)
 
+    # --- Config file change watcher ---
+    config_watcher_task = asyncio.create_task(_watch_config_changes())
+
     yield
+
+    # --- Cancel config watcher ---
+    config_watcher_task.cancel()
+    try:
+        await config_watcher_task
+    except asyncio.CancelledError:
+        pass
 
     # --- Graceful shutdown with timeout fallback ---
     import threading as _threading

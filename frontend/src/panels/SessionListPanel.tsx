@@ -22,6 +22,7 @@ interface Props {
   onDeleteSession?: (id: string) => void;
   onRenameSession?: (id: string, newTitle: string) => void;
   onChangeIcon?: (sessionId: string, position: { x: number; y: number }) => void;
+  onHeaderAction?: (action: string, data: Record<string, unknown>) => void;
 }
 
 const STORAGE_KEY = "mutbot-sidebar-collapsed";
@@ -34,6 +35,7 @@ export default function SessionListPanel({
   onModeChange,
   onRenameSession,
   onChangeIcon,
+  onHeaderAction,
 }: Props) {
   const [collapsed, setCollapsed] = useState(() => {
     try {
@@ -199,6 +201,20 @@ export default function SessionListPanel({
           </svg>
         </button>
         <h1>Sessions</h1>
+        <RpcMenu
+          rpc={rpc}
+          category="SessionList/Header"
+          trigger={
+            <button className="sidebar-menu-btn" title="Menu">
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                <rect x="2" y="3" width="12" height="1.5" rx="0.5" />
+                <rect x="2" y="7.25" width="12" height="1.5" rx="0.5" />
+                <rect x="2" y="11.5" width="12" height="1.5" rx="0.5" />
+              </svg>
+            </button>
+          }
+          onClientAction={onHeaderAction}
+        />
       </div>
       <div className="session-list">
         <ul>

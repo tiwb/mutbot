@@ -190,6 +190,16 @@ export default function App() {
   const [sidebarWidth, setSidebarWidth] = useState(260);
   const sidebarResizing = useRef(false);
 
+  // Toast notification state
+  const [toast, setToast] = useState<string | null>(null);
+  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const showToast = useCallback((message: string, duration = 5000) => {
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    setToast(message);
+    toastTimerRef.current = setTimeout(() => setToast(null), duration);
+  }, []);
+
   // Workspace RPC 连接
   const rpcRef = useRef<WorkspaceRpc | null>(null);
   const [rpc, setRpc] = useState<WorkspaceRpc | null>(null);
@@ -360,6 +370,9 @@ export default function App() {
           // 静默处理
         }
       }),
+      wsRpc.on("config_changed", () => {
+        showToast("Configuration updated. New sessions will use the latest settings.");
+      }),
     ];
 
     return () => {
@@ -444,6 +457,29 @@ export default function App() {
       }
     },
     [addTabForSession],
+  );
+
+  // ------------------------------------------------------------------
+  // Header menu actions (SessionList/Header)
+  // ------------------------------------------------------------------
+
+  const handleHeaderAction = useCallback(
+    async (action: string, _data: Record<string, unknown>) => {
+      if (action === "run_setup_wizard") {
+        if (!rpcRef.current || !workspace) return;
+        try {
+          const session: Session = await rpcRef.current.call("session.create", {
+            workspace_id: workspace.id,
+            type: "mutbot.builtins.guide.GuideSession",
+            config: { initial_message: "__setup__", force_setup: true },
+          });
+          addTabForSession(session);
+        } catch { /* silent */ }
+      } else if (action === "close_workspace") {
+        location.hash = "";
+      }
+    },
+    [workspace, addTabForSession],
   );
 
   // ------------------------------------------------------------------
@@ -949,6 +985,7 @@ export default function App() {
             onDeleteSession={handleDeleteSession}
             onRenameSession={handleRenameSession}
             onChangeIcon={(sessionId, position) => setIconPicker({ sessionId, position })}
+            onHeaderAction={handleHeaderAction}
           />
         </div>
         {!sidebarCollapsed && (
@@ -1000,6 +1037,11 @@ export default function App() {
           onReset={handleIconReset}
           onClose={handleIconPickerClose}
         />
+      )}
+      {toast && (
+        <div className="toast-notification" onClick={() => setToast(null)}>
+          {toast}
+        </div>
       )}
     </div>
   );

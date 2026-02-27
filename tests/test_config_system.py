@@ -120,8 +120,8 @@ class TestWriteConfig:
         })
 
         data = json.loads((tmp_path / "config.json").read_text(encoding="utf-8"))
-        # default_model 保留已有的
-        assert data["default_model"] == "claude-sonnet-4"
+        # default_model 更新为新值
+        assert data["default_model"] == "gpt-4.1"
         # providers 合并
         assert "anthropic" in data["providers"]
         assert "openai" in data["providers"]

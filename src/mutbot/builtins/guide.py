@@ -57,8 +57,9 @@ class GuideSession(AgentSession):
 
         setup_environment(config)
 
-        # Setup 模式：无 LLM 配置时使用 SetupProvider（脚本化状态机）
-        if config.get("providers"):
+        # Setup 模式：无 LLM 配置 或 force_setup 时使用 SetupProvider
+        force_setup = self.config.get("force_setup", False)
+        if config.get("providers") and not force_setup:
             client = create_llm_client(config, self.model, log_dir, session_ts)
         else:
             from mutbot.builtins.setup_provider import SetupProvider

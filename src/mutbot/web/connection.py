@@ -75,3 +75,17 @@ class ConnectionManager:
 
     def has_connections(self, session_id: str) -> bool:
         return bool(self._connections.get(session_id))
+
+    async def broadcast_all(self, data: dict) -> None:
+        """Broadcast to ALL connected WebSocket clients across all keys."""
+        dead_pairs: list[tuple[str, WebSocket]] = []
+        for key, conns in self._connections.items():
+            for ws in list(conns):
+                try:
+                    await ws.send_json(data)
+                except Exception:
+                    dead_pairs.append((key, ws))
+        for key, ws in dead_pairs:
+            conns = self._connections.get(key)
+            if conns:
+                conns.discard(ws)

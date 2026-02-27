@@ -301,3 +301,25 @@ class ToggleMarkdownModeMenu(Menu):
             order="1markdown:1",
             client_action="toggle_markdown_mode",
         )]
+
+
+# ---------------------------------------------------------------------------
+# 内置菜单：Sessions 标题栏全局菜单 (SessionList/Header)
+# ---------------------------------------------------------------------------
+
+class SetupWizardMenu(Menu):
+    """全局菜单 — LLM Setup Wizard"""
+    display_name = "LLM Setup Wizard"
+    display_icon = "settings"
+    display_category = "SessionList/Header"
+    display_order = "0tools:0"
+    client_action = "run_setup_wizard"
+
+
+class CloseWorkspaceMenu(Menu):
+    """全局菜单 — Close Workspace"""
+    display_name = "Close Workspace"
+    display_icon = "log-out"
+    display_category = "SessionList/Header"
+    display_order = "1workspace:0"
+    client_action = "close_workspace"
