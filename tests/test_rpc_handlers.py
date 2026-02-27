@@ -234,18 +234,6 @@ class TestSessionHandlers:
         assert "error" in resp["result"]
 
     @pytest.mark.asyncio
-    async def test_session_events(self):
-        sm = FakeSessionManager()
-        sm.sessions["s1"] = FakeSession()
-        sm.events["s1"] = [{"type": "text_delta", "text": "hello"}]
-        ctx = _make_context(session_manager=sm)
-
-        resp = await _dispatch("session.events", {"session_id": "s1"}, ctx)
-        result = resp["result"]
-        assert result["session_id"] == "s1"
-        assert len(result["events"]) == 1
-
-    @pytest.mark.asyncio
     async def test_session_stop(self):
         sm = FakeSessionManager()
         sm.sessions["s1"] = FakeSession()
@@ -422,7 +410,7 @@ class TestMethodRegistration:
         expected = [
             "menu.query", "menu.execute",
             "session.create", "session.list", "session.get",
-            "session.events", "session.stop", "session.delete", "session.update",
+            "session.stop", "session.delete", "session.update",
             "workspace.get", "workspace.update",
             "terminal.create", "terminal.list", "terminal.delete",
             "file.read", "log.query",

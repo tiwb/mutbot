@@ -66,6 +66,12 @@ def serialize_session(self: Session) -> dict:
             d["model"] = self.model
         if self.system_prompt:
             d["system_prompt"] = self.system_prompt
+        if self.total_tokens:
+            d["total_tokens"] = self.total_tokens
+        if self.context_used:
+            d["context_used"] = self.context_used
+        if self.context_window:
+            d["context_window"] = self.context_window
     # DocumentSession 特有字段
     if isinstance(self, DocumentSession):
         if self.file_path:
@@ -201,6 +207,12 @@ def _session_from_dict(data: dict) -> Session:
             kwargs["model"] = data["model"]
         if "system_prompt" in data:
             kwargs["system_prompt"] = data["system_prompt"]
+        if "total_tokens" in data:
+            kwargs["total_tokens"] = data["total_tokens"]
+        if "context_used" in data:
+            kwargs["context_used"] = data["context_used"]
+        if "context_window" in data:
+            kwargs["context_window"] = data["context_window"]
     # DocumentSession 特有字段
     if issubclass(cls, DocumentSession):
         if "file_path" in data:
@@ -407,6 +419,11 @@ class SessionManager:
         rt = self.get_agent_runtime(session.id)
         if rt and rt.agent and rt.agent.messages:
             data["messages"] = [serialize_message(m) for m in rt.agent.messages]
+        else:
+            # 没有 runtime 时保留磁盘上已有的 messages（避免覆写丢失）
+            existing = storage.load_session_metadata(session.id)
+            if existing and "messages" in existing:
+                data["messages"] = existing["messages"]
         storage.save_session_metadata(data)
 
     def _load_agent_messages(self, session_id: str) -> list[Message]:
@@ -415,26 +432,6 @@ class SessionManager:
         if not data or "messages" not in data:
             return []
         return [_deserialize_message(m) for m in data["messages"]]
-
-    # --- 事件记录 ---
-
-    def record_event(self, session_id: str, event_data: dict) -> None:
-        """Append an event to the session's JSONL log.
-
-        Assigns a unique ``event_id`` if not already present.
-        Also persists session metadata on response_done/turn_done.
-        """
-        if "event_id" not in event_data:
-            event_data["event_id"] = uuid.uuid4().hex[:16]
-        storage.append_session_event(session_id, event_data)
-        etype = event_data.get("type", "")
-        if etype in ("response_done", "turn_done"):
-            session = self._sessions.get(session_id)
-            if session:
-                self._persist(session)
-
-    def get_session_events(self, session_id: str) -> list[dict]:
-        return storage.load_session_events(session_id)
 
     # --- CRUD ---
 
@@ -581,24 +578,16 @@ class SessionManager:
             session_manager=self,
         )
 
-        # Create event recorder bound to this session
+        # Create persist callback bound to this session
         sm = self
 
-        def _event_recorder(data):
-            sm.record_event(session_id, data)
-
-        # 从历史事件恢复累计 token
-        initial_tokens = 0
-        events = self.get_session_events(session_id)
-        for ev in reversed(events):
-            if ev.get("type") == "token_usage":
-                initial_tokens = ev.get("session_total_tokens", 0)
-                break
+        def _persist_fn():
+            sm._persist(session)
 
         bridge = AgentBridge(
             session_id, agent, loop, broadcast_fn,
-            event_recorder=_event_recorder,
-            initial_session_total_tokens=initial_tokens,
+            session=session,
+            persist_fn=_persist_fn,
         )
 
         # --- Session 级日志 FileHandler ---
@@ -643,9 +632,6 @@ class SessionManager:
             # 移除 session 级日志 handler
             if rt:
                 _remove_session_log_handler(rt.log_handler)
-            # Persist final state before clearing runtime
-            self._persist(session)
-            self._runtimes.pop(session_id, None)
         elif isinstance(session, TerminalSession):
             # Kill the associated PTY
             tm = self.terminal_manager
@@ -658,5 +644,8 @@ class SessionManager:
 
         session.status = "ended"
         session.updated_at = datetime.now(timezone.utc).isoformat()
+        # Persist final state (runtime still available so messages are included)
         self._persist(session)
+        # Now safe to clear runtime
+        self._runtimes.pop(session_id, None)
         logger.info("Session %s (%s): stopped", session_id, type(session).__name__)

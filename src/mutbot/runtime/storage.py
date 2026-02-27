@@ -48,30 +48,6 @@ def load_json(path: Path) -> dict | None:
         return None
 
 
-def append_jsonl(path: Path, record: dict) -> None:
-    """Append a single JSON line to a JSONL file."""
-    _ensure_dir(path)
-    with open(path, "a", encoding="utf-8") as f:
-        f.write(json.dumps(record, ensure_ascii=False) + "\n")
-
-
-def load_jsonl(path: Path) -> list[dict]:
-    """Load all lines from a JSONL file, skipping corrupt lines."""
-    if not path.is_file():
-        return []
-    records: list[dict] = []
-    with open(path, encoding="utf-8") as f:
-        for lineno, line in enumerate(f, 1):
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                records.append(json.loads(line))
-            except json.JSONDecodeError:
-                logger.warning("Skipping corrupt line %d in %s", lineno, path)
-    return records
-
-
 # ---------------------------------------------------------------------------
 # Domain helpers
 # ---------------------------------------------------------------------------
@@ -141,24 +117,3 @@ def load_all_sessions() -> list[dict]:
         if data and "id" in data:
             results.append(data)
     return results
-
-
-def append_session_event(session_id: str, event_data: dict) -> None:
-    path = _find_session_file(session_id, ".events.jsonl")
-    if path is None:
-        # 从同 session 的 .json 文件推导时间戳前缀
-        json_path = _find_session_file(session_id, ".json")
-        if json_path:
-            # {ts}-{id}.json → stem = {ts}-{id}
-            prefix = json_path.stem
-        else:
-            prefix = session_id
-        path = _mutbot_path("sessions", f"{prefix}.events.jsonl")
-    append_jsonl(path, event_data)
-
-
-def load_session_events(session_id: str) -> list[dict]:
-    path = _find_session_file(session_id, ".events.jsonl")
-    if path is None:
-        return []
-    return load_jsonl(path)

@@ -8,12 +8,15 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any, Callable, Awaitable
+from typing import Any, Callable, Awaitable, TYPE_CHECKING
 
 from mutagent.messages import InputEvent, Message, StreamEvent, ToolCall, ToolResult
 
 from mutbot.runtime.session_logging import current_session_id
 from mutbot.web.serializers import serialize_stream_event
+
+if TYPE_CHECKING:
+    from mutbot.session import AgentSession
 
 logger = logging.getLogger(__name__)
 
@@ -42,18 +45,19 @@ class AgentBridge:
         agent,
         loop: asyncio.AbstractEventLoop,
         broadcast_fn: BroadcastFn,
-        event_recorder: Callable[[dict[str, Any]], None] | None = None,
-        initial_session_total_tokens: int = 0,
+        session: AgentSession,
+        persist_fn: Callable[[], None],
     ) -> None:
         self.session_id = session_id
         self.agent = agent
         self.loop = loop
         self.broadcast_fn = broadcast_fn
-        self.event_recorder = event_recorder
+        self._session = session
+        self._persist_fn = persist_fn
         self._input_queue: asyncio.Queue[InputEvent | None] = asyncio.Queue()
         self._agent_task: asyncio.Task | None = None
-        # Session 级累计 token 计数器（可从历史事件恢复）
-        self._session_total_tokens: int = initial_session_total_tokens
+        # Session 级累计 token 计数器（从 session 元数据恢复）
+        self._session_total_tokens: int = session.total_tokens
 
         # --- 飞行中状态追踪（用于强制停止时补提交部分消息） ---
         self._pending_text: list[str] = []
@@ -74,25 +78,27 @@ class AgentBridge:
         input_tokens = usage.get("input_tokens", 0)
         output_tokens = usage.get("output_tokens", 0)
         self._session_total_tokens += input_tokens + output_tokens
+        # 下一轮的上下文 ≈ 本轮 input + 本轮 output（output 成为下轮历史）
+        context_used = input_tokens + output_tokens
 
         context_window = getattr(self.agent.client, "context_window", None)
         context_percent: float | None = None
-        if context_window and input_tokens:
-            context_percent = round(input_tokens / context_window * 100, 1)
+        if context_window and context_used:
+            context_percent = round(context_used / context_window * 100, 1)
+
+        # 同步到 session 元数据（随 _persist 自然落盘）
+        self._session.total_tokens = self._session_total_tokens
+        self._session.context_used = context_used
+        self._session.context_window = context_window or 0
 
         data: dict[str, Any] = {
             "type": "token_usage",
-            "context_used": input_tokens,
+            "context_used": context_used,
             "context_window": context_window,
             "context_percent": context_percent,
             "session_total_tokens": self._session_total_tokens,
             "model": getattr(self.agent.client, "model", ""),
         }
-        if self.event_recorder:
-            try:
-                self.event_recorder(data)
-            except Exception:
-                logger.exception("Event recording failed for session %s", self.session_id)
         await self.broadcast_fn(self.session_id, data)
 
     # --- In-flight state tracking ---
@@ -210,11 +216,6 @@ class AgentBridge:
                     self._track_event(event)
 
                     data = serialize_stream_event(event)
-                    if self.event_recorder:
-                        try:
-                            self.event_recorder(data)
-                        except Exception:
-                            logger.exception("Event recording failed for session %s", self.session_id)
                     await self.broadcast_fn(self.session_id, data)
 
                     # 注入 agent_status 事件
@@ -229,6 +230,10 @@ class AgentBridge:
                     # 注入 token_usage 事件
                     if event.type == "response_done" and event.response:
                         await self._broadcast_token_usage(event.response.usage)
+
+                    # 在 response_done/turn_done 时持久化 session
+                    if event.type in ("response_done", "turn_done"):
+                        self._persist_fn()
 
                 await self._broadcast_status("idle")
                 await self.broadcast_fn(self.session_id, {"type": "agent_done"})
@@ -260,11 +265,6 @@ class AgentBridge:
         if not hidden:
             # Broadcast user message to all connected clients
             user_event = {"type": "user_message", "text": text, "data": data or {}}
-            if self.event_recorder:
-                try:
-                    self.event_recorder(user_event)
-                except Exception:
-                    pass
             asyncio.ensure_future(self.broadcast_fn(self.session_id, user_event))
             # 用户发消息后推送 thinking 状态（hidden 消息不推送）
             asyncio.ensure_future(self._broadcast_status("thinking"))

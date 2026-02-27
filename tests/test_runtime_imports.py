@@ -45,10 +45,9 @@ def test_import_mutbot_top_level():
 def test_import_runtime_storage():
     """runtime.storage 模块可导入且包含核心 API"""
     from mutbot.runtime.storage import (
-        save_json, load_json, append_jsonl, load_jsonl,
+        save_json, load_json,
         save_workspace, load_all_workspaces,
         save_session_metadata, load_session_metadata, load_all_sessions,
-        append_session_event, load_session_events,
         MUTBOT_DIR,
     )
     assert MUTBOT_DIR.endswith(".mutbot")

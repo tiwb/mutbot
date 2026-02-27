@@ -291,9 +291,9 @@ async def handle_session_get(params: dict, ctx: RpcContext) -> dict:
     return _session_dict(session)
 
 
-@workspace_rpc.method("session.events")
-async def handle_session_events(params: dict, ctx: RpcContext) -> dict:
-    """获取 Session 的持久化事件"""
+@workspace_rpc.method("session.messages")
+async def handle_session_messages(params: dict, ctx: RpcContext) -> dict:
+    """获取 Session 的持久化 messages（用于前端历史恢复）"""
     sm = ctx.managers.get("session_manager")
     if not sm:
         return {"error": "session_manager not available"}
@@ -301,8 +301,17 @@ async def handle_session_events(params: dict, ctx: RpcContext) -> dict:
     session = sm.get(session_id)
     if session is None:
         return {"error": "session not found"}
-    events = sm.get_session_events(session_id)
-    return {"session_id": session_id, "events": events}
+    from mutbot.runtime import storage
+    data = storage.load_session_metadata(session_id)
+    if not data or "messages" not in data:
+        return {"session_id": session_id, "messages": []}
+    return {
+        "session_id": session_id,
+        "messages": data["messages"],
+        "total_tokens": data.get("total_tokens", 0),
+        "context_used": data.get("context_used", 0),
+        "context_window": data.get("context_window", 0),
+    }
 
 
 @workspace_rpc.method("session.stop")
@@ -686,6 +695,7 @@ async def websocket_session(websocket: WebSocket, session_id: str):
                 if text:
                     # 延迟启动：ended session 在用户发消息时激活
                     if bridge is None:
+                        was_ended = session.status == "ended"
                         try:
                             bridge = sm.start(session_id, loop, connection_manager.broadcast)
                         except Exception as exc:
@@ -693,6 +703,12 @@ async def websocket_session(websocket: WebSocket, session_id: str):
                             await sm.stop(session_id)
                             await websocket.send_json({"type": "error", "error": str(exc)})
                             break
+                        # 广播 session 重新激活事件
+                        if was_ended:
+                            await workspace_connection_manager.broadcast(
+                                session.workspace_id,
+                                make_event("session_updated", _session_dict(session)),
+                            )
                     bridge.send_message(text, data)
             elif msg_type == "cancel":
                 if bridge:

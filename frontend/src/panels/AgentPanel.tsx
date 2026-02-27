@@ -243,15 +243,80 @@ export default function AgentPanel({ sessionId, rpc, onSessionLink }: Props) {
           if (!hadCache && !replayedRef.current.has(sessionId)) {
             replayedRef.current.add(sessionId);
             if (rpc) {
-              rpc.call<{ session_id: string; events: Record<string, unknown>[] }>("session.events", { session_id: sessionId }).then((result) => {
-                if (result.events && result.events.length > 0) {
-                  if (DEBUG) rlog.debug("Replaying", result.events.length, "events from history");
-                  for (const event of result.events) {
-                    handleEvent(event);
+              rpc.call<{
+                session_id: string;
+                messages: { role: string; content: string; tool_calls?: { id: string; name: string; arguments: Record<string, unknown> }[]; tool_results?: { tool_call_id: string; content: string; is_error: boolean }[] }[];
+                total_tokens: number;
+                context_used: number;
+                context_window: number;
+              }>("session.messages", { session_id: sessionId }).then((result) => {
+                if (result.messages && result.messages.length > 0) {
+                  if (DEBUG) rlog.debug("Restoring", result.messages.length, "messages from history");
+                  const restored: ChatMessage[] = [];
+                  // Track tool_call results from subsequent user messages
+                  const toolResultMap = new Map<string, { content: string; isError: boolean }>();
+                  // Pre-scan for tool results
+                  for (const msg of result.messages) {
+                    if (msg.role === "user" && msg.tool_results) {
+                      for (const tr of msg.tool_results) {
+                        toolResultMap.set(tr.tool_call_id, { content: tr.content, isError: tr.is_error });
+                      }
+                    }
                   }
+                  for (const msg of result.messages) {
+                    if (msg.role === "user" && !msg.tool_results) {
+                      restored.push({
+                        id: crypto.randomUUID(),
+                        role: "user",
+                        type: "text",
+                        content: msg.content,
+                      });
+                    } else if (msg.role === "assistant") {
+                      if (msg.content) {
+                        restored.push({
+                          id: crypto.randomUUID(),
+                          role: "assistant",
+                          type: "text",
+                          content: msg.content,
+                        });
+                      }
+                      if (msg.tool_calls) {
+                        for (const tc of msg.tool_calls) {
+                          const result = toolResultMap.get(tc.id);
+                          const toolData: ToolGroupData = {
+                            toolCallId: tc.id,
+                            toolName: tc.name,
+                            arguments: tc.arguments,
+                            startTime: 0,
+                            endTime: 0,
+                            ...(result ? { result: result.content, isError: result.isError } : {}),
+                          };
+                          restored.push({
+                            id: crypto.randomUUID(),
+                            role: "assistant",
+                            type: "tool_group",
+                            data: toolData,
+                          });
+                        }
+                      }
+                    }
+                  }
+                  setMessages(restored);
+                }
+                if (result.total_tokens || result.context_used) {
+                  const cw = result.context_window || null;
+                  const cu = result.context_used || 0;
+                  const cp = cw && cu ? Math.round(cu / cw * 1000) / 10 : null;
+                  setTokenUsage({
+                    contextUsed: cu,
+                    contextWindow: cw,
+                    contextPercent: cp,
+                    sessionTotalTokens: result.total_tokens || 0,
+                    model: "",
+                  });
                 }
               }).catch((err) => {
-                if (DEBUG) rlog.error("Failed to fetch session events:", String(err));
+                if (DEBUG) rlog.error("Failed to fetch session messages:", String(err));
               });
             }
           }
