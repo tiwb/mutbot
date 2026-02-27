@@ -124,6 +124,44 @@ async def _shutdown_cleanup():
             await session_manager.stop(sid)
 
 
+def _ensure_setup_session(ws, sm, wm) -> None:
+    """确保 setup 模式下 workspace 有一个可用的 Guide session。
+
+    - 首次启动：创建 GuideSession，带 initial_message 触发欢迎
+    - 重启恢复：已有 GuideSession 时，重新注入 initial_message
+    - 通过 pending event 让前端连接后自动打开 Guide tab
+    """
+    from mutbot.web.routes import workspace_connection_manager
+
+    guide_type = "mutbot.builtins.guide.GuideSession"
+    existing = sm.list_by_workspace(ws.id)
+    guide = next(
+        (s for s in existing
+         if s.type == guide_type and s.status == "active"),
+        None,
+    )
+
+    if guide is None:
+        guide = sm.create(
+            ws.id,
+            session_type=guide_type,
+            config={"initial_message": "__setup__"},
+        )
+        ws.sessions.append(guide.id)
+        wm.update(ws)
+        logger.info("Setup mode: created Guide session %s", guide.id)
+    elif "initial_message" not in guide.config:
+        # 重启恢复：上次 initial_message 已消费，重新注入
+        guide.config["initial_message"] = "__setup__"
+        sm._persist(guide)
+        logger.info("Setup mode: re-injected initial_message for session %s", guide.id)
+
+    # 入队 open_session 事件，前端 WebSocket 连接后自动 flush
+    workspace_connection_manager.queue_event(
+        ws.id, "open_session", {"session_id": guide.id},
+    )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global workspace_manager, session_manager, log_store, terminal_manager, auth_manager
@@ -139,7 +177,23 @@ async def lifespan(app: FastAPI):
     workspace_manager.load_from_disk()
     session_manager.load_from_disk()
 
-    workspace_manager.ensure_default()
+    # 服务器重启：所有旧 session 标记为 ended（无运行中的 agent）
+    _ended = 0
+    for session in session_manager._sessions.values():
+        if session.status == "active":
+            session.status = "ended"
+            session_manager._persist(session)
+            _ended += 1
+    if _ended:
+        logger.info("Marked %d stale session(s) as ended on restart", _ended)
+
+    ws = workspace_manager.ensure_default()
+
+    # --- Setup 模式：无 LLM 配置时自动创建向导 session ---
+    from mutbot.runtime.config import load_mutbot_config
+    _mutbot_config = load_mutbot_config()
+    if not _mutbot_config.get("providers"):
+        _ensure_setup_session(ws, session_manager, workspace_manager)
 
     # --- Unified logging setup ---
     session_ts = datetime.now().strftime("%Y%m%d_%H%M%S")

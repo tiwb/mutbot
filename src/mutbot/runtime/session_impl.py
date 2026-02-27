@@ -614,12 +614,19 @@ class SessionManager:
         bridge.start()
         logger.info("Session %s: agent started", session_id)
 
-        # 如果 config 中有 initial_message，自动作为第一条用户消息发送
+        # 重新激活 ended session（用户主动打开时恢复为 active）
+        if session.status == "ended":
+            session.status = "active"
+            session.updated_at = datetime.now(timezone.utc).isoformat()
+            self._persist(session)
+            logger.info("Session %s: reactivated (ended → active)", session_id)
+
+        # 如果 config 中有 initial_message，自动作为隐藏消息发送（不显示在聊天界面）
         initial_message = session.config.pop("initial_message", None)
         if initial_message:
-            bridge.send_message(initial_message)
+            bridge.send_message(initial_message, data={"hidden": True})
             self._persist(session)
-            logger.info("Session %s: sent initial_message (%d chars)", session_id, len(initial_message))
+            logger.info("Session %s: sent initial_message (hidden, %d chars)", session_id, len(initial_message))
 
         return bridge
 

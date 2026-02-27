@@ -19,13 +19,7 @@ def main():
     )
     # The LogStore handler (DEBUG, full capture) is set up in server.py lifespan
 
-    # 首次启动向导：无模型配置时引导用户完成配置
-    from mutbot.runtime.config import load_mutbot_config
-    config = load_mutbot_config()
-    if not config.get("providers"):
-        from mutbot.cli.setup import run_setup_wizard
-        run_setup_wizard()
-
+    # 始终启动 Web 服务器，无 LLM 配置时通过 Web 向导完成配置
     import uvicorn
     uvicorn.run("mutbot.web.server:app", host=args.host, port=args.port, log_level="info")
 

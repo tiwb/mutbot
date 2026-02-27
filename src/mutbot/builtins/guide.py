@@ -56,7 +56,16 @@ class GuideSession(AgentSession):
         from mutbot.runtime.session_impl import setup_environment, create_llm_client
 
         setup_environment(config)
-        client = create_llm_client(config, self.model, log_dir, session_ts)
+
+        # Setup 模式：无 LLM 配置时使用 SetupProvider（脚本化状态机）
+        if config.get("providers"):
+            client = create_llm_client(config, self.model, log_dir, session_ts)
+        else:
+            from mutbot.builtins.setup_provider import SetupProvider
+            client = LLMClient(
+                provider=SetupProvider(),
+                model="setup-wizard",
+            )
 
         session_manager = kwargs.get("session_manager")
         session_tools = SessionToolkit(

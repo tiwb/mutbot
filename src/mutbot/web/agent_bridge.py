@@ -256,17 +256,20 @@ class AgentBridge:
     def send_message(self, text: str, data: dict | None = None) -> None:
         """Feed a user message into the Agent."""
         event = InputEvent(type="user_message", text=text, data=data or {})
+        hidden = (data or {}).get("hidden", False)
+        if not hidden:
+            # Broadcast user message to all connected clients
+            user_event = {"type": "user_message", "text": text, "data": data or {}}
+            if self.event_recorder:
+                try:
+                    self.event_recorder(user_event)
+                except Exception:
+                    pass
+            asyncio.ensure_future(self.broadcast_fn(self.session_id, user_event))
+            # 用户发消息后推送 thinking 状态（hidden 消息不推送）
+            asyncio.ensure_future(self._broadcast_status("thinking"))
+        # 入队放在 ensure_future 之后，确保广播先于 agent 处理（FIFO 调度）
         self._input_queue.put_nowait(event)
-        # Broadcast user message to all connected clients
-        user_event = {"type": "user_message", "text": text, "data": data or {}}
-        if self.event_recorder:
-            try:
-                self.event_recorder(user_event)
-            except Exception:
-                pass
-        asyncio.ensure_future(self.broadcast_fn(self.session_id, user_event))
-        # 用户发消息后立即推送 thinking 状态
-        asyncio.ensure_future(self._broadcast_status("thinking"))
 
     async def cancel(self) -> None:
         """Cancel current agent thinking without stopping the session.

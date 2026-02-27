@@ -315,6 +315,16 @@ export default function App() {
           }
         }
       }),
+      wsRpc.on("open_session", async (data) => {
+        const sessionId = data.session_id as string;
+        if (!sessionId) return;
+        try {
+          const session: Session = await wsRpc.call("session.get", { session_id: sessionId });
+          addTabForSession(session);
+        } catch {
+          // 静默处理
+        }
+      }),
     ];
 
     return () => {

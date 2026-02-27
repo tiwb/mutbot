@@ -479,7 +479,13 @@ def _session_type_display(qualified: str, cls: type) -> tuple[str, str]:
 
 @router.get("/api/health")
 async def health():
-    return {"status": "ok"}
+    from mutbot.runtime.config import load_mutbot_config
+    config = load_mutbot_config()
+    setup_required = not bool(config.get("providers"))
+    return {
+        "status": "ok",
+        "setup_required": setup_required,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -548,21 +554,26 @@ async def websocket_session(websocket: WebSocket, session_id: str):
         return
 
     await connection_manager.connect(session_id, websocket)
-    logger.info("WS connected: session=%s", session_id)
+    logger.info("WS connected: session=%s (status=%s)", session_id, session.status)
 
     # Broadcast updated connection count
     await _broadcast_connection_count(session_id)
 
-    # Start agent bridge if not running (forwarder is managed by the bridge)
     loop = asyncio.get_running_loop()
-    try:
-        bridge = sm.start(session_id, loop, connection_manager.broadcast)
-    except Exception as exc:
-        logger.exception("Failed to start agent for session=%s", session_id)
-        await websocket.send_json({"type": "error", "error": str(exc)})
-        connection_manager.disconnect(session_id, websocket)
-        await websocket.close(code=4500, reason="agent start failed")
-        return
+    bridge = None
+
+    # active session → 立即启动 agent bridge
+    # ended session → 延迟到用户发消息时再启动（避免无限重试）
+    if session.status == "active":
+        try:
+            bridge = sm.start(session_id, loop, connection_manager.broadcast)
+        except Exception as exc:
+            logger.exception("Failed to start agent for session=%s", session_id)
+            await sm.stop(session_id)
+            await websocket.send_json({"type": "error", "error": str(exc)})
+            connection_manager.disconnect(session_id, websocket)
+            await websocket.close(code=4500, reason="agent start failed")
+            return
 
     try:
         while True:
@@ -572,9 +583,19 @@ async def websocket_session(websocket: WebSocket, session_id: str):
                 text = raw.get("text", "")
                 data = raw.get("data")
                 if text:
+                    # 延迟启动：ended session 在用户发消息时激活
+                    if bridge is None:
+                        try:
+                            bridge = sm.start(session_id, loop, connection_manager.broadcast)
+                        except Exception as exc:
+                            logger.exception("Failed to start agent for session=%s", session_id)
+                            await sm.stop(session_id)
+                            await websocket.send_json({"type": "error", "error": str(exc)})
+                            break
                     bridge.send_message(text, data)
             elif msg_type == "cancel":
-                await bridge.cancel()
+                if bridge:
+                    await bridge.cancel()
             elif msg_type == "log":
                 # Frontend log forwarding
                 level = raw.get("level", "debug")
