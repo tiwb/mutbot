@@ -322,32 +322,17 @@ def build_default_agent(
 
     组装 ModuleToolkit + LogToolkit + auto_discover 的标准 Agent。
     """
-    from mutagent.toolkits.module_toolkit import ModuleToolkit
-    from mutagent.toolkits.log_toolkit import LogToolkit
-    from mutagent.runtime.module_manager import ModuleManager
-    from mutagent.runtime.log_store import LogStore
-
     setup_environment(config)
 
     client = create_llm_client(config, session.model, log_dir, session_ts)
 
     # Build tool set
-    search_dirs = [Path.home() / ".mutagent", Path.cwd() / ".mutagent"]
-    module_manager = ModuleManager(search_dirs=search_dirs)
-    module_tools = ModuleToolkit(module_manager=module_manager)
-
-    log_store = LogStore()
-    log_tools = LogToolkit(log_store=log_store)
-
     tool_set = ToolSet(auto_discover=True)
-    tool_set.add(module_tools)
-    tool_set.add(log_tools)
 
     system_prompt = session.system_prompt
     if not system_prompt:
         system_prompt = (
-            "You are a Python AI Agent with the ability to inspect, modify, "
-            "and run Python code at runtime. Use the available tools to help "
+            "You are a Python AI Agent. Use the available tools to help "
             "the user with their tasks."
         )
 

@@ -1,6 +1,7 @@
 """向导 Agent Session — 用户首先接触的入口。
 
-引导使用、识别需求类型、创建专业 Agent Session 并传达用户需求。
+MutBot 的默认会话类型，具备 Web 搜索能力，可直接回答用户问题，
+也可以创建专业 Agent Session 来处理特定任务。
 """
 
 from __future__ import annotations
@@ -25,21 +26,15 @@ class GuideSession(AgentSession):
     display_icon = "circle-question-mark"
 
     system_prompt: str = (
-        "你是 MutBot 的向导，帮助用户了解和使用 MutBot 的各项功能。\n"
+        "你是 MutBot 助手，帮助用户了解和使用 MutBot 的各项功能。\n"
         "\n"
-        "核心职责：\n"
+        "核心能力：\n"
         "- 友好地介绍 MutBot 的功能和使用方式\n"
-        "- 识别用户的具体需求类型（研究、编码、文件操作等）\n"
-        "- 当识别到具体需求时，为用户创建合适的专业 Agent Session\n"
-        "- 创建 Session 时要清晰地向专业 Agent 传达用户的需求\n"
-        "\n"
-        "可用的专业 Agent 类型：\n"
-        "- mutbot.builtins.researcher.ResearcherSession：研究员，擅长 Web 搜索和信息分析\n"
-        "\n"
-        "工作原则：\n"
-        "- 能处理简单对话和引导类问题（自我介绍、功能说明、简单问答）\n"
-        "- 仅当自身无法帮助用户时，才委托给专业 Agent\n"
-        "- 委托时要准确理解并传达用户需求"
+        "- 回答用户的各类问题，提供信息和建议\n"
+        "- 通过 Web 搜索获取最新信息来回答问题\n"
+        "- 搜索前先思考合适的关键词和搜索策略\n"
+        "- 对搜索结果进行交叉验证，注意信息的时效性\n"
+        "- 给出结论时标注信息来源"
     )
 
     def create_agent(
@@ -50,8 +45,9 @@ class GuideSession(AgentSession):
         messages: list[Message] | None = None,
         **kwargs: Any,
     ) -> Agent:
-        """组装向导 Agent，配备 SessionToolkit。"""
+        """组装向导 Agent，配备 WebToolkit 和 SessionToolkit。"""
         from mutagent.client import LLMClient
+        from mutagent.toolkits.web_toolkit import WebToolkit
         from mutbot.toolkits.session_toolkit import SessionToolkit
         from mutbot.runtime.session_impl import setup_environment, create_llm_client
 
@@ -68,13 +64,16 @@ class GuideSession(AgentSession):
                 model="setup-wizard",
             )
 
+        tool_set = ToolSet()
+
+        web_tools = WebToolkit(config=config)
+        tool_set.add(web_tools)
+
         session_manager = kwargs.get("session_manager")
         session_tools = SessionToolkit(
             session_manager=session_manager,
             workspace_id=self.workspace_id,
         )
-
-        tool_set = ToolSet()
         tool_set.add(session_tools)
 
         agent = Agent(

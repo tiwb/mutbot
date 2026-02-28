@@ -32,7 +32,7 @@ class SessionToolkit(Toolkit):
         """创建一个新的专业 Agent Session。
 
         Args:
-            session_type: Session 类型的全限定名（如 "mutbot.builtins.researcher.ResearcherSession"）。
+            session_type: Session 类型的全限定名。
             initial_message: 向新 Session 的 Agent 传达的初始需求描述。
 
         Returns:
