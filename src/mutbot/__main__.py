@@ -5,7 +5,10 @@ import logging
 
 
 def main():
+    import mutbot
+
     parser = argparse.ArgumentParser(description="MutBot Web UI")
+    parser.add_argument("-V", "--version", action="version", version=f"mutbot {mutbot.__version__}")
     parser.add_argument("--host", default="127.0.0.1", help="Bind host (default: 127.0.0.1)")
     parser.add_argument("--port", type=int, default=8741, help="Bind port (default: 8741)")
     parser.add_argument("--debug", action="store_true", help="Enable debug logging to console")

@@ -15,7 +15,7 @@ jobs:
         run: |
           VERSION=${GITHUB_REF_NAME#v}
           sed -i "s/^version = .*/version = \"${VERSION}\"/" pyproject.toml
-          find src -name '__init__.py' -path '*/src/*' -maxdepth 3 \
+          find ./src -name '__init__.py' -path '*/src/*' -maxdepth 3 \
             -exec sed -i "s/^__version__ = .*/__version__ = \"${VERSION}\"/" {} +
 
       - run: pip install build
