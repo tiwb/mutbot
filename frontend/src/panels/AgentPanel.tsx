@@ -5,6 +5,7 @@ import { rlog, setLogSocket } from "../lib/remote-log";
 import MessageList, { type ChatMessage } from "../components/MessageList";
 import ChatInput from "../components/ChatInput";
 import AgentStatusBar from "../components/AgentStatusBar";
+import ModelSelector from "../components/ModelSelector";
 import type { ToolGroupData } from "../components/ToolCallCard";
 
 const DEBUG = false;
@@ -37,6 +38,7 @@ export default function AgentPanel({ sessionId, rpc, onSessionLink }: Props) {
   const [connectionCount, setConnectionCount] = useState(0);
   const [agentStatus, setAgentStatus] = useState<AgentStatus>("idle");
   const [tokenUsage, setTokenUsage] = useState<TokenUsage | null>(null);
+  const [currentModel, setCurrentModel] = useState("");
   const [scrollSignal, setScrollSignal] = useState(0);
   const wsRef = useRef<ReconnectingWebSocket | null>(null);
   const pendingTextRef = useRef(pendingTextCache.get(sessionId) ?? "");
@@ -202,6 +204,7 @@ export default function AgentPanel({ sessionId, rpc, onSessionLink }: Props) {
         sessionTotalTokens: data.session_total_tokens as number,
         model: data.model as string,
       });
+      if (data.model) setCurrentModel(data.model as string);
     } else if (eventType === "connection_count") {
       setConnectionCount(data.count as number);
     } else {
@@ -220,6 +223,7 @@ export default function AgentPanel({ sessionId, rpc, onSessionLink }: Props) {
     processedEventIds.current.clear();
     setAgentStatus("idle");
     setTokenUsage(null);
+    setCurrentModel("");
 
     // Track whether this session was already replayed from cache
     const hadCache = !!cached && cached.length > 0;
@@ -336,6 +340,21 @@ export default function AgentPanel({ sessionId, rpc, onSessionLink }: Props) {
     };
   }, [sessionId]);
 
+  // 加载初始 model 并订阅 session_updated 事件
+  useEffect(() => {
+    if (!rpc) return;
+    rpc.call<{ model?: string }>("session.get", { session_id: sessionId })
+      .then((s) => { if (s.model) setCurrentModel(s.model); })
+      .catch(() => {});
+    const unsub = rpc.on("session_updated", (data) => {
+      const s = data as { id?: string; model?: string };
+      if (s.id === sessionId && s.model !== undefined) {
+        setCurrentModel(s.model);
+      }
+    });
+    return unsub;
+  }, [sessionId, rpc]);
+
   const handleSend = useCallback((text: string) => {
     if (!text.trim()) return;
     if (DEBUG) rlog.debug("send:", text.slice(0, 80));
@@ -363,6 +382,7 @@ export default function AgentPanel({ sessionId, rpc, onSessionLink }: Props) {
             ({connectionCount})
           </span>
         )}
+        {rpc && <ModelSelector sessionId={sessionId} currentModel={currentModel} rpc={rpc} />}
         {tokenUsage && <TokenUsageDisplay usage={tokenUsage} />}
         {DEBUG && <span style={{ marginLeft: "auto", opacity: 0.5, fontSize: "0.8em" }}>msgs: {messages.length}</span>}
       </div>

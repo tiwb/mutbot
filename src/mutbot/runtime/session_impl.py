@@ -442,7 +442,7 @@ class SessionManager:
     # --- CRUD ---
 
     def update(self, session_id: str, **fields: Any) -> Session | None:
-        """Update session fields (title, config, status, …) and persist."""
+        """Update session fields (title, config, status, model, …) and persist."""
         session = self._sessions.get(session_id)
         if not session:
             return None
@@ -452,9 +452,31 @@ class SessionManager:
             session.config.update(fields["config"])
         if "status" in fields:
             session.status = fields["status"]
+        if "model" in fields and isinstance(session, AgentSession):
+            new_model = fields["model"]
+            if new_model != session.model:
+                session.model = new_model
+                self._swap_llm_client(session_id, session)
         session.updated_at = datetime.now(timezone.utc).isoformat()
         self._persist(session)
         return session
+
+    def _swap_llm_client(self, session_id: str, session: AgentSession) -> None:
+        """热切换 Agent 的 LLMClient（模型切换时调用）。"""
+        rt = self.get_agent_runtime(session_id)
+        if not rt or not rt.agent:
+            return
+        config = self._get_config()
+        try:
+            new_client = create_llm_client(config, session.model, self.log_dir)
+            rt.agent.client = new_client
+            session.context_window = new_client.context_window or 0
+            logger.info(
+                "Session %s: LLMClient swapped to model=%s",
+                session_id, new_client.model,
+            )
+        except Exception:
+            logger.exception("Session %s: failed to swap LLMClient", session_id)
 
     def delete(self, session_id: str) -> bool:
         """从内存中移除 session（磁盘文件保留，便于恢复）。"""

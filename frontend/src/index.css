@@ -506,6 +506,82 @@ body,
   margin: 0 2px;
 }
 
+/* Model selector (inline dropdown in agent header) */
+.model-selector {
+  position: relative;
+}
+
+.model-selector-label {
+  background: none;
+  border: 1px solid transparent;
+  color: var(--text-dim);
+  font-size: 0.85em;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 3px;
+  white-space: nowrap;
+}
+
+.model-selector-label:hover {
+  border-color: var(--border);
+  color: var(--text);
+}
+
+.model-selector-caret {
+  font-size: 0.7em;
+  margin-left: 2px;
+}
+
+.model-selector-dropdown {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  z-index: 100;
+  background: var(--menu-bg);
+  border: 1px solid var(--menu-border);
+  border-radius: 4px;
+  min-width: 200px;
+  max-height: 300px;
+  overflow-y: auto;
+  padding: 4px 0;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+
+.model-selector-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  background: none;
+  border: none;
+  color: var(--text);
+  font-size: 12px;
+  padding: 6px 12px;
+  cursor: pointer;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.model-selector-item:hover {
+  background: var(--menu-hover);
+}
+
+.model-selector-item.active {
+  color: var(--accent);
+}
+
+.model-selector-check {
+  width: 14px;
+  text-align: center;
+  flex-shrink: 0;
+}
+
+.model-selector-hint {
+  margin-left: auto;
+  opacity: 0.5;
+  font-size: 0.9em;
+}
+
 /* Agent status bar (outside scroll area, between MessageList and ChatInput) */
 .agent-status-bar {
   display: flex;

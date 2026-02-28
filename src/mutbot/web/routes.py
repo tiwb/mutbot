@@ -369,6 +369,8 @@ async def handle_session_update(params: dict, ctx: RpcContext) -> dict:
         fields["config"] = params["config"]
     if "status" in params:
         fields["status"] = params["status"]
+    if "model" in params:
+        fields["model"] = params["model"]
     if not fields:
         return {"error": "no updatable fields"}
     session = sm.update(session_id, **fields)
@@ -377,6 +379,26 @@ async def handle_session_update(params: dict, ctx: RpcContext) -> dict:
     data = _session_dict(session)
     await ctx.broadcast_event("session_updated", data)
     return data
+
+
+# ---------------------------------------------------------------------------
+# Config RPC handlers
+# ---------------------------------------------------------------------------
+
+@workspace_rpc.method("config.models")
+async def handle_config_models(params: dict, ctx: RpcContext) -> dict:
+    """返回所有已配置的模型列表"""
+    from mutbot.runtime.config import load_mutbot_config
+    config = load_mutbot_config()
+    models = config.get_all_models()
+    default_model = config.get("default_model", "")
+    return {
+        "models": [
+            {"name": m["name"], "model_id": m["model_id"], "provider_name": m["provider_name"]}
+            for m in models
+        ],
+        "default_model": default_model,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -556,7 +578,7 @@ def _session_dict(s) -> dict[str, Any]:
     kind = _session_kind(s.type)
     # icon: 用户自定义 > 类声明 > 空串（前端用 kind 回退）
     icon = s.config.get("icon") or getattr(type(s), "display_icon", "") or ""
-    return {
+    d: dict[str, Any] = {
         "id": s.id,
         "workspace_id": s.workspace_id,
         "title": s.title,
@@ -568,6 +590,11 @@ def _session_dict(s) -> dict[str, Any]:
         "updated_at": s.updated_at,
         "config": s.config,
     }
+    # AgentSession 额外字段
+    from mutbot.session import AgentSession
+    if isinstance(s, AgentSession):
+        d["model"] = s.model
+    return d
 
 
 def _session_kind(session_type: str) -> str:
