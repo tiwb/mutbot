@@ -127,6 +127,9 @@ export default function App() {
                     // fallback to default layout
                   }
                 }
+              } else {
+                // hash 指向不存在的 workspace，清空 hash
+                location.hash = "";
               }
             }
           })
@@ -162,6 +165,10 @@ export default function App() {
             // fallback to default layout
           }
         }
+      } else {
+        // hash 指向不存在的 workspace，清空 hash
+        location.hash = "";
+        setWorkspace(null);
       }
     };
     window.addEventListener("hashchange", onHashChange);
@@ -889,6 +896,9 @@ export default function App() {
           setWorkspaces((prev) => [...prev, ws]);
           location.hash = ws.name;
           setWorkspace(ws);
+        }}
+        onRemoved={(wsId) => {
+          setWorkspaces((prev) => prev.filter((w) => w.id !== wsId));
         }}
       />
     );

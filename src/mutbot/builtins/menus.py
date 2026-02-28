@@ -310,3 +310,24 @@ class CloseWorkspaceMenu(Menu):
     display_category = "SessionList/Header"
     display_order = "1workspace:0"
     client_action = "close_workspace"
+
+
+# ---------------------------------------------------------------------------
+# 内置菜单：Workspace 选择器右键 (WorkspaceSelector/Context)
+# ---------------------------------------------------------------------------
+
+class RemoveWorkspaceMenu(Menu):
+    """右键菜单 — 从列表中移除 workspace（不删除数据文件）"""
+    display_name = "Remove"
+    display_icon = "trash-2"
+    display_category = "WorkspaceSelector/Context"
+    display_order = "0manage:0"
+
+    def execute(self, params: dict, context: RpcContext) -> MenuResult:
+        workspace_id = params.get("workspace_id", "")
+        if not workspace_id:
+            return MenuResult(action="error", data={"message": "missing workspace_id"})
+        return MenuResult(
+            action="workspace_removed",
+            data={"workspace_id": workspace_id},
+        )

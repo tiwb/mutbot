@@ -1,5 +1,10 @@
 import type { IJsonModel } from "flexlayout-react";
 
+/** AppRpc / WorkspaceRpc 共用的 RPC 调用接口 */
+export interface RpcClient {
+  call<T = unknown>(method: string, params?: Record<string, unknown>): Promise<T>;
+}
+
 export interface Workspace {
   id: string;
   name: string;

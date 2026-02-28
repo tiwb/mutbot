@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import os
 import re
 import uuid
 from dataclasses import dataclass, field
@@ -64,18 +63,40 @@ class WorkspaceManager:
 
     def __init__(self) -> None:
         self._workspaces: dict[str, Workspace] = {}
+        self._registry: list[str] = []
 
     def load_from_disk(self) -> None:
-        """Load all workspaces from .mutbot/workspaces/*.json."""
-        for data in storage.load_all_workspaces():
-            ws = _workspace_from_dict(data)
-            self._workspaces[ws.id] = ws
+        """Load workspaces from registry. Only registered IDs are loaded."""
+        self._registry = storage.load_workspace_registry()
+        if not self._registry:
+            return
+
+        dirty = False
+        valid_ids: list[str] = []
+        for ws_id in self._registry:
+            data = storage.load_workspace(ws_id)
+            if data:
+                ws = _workspace_from_dict(data)
+                self._workspaces[ws.id] = ws
+                valid_ids.append(ws_id)
+            else:
+                logger.warning("Registry references missing workspace %s, removing", ws_id)
+                dirty = True
+
+        if dirty:
+            self._registry = valid_ids
+            storage.save_workspace_registry(self._registry)
+
         if self._workspaces:
             logger.info("Loaded %d workspace(s) from disk", len(self._workspaces))
 
     def _persist(self, ws: Workspace) -> None:
         """Save workspace to disk."""
         storage.save_workspace(_workspace_to_dict(ws))
+
+    def _save_registry(self) -> None:
+        """Save registry to disk."""
+        storage.save_workspace_registry(self._registry)
 
     def create(self, name: str, project_path: str) -> Workspace:
         slug = sanitize_workspace_name(name)
@@ -97,7 +118,20 @@ class WorkspaceManager:
         )
         self._workspaces[ws.id] = ws
         self._persist(ws)
+        # 注册表：插入到最前面（最近创建）
+        self._registry.insert(0, ws.id)
+        self._save_registry()
         return ws
+
+    def remove(self, workspace_id: str) -> bool:
+        """从注册表和内存移除 workspace（不删除数据文件）。"""
+        if workspace_id not in self._workspaces:
+            return False
+        del self._workspaces[workspace_id]
+        if workspace_id in self._registry:
+            self._registry.remove(workspace_id)
+            self._save_registry()
+        return True
 
     def get(self, workspace_id: str) -> Workspace | None:
         return self._workspaces.get(workspace_id)
@@ -124,11 +158,3 @@ class WorkspaceManager:
         """Persist workspace after mutation (e.g. layout change, session added)."""
         ws.updated_at = datetime.now(timezone.utc).isoformat()
         self._persist(ws)
-
-    def ensure_default(self) -> Workspace:
-        """Auto-create a default workspace from cwd if none exist."""
-        if self._workspaces:
-            return next(iter(self._workspaces.values()))
-        cwd = os.getcwd()
-        name = os.path.basename(cwd) or "default"
-        return self.create(name, cwd)

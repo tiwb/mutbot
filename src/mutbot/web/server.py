@@ -218,13 +218,7 @@ async def lifespan(app: FastAPI):
     if _cleared:
         logger.info("Cleared %d stale 'running' session(s) on restart", _cleared)
 
-    ws = workspace_manager.ensure_default()
-
-    # --- Setup 模式：无 LLM 配置时自动创建向导 session ---
-    from mutbot.runtime.config import load_mutbot_config
-    _mutbot_config = load_mutbot_config()
-    if not _mutbot_config.get("providers"):
-        _ensure_setup_session(ws, session_manager, workspace_manager)
+    # --- Setup 模式：推迟到 workspace.create RPC 中处理 ---
 
     # --- Unified logging setup ---
     session_ts = datetime.now().strftime("%Y%m%d_%H%M%S")

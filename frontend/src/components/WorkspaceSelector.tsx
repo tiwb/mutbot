@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { AppRpc } from "../lib/app-rpc";
 import type { Workspace } from "../lib/types";
+import RpcMenu, { type MenuExecResult } from "./RpcMenu";
 import DirectoryPicker from "./DirectoryPicker";
 
 const MAX_VISIBLE = 5;
@@ -10,6 +11,7 @@ interface WorkspaceSelectorProps {
   appRpc: AppRpc | null;
   onSelect: (ws: Workspace) => void;
   onCreated: (ws: Workspace) => void;
+  onRemoved: (wsId: string) => void;
 }
 
 function PlusIcon() {
@@ -36,15 +38,23 @@ function SearchIcon() {
 
 function WorkspaceSearchDialog({
   workspaces,
+  appRpc,
   onSelect,
   onClose,
+  onRemoved,
 }: {
   workspaces: Workspace[];
+  appRpc: AppRpc | null;
   onSelect: (ws: Workspace) => void;
   onClose: () => void;
+  onRemoved: (wsId: string) => void;
 }) {
   const [query, setQuery] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
+  const [contextMenu, setContextMenu] = useState<{
+    position: { x: number; y: number };
+    ws: Workspace;
+  } | null>(null);
 
   useEffect(() => {
     inputRef.current?.focus();
@@ -58,6 +68,13 @@ function WorkspaceSearchDialog({
       ws.project_path.toLowerCase().includes(q)
     );
   });
+
+  const handleMenuResult = (result: MenuExecResult) => {
+    if (result.action === "workspace_removed") {
+      const wsId = result.data.workspace_id as string;
+      if (wsId) onRemoved(wsId);
+    }
+  };
 
   return (
     <div className="ws-search-overlay" onClick={(e) => {
@@ -87,6 +104,10 @@ function WorkspaceSearchDialog({
                 <button
                   className="ws-search-item"
                   onClick={() => onSelect(ws)}
+                  onContextMenu={(e) => {
+                    e.preventDefault();
+                    setContextMenu({ position: { x: e.clientX, y: e.clientY }, ws });
+                  }}
                 >
                   <span className="ws-search-item-name">{ws.name}</span>
                   <span className="ws-search-item-path">
@@ -98,6 +119,17 @@ function WorkspaceSearchDialog({
           )}
         </ul>
       </div>
+
+      {contextMenu && appRpc && (
+        <RpcMenu
+          rpc={appRpc}
+          category="WorkspaceSelector/Context"
+          context={{ workspace_id: contextMenu.ws.id }}
+          position={contextMenu.position}
+          onClose={() => setContextMenu(null)}
+          onResult={handleMenuResult}
+        />
+      )}
     </div>
   );
 }
@@ -111,13 +143,25 @@ export default function WorkspaceSelector({
   appRpc,
   onSelect,
   onCreated,
+  onRemoved,
 }: WorkspaceSelectorProps) {
   const [showDirPicker, setShowDirPicker] = useState(false);
   const [showSearch, setShowSearch] = useState(false);
+  const [contextMenu, setContextMenu] = useState<{
+    position: { x: number; y: number };
+    ws: Workspace;
+  } | null>(null);
 
   const handleCreate = (ws: Workspace) => {
     setShowDirPicker(false);
     onCreated(ws);
+  };
+
+  const handleMenuResult = (result: MenuExecResult) => {
+    if (result.action === "workspace_removed") {
+      const wsId = result.data.workspace_id as string;
+      if (wsId) onRemoved(wsId);
+    }
   };
 
   const visible = workspaces.slice(0, MAX_VISIBLE);
@@ -154,6 +198,10 @@ export default function WorkspaceSelector({
                   <button
                     className="ws-selector-item"
                     onClick={() => onSelect(ws)}
+                    onContextMenu={(e) => {
+                      e.preventDefault();
+                      setContextMenu({ position: { x: e.clientX, y: e.clientY }, ws });
+                    }}
                   >
                     <span className="ws-selector-item-name">{ws.name}</span>
                     <span className="ws-selector-item-path">
@@ -186,11 +234,24 @@ export default function WorkspaceSelector({
       {showSearch && (
         <WorkspaceSearchDialog
           workspaces={workspaces}
+          appRpc={appRpc}
           onSelect={(ws) => {
             setShowSearch(false);
             onSelect(ws);
           }}
           onClose={() => setShowSearch(false)}
+          onRemoved={onRemoved}
+        />
+      )}
+
+      {contextMenu && appRpc && (
+        <RpcMenu
+          rpc={appRpc}
+          category="WorkspaceSelector/Context"
+          context={{ workspace_id: contextMenu.ws.id }}
+          position={contextMenu.position}
+          onClose={() => setContextMenu(null)}
+          onResult={handleMenuResult}
         />
       )}
     </div>

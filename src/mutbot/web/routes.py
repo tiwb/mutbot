@@ -85,6 +85,16 @@ async def handle_app_workspace_create(params: dict, ctx: RpcContext) -> dict:
 
     name = params.get("name") or p.name
     ws = wm.create(name, str(p))
+
+    # Setup 模式：无 LLM 配置时自动创建向导 session
+    from mutbot.runtime.config import load_mutbot_config
+    _cfg = load_mutbot_config()
+    if not _cfg.get("providers"):
+        from mutbot.web.server import _ensure_setup_session
+        sm = ctx.managers.get("session_manager")
+        if sm:
+            _ensure_setup_session(ws, sm, wm)
+
     return _workspace_dict(ws)
 
 
@@ -122,6 +132,65 @@ async def handle_filesystem_browse(params: dict, ctx: RpcContext) -> dict:
         "parent": parent,
         "entries": entries,
     }
+
+
+@app_rpc.method("workspace.remove")
+async def handle_app_workspace_remove(params: dict, ctx: RpcContext) -> dict:
+    """从注册表移除工作区（不删除数据文件）。
+
+    params:
+      - workspace_id (必填): 要移除的工作区 ID
+    """
+    wm = ctx.managers.get("workspace_manager")
+    if not wm:
+        return {"error": "workspace_manager not available"}
+
+    workspace_id = params.get("workspace_id", "")
+    if not workspace_id:
+        return {"error": "missing workspace_id"}
+
+    if not wm.remove(workspace_id):
+        return {"error": "workspace not found"}
+    return {"ok": True}
+
+
+@app_rpc.method("menu.query")
+async def handle_app_menu_query(params: dict, ctx: RpcContext) -> list[dict]:
+    """App 级菜单查询。"""
+    category = params.get("category", "")
+    menu_context = params.get("context", {})
+    ctx._menu_context = menu_context  # type: ignore[attr-defined]
+    return menu_registry.query(category, ctx)
+
+
+@app_rpc.method("menu.execute")
+async def handle_app_menu_execute(params: dict, ctx: RpcContext) -> dict:
+    """App 级菜单执行。"""
+    menu_id = params.get("menu_id", "")
+    if not menu_id:
+        return {"error": "missing menu_id"}
+
+    menu_cls = menu_registry.find_menu_class(menu_id)
+    if menu_cls is None:
+        return {"error": f"menu not found: {menu_id}"}
+
+    menu_instance = menu_cls()
+    execute_params = params.get("params", {})
+    result = menu_instance.execute(execute_params, ctx)
+
+    if not isinstance(result, MenuResult):
+        return result if isinstance(result, dict) else {}
+
+    result_dict: dict = {"action": result.action, "data": result.data}
+
+    # workspace_removed: 从注册表移除
+    if result.action == "workspace_removed":
+        wm = ctx.managers.get("workspace_manager")
+        ws_id = result.data.get("workspace_id", "")
+        if wm and ws_id:
+            wm.remove(ws_id)
+
+    return result_dict
 
 
 # ---------------------------------------------------------------------------
@@ -989,7 +1058,7 @@ async def websocket_app(websocket: WebSocket):
     context = RpcContext(
         workspace_id="",
         broadcast=broadcast,
-        managers={"workspace_manager": wm},
+        managers={"workspace_manager": wm, "session_manager": sm},
     )
 
     try:

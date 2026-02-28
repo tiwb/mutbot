@@ -81,16 +81,39 @@ def save_workspace(ws_data: dict) -> None:
     save_json(path, ws_data)
 
 
+def load_workspace(workspace_id: str) -> dict | None:
+    """加载单个 workspace JSON 文件。"""
+    path = _mutbot_path("workspaces", f"{workspace_id}.json")
+    return load_json(path)
+
+
 def load_all_workspaces() -> list[dict]:
     ws_dir = _mutbot_path("workspaces")
     if not ws_dir.is_dir():
         return []
     results = []
     for f in ws_dir.glob("*.json"):
+        if f.name == "registry.json":
+            continue
         data = load_json(f)
         if data and "id" in data:
             results.append(data)
     return results
+
+
+def load_workspace_registry() -> list[str]:
+    """加载 workspace 注册表，返回 ID 列表。文件不存在返回空列表。"""
+    path = _mutbot_path("workspaces", "registry.json")
+    data = load_json(path)
+    if data and isinstance(data.get("workspaces"), list):
+        return data["workspaces"]
+    return []
+
+
+def save_workspace_registry(ids: list[str]) -> None:
+    """原子写入 workspace 注册表。"""
+    path = _mutbot_path("workspaces", "registry.json")
+    save_json(path, {"workspaces": ids})
 
 
 def save_session_metadata(session_data: dict) -> None:

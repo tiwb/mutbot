@@ -2407,7 +2407,7 @@ body,
   border: 1px solid var(--menu-border);
   width: 480px;
   max-width: 95vw;
-  max-height: 80vh;
+  height: min(560px, 80vh);
   display: flex;
   flex-direction: column;
   border-radius: 2px;
@@ -2418,6 +2418,30 @@ body,
   font-weight: 600;
   padding: 14px 16px 10px;
   color: var(--text);
+}
+
+.dir-picker-name-row {
+  padding: 0 16px 10px;
+}
+
+.dir-picker-name-input {
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 12px;
+  padding: 6px 10px;
+  width: 100%;
+  border-radius: 2px;
+  outline: none;
+}
+
+.dir-picker-name-input:focus {
+  border-color: var(--accent);
+}
+
+.dir-picker-name-input::placeholder {
+  color: var(--text-dim);
 }
 
 .dir-picker-path-bar {
@@ -2481,8 +2505,7 @@ body,
 .dir-picker-entries {
   flex: 1;
   overflow-y: auto;
-  min-height: 200px;
-  max-height: 400px;
+  min-height: 0;
   padding: 0 8px;
 }
 

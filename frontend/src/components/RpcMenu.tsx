@@ -27,7 +27,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import type { WorkspaceRpc } from "../lib/workspace-rpc";
+import type { RpcClient } from "../lib/types";
 import { renderLucideIcon } from "./SessionIcons";
 
 /** 后端返回的菜单项 */
@@ -51,8 +51,8 @@ export interface MenuExecResult {
 }
 
 type RpcMenuProps = {
-  /** WorkspaceRpc 实例 */
-  rpc: WorkspaceRpc | null;
+  /** RPC 客户端实例（AppRpc 或 WorkspaceRpc） */
+  rpc: RpcClient | null;
   /** 菜单 category（对应后端 display_category） */
   category: string;
   /** 传递给 menu.query 的上下文（如 session_id, session_status） */

@@ -33,6 +33,12 @@ export default function DirectoryPicker({
   const [creating, setCreating] = useState(false);
   const [manualInput, setManualInput] = useState(false);
   const [inputPath, setInputPath] = useState("");
+  const [wsName, setWsName] = useState("");
+
+  /** 从路径中提取目录名作为 placeholder */
+  const defaultName = currentPath
+    ? currentPath.split(/[/\\]/).filter(Boolean).pop() || ""
+    : "";
 
   const browse = useCallback(
     async (path: string) => {
@@ -84,9 +90,13 @@ export default function DirectoryPicker({
     setCreating(true);
     setError("");
     try {
+      const params: Record<string, unknown> = { project_path: currentPath };
+      if (wsName.trim()) {
+        params.name = wsName.trim();
+      }
       const result = await appRpc.call<Workspace & { error?: string }>(
         "workspace.create",
-        { project_path: currentPath },
+        params,
       );
       if (result.error) {
         setError(result.error);
@@ -101,9 +111,23 @@ export default function DirectoryPicker({
   };
 
   return (
-    <div className="dir-picker-overlay" onClick={onCancel}>
+    <div className="dir-picker-overlay">
       <div className="dir-picker" onClick={(e) => e.stopPropagation()}>
-        <h3 className="dir-picker-title">Select Project Directory</h3>
+        <h3 className="dir-picker-title">New Workspace</h3>
+
+        <div className="dir-picker-name-row">
+          <input
+            className="dir-picker-name-input"
+            type="text"
+            placeholder={
+              defaultName
+                ? `Workspace name (default: ${defaultName})`
+                : "Workspace name (optional)"
+            }
+            value={wsName}
+            onChange={(e) => setWsName(e.target.value)}
+          />
+        </div>
 
         <div className="dir-picker-path-bar">
           {manualInput ? (
@@ -142,7 +166,7 @@ export default function DirectoryPicker({
             <>
               {parent && (
                 <button className="dir-picker-entry" onClick={handleUp}>
-                  <span className="dir-picker-entry-icon">⬆</span>
+                  <span className="dir-picker-entry-icon">{"\u2B06"}</span>
                   <span>..</span>
                 </button>
               )}
@@ -155,7 +179,7 @@ export default function DirectoryPicker({
                   className="dir-picker-entry"
                   onClick={() => handleNavigate(entry.name)}
                 >
-                  <span className="dir-picker-entry-icon">📁</span>
+                  <span className="dir-picker-entry-icon">{"\uD83D\uDCC1"}</span>
                   <span>{entry.name}</span>
                 </button>
               ))}
@@ -172,7 +196,7 @@ export default function DirectoryPicker({
             onClick={handleCreate}
             disabled={!currentPath || creating}
           >
-            {creating ? "Creating..." : "Select"}
+            {creating ? "Creating..." : "Create"}
           </button>
         </div>
       </div>
