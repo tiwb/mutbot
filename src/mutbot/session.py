@@ -65,6 +65,7 @@ class AgentSession(Session):
     total_tokens: int = 0
     context_used: int = 0
     context_window: int = 0
+    chat_messages: list[dict] = mutobj.field(default_factory=list)
 
     def create_agent(
         self,

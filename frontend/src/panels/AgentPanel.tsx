@@ -78,39 +78,100 @@ export default function AgentPanel({ sessionId, rpc, onSessionLink }: Props) {
       }
     }
 
-    if (eventType === "text_delta") {
+    if (eventType === "turn_start") {
+      const msgId = data.id as string;
+      const turnId = data.turn_id as string;
+      const timestamp = data.timestamp as string;
+      setMessages((prev) => [
+        ...prev,
+        { id: msgId, type: "turn_start" as const, turnId, timestamp },
+      ]);
+    } else if (eventType === "user_message") {
+      const text = data.text as string;
+      const timestamp = data.timestamp as string | undefined;
+      const sender = data.sender as string | undefined;
+      const msgId = data.id as string | undefined;
+      const model = data.model as string | undefined;
+      if (model) setCurrentModel(model);
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: msgId ?? crypto.randomUUID(),
+          role: "user" as const,
+          type: "text" as const,
+          content: text,
+          timestamp,
+          sender,
+        },
+      ]);
+    } else if (eventType === "text_delta") {
       const text = data.text as string;
       pendingTextRef.current += text;
       const snapshot = pendingTextRef.current;
-      setMessages((prev) => {
-        const last = prev[prev.length - 1];
-        if (last && last.role === "assistant" && last.type === "text") {
-          const updated = [...prev];
-          updated[updated.length - 1] = { ...last, content: snapshot };
-          return updated;
-        }
-        return [
+
+      // 首个 text_delta 携带 id、timestamp、model
+      const msgId = data.id as string | undefined;
+      const timestamp = data.timestamp as string | undefined;
+      const model = data.model as string | undefined;
+
+      if (msgId) {
+        // 首个 text_delta — 创建新的 assistant text 消息
+        setMessages((prev) => [
           ...prev,
           {
-            id: crypto.randomUUID(),
+            id: msgId,
             role: "assistant" as const,
             type: "text" as const,
             content: snapshot,
+            timestamp,
+            model,
           },
-        ];
-      });
+        ]);
+      } else {
+        // 后续 text_delta — 更新最后一条 assistant text
+        setMessages((prev) => {
+          const last = prev[prev.length - 1];
+          if (last && last.type === "text" && last.role === "assistant") {
+            const updated = [...prev];
+            updated[updated.length - 1] = { ...last, content: snapshot };
+            return updated;
+          }
+          return prev;
+        });
+      }
+    } else if (eventType === "response_done") {
+      if (DEBUG) rlog.debug("response_done: pendingText was", pendingTextRef.current.length, "chars");
+      pendingTextRef.current = "";
+      // 回填 durationMs
+      const durationMs = data.duration_ms as number | undefined;
+      if (durationMs != null) {
+        setMessages((prev) => {
+          for (let i = prev.length - 1; i >= 0; i--) {
+            const m = prev[i]!;
+            if (m.type === "text" && m.role === "assistant") {
+              const updated = [...prev];
+              updated[i] = { ...m, durationMs };
+              return updated;
+            }
+            if (m.type === "text" && m.role === "user") break;
+          }
+          return prev;
+        });
+      }
     } else if (eventType === "tool_exec_start") {
       const tc = data.tool_call as
         | { id: string; name: string; arguments: Record<string, unknown> }
         | undefined;
       if (tc) {
-        const msgId = crypto.randomUUID();
+        const msgId = (data.id as string) ?? crypto.randomUUID();
+        const timestamp = data.timestamp as string | undefined;
+        const model = data.model as string | undefined;
         toolCallMapRef.current.set(tc.id, msgId);
         const toolData: ToolGroupData = {
           toolCallId: tc.id,
           toolName: tc.name,
           arguments: tc.arguments,
-          startTime: Date.now(),
+          startTime: timestamp ?? new Date().toISOString(),
         };
         setMessages((prev) => [
           ...prev,
@@ -119,6 +180,8 @@ export default function AgentPanel({ sessionId, rpc, onSessionLink }: Props) {
             role: "assistant" as const,
             type: "tool_group" as const,
             data: toolData,
+            timestamp,
+            model,
           },
         ]);
       }
@@ -128,6 +191,8 @@ export default function AgentPanel({ sessionId, rpc, onSessionLink }: Props) {
         | undefined;
       if (tr) {
         const msgId = toolCallMapRef.current.get(tr.tool_call_id);
+        const durationMs = data.duration_ms as number | undefined;
+        const endTimestamp = data.timestamp as string | undefined;
         if (msgId) {
           toolCallMapRef.current.delete(tr.tool_call_id);
           setMessages((prev) =>
@@ -135,11 +200,12 @@ export default function AgentPanel({ sessionId, rpc, onSessionLink }: Props) {
               m.id === msgId && m.type === "tool_group"
                 ? {
                     ...m,
+                    durationMs,
                     data: {
                       ...m.data,
                       result: tr.content,
                       isError: tr.is_error,
-                      endTime: Date.now(),
+                      endTime: endTimestamp,
                     },
                   }
                 : m,
@@ -147,29 +213,16 @@ export default function AgentPanel({ sessionId, rpc, onSessionLink }: Props) {
           );
         }
       }
-    } else if (eventType === "response_done") {
-      if (DEBUG) rlog.debug("response_done: pendingText was", pendingTextRef.current.length, "chars");
-      pendingTextRef.current = "";
     } else if (eventType === "turn_done") {
       pendingTextRef.current = "";
-      // 回填最后一条 assistant text 消息的时间元数据
-      const ts = data.timestamp as string | undefined;
-      const dur = data.duration_seconds as number | undefined;
-      const model = data.model as string | undefined;
-      if (ts) {
-        setMessages((prev) => {
-          for (let i = prev.length - 1; i >= 0; i--) {
-            const m = prev[i]!;
-            if (m.role === "assistant" && m.type === "text") {
-              const updated = [...prev];
-              updated[i] = { id: m.id, role: "assistant" as const, type: "text" as const, content: m.content, timestamp: ts, durationSeconds: dur, model };
-              return updated;
-            }
-            if (m.role === "user") break;
-          }
-          return prev;
-        });
-      }
+      const msgId = data.id as string;
+      const turnId = data.turn_id as string;
+      const timestamp = data.timestamp as string;
+      const durationSeconds = data.duration_seconds as number;
+      setMessages((prev) => [
+        ...prev,
+        { id: msgId, type: "turn_done" as const, turnId, timestamp, durationSeconds },
+      ]);
       if (DEBUG) {
         setMessages((prev) => {
           rlog.debug("turn_done: total msgs =", prev.length);
@@ -180,13 +233,18 @@ export default function AgentPanel({ sessionId, rpc, onSessionLink }: Props) {
       if (DEBUG) rlog.info("agent_done: agent thread finished");
     } else if (eventType === "error") {
       rlog.error("agent error:", data.error);
+      const msgId = (data.id as string) ?? crypto.randomUUID();
+      const timestamp = data.timestamp as string | undefined;
+      const model = data.model as string | undefined;
       setMessages((prev) => [
         ...prev,
         {
-          id: crypto.randomUUID(),
+          id: msgId,
           role: "assistant" as const,
           type: "error" as const,
           content: data.error as string,
+          timestamp,
+          model,
         },
       ]);
     } else if (eventType === "present") {
@@ -204,21 +262,6 @@ export default function AgentPanel({ sessionId, rpc, onSessionLink }: Props) {
           },
         ]);
       }
-    } else if (eventType === "user_message") {
-      const text = data.text as string;
-      const timestamp = data.timestamp as string | undefined;
-      const turnId = data.turn_id as string | undefined;
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: crypto.randomUUID(),
-          role: "user" as const,
-          type: "text" as const,
-          content: text,
-          timestamp,
-          turnId,
-        },
-      ]);
     } else if (eventType === "agent_status") {
       const status = data.status as AgentStatus;
       setAgentStatus(status);
@@ -274,122 +317,24 @@ export default function AgentPanel({ sessionId, rpc, onSessionLink }: Props) {
             if (rpc) {
               rpc.call<{
                 session_id: string;
-                messages: { role: string; content: string; tool_calls?: { id: string; name: string; arguments: Record<string, unknown> }[]; tool_results?: { tool_call_id: string; content: string; is_error: boolean }[] }[];
+                chat_messages: {
+                  id: string; type: string; role?: string; content?: string;
+                  timestamp?: string; duration_ms?: number; duration_seconds?: number;
+                  model?: string; sender?: string; turn_id?: string;
+                  tool_call_id?: string; tool_name?: string;
+                  arguments?: Record<string, unknown>; result?: string; is_error?: boolean;
+                }[];
                 total_tokens: number;
                 context_used: number;
                 context_window: number;
-                turn_timestamps?: { user_timestamps: string[]; agent_timestamp: string; duration_seconds: number; model?: string }[];
                 agent_display?: { name: string; avatar?: string };
               }>("session.messages", { session_id: sessionId }).then((result) => {
                 if (result.agent_display) {
                   setAgentDisplayBase(result.agent_display);
                 }
-                if (result.messages && result.messages.length > 0) {
-                  if (DEBUG) rlog.debug("Restoring", result.messages.length, "messages from history");
-                  const restored: ChatMessage[] = [];
-                  const toolResultMap = new Map<string, { content: string; isError: boolean }>();
-                  for (const msg of result.messages) {
-                    if (msg.role === "user" && msg.tool_results) {
-                      for (const tr of msg.tool_results) {
-                        toolResultMap.set(tr.tool_call_id, { content: tr.content, isError: tr.is_error });
-                      }
-                    }
-                  }
-
-                  // 按 turn 分配时间戳：每轮 turn 的用户消息和 agent 响应
-                  const turns = result.turn_timestamps ?? [];
-                  let turnIdx = 0;
-                  let userMsgInTurn = 0;
-
-                  for (const msg of result.messages) {
-                    if (msg.role === "user" && !msg.tool_results) {
-                      const turn = turns[turnIdx];
-                      const ts = turn?.user_timestamps?.[userMsgInTurn];
-                      restored.push({
-                        id: crypto.randomUUID(),
-                        role: "user",
-                        type: "text",
-                        content: msg.content,
-                        timestamp: ts,
-                      });
-                      userMsgInTurn++;
-                      // 当前 turn 的用户消息已全部匹配，推进到下一个 turn
-                      if (turn && userMsgInTurn >= turn.user_timestamps.length) {
-                        turnIdx++;
-                        userMsgInTurn = 0;
-                      }
-                    } else if (msg.role === "assistant") {
-                      if (msg.content) {
-                        restored.push({
-                          id: crypto.randomUUID(),
-                          role: "assistant",
-                          type: "text",
-                          content: msg.content,
-                        });
-                      }
-                      if (msg.tool_calls) {
-                        for (const tc of msg.tool_calls) {
-                          const result = toolResultMap.get(tc.id);
-                          const toolData: ToolGroupData = {
-                            toolCallId: tc.id,
-                            toolName: tc.name,
-                            arguments: tc.arguments,
-                            startTime: 0,
-                            endTime: 0,
-                            ...(result ? { result: result.content, isError: result.isError } : {}),
-                          };
-                          restored.push({
-                            id: crypto.randomUUID(),
-                            role: "assistant",
-                            type: "tool_group",
-                            data: toolData,
-                          });
-                        }
-                      }
-                      // 如果这是该 turn 最后的 assistant 消息（下一条是 user 或结束）
-                      // 回填 timestamp 和 duration
-                    } else if (msg.role === "user" && msg.tool_results) {
-                      // tool_results 消息不显示，跳过
-                    }
-                  }
-
-                  // 回填 agent 时间戳：对每个 turn，找最后一条 assistant text 消息
-                  if (turns.length > 0) {
-                    let ti = 0;
-                    let userCount = 0;
-                    for (let i = 0; i < restored.length; i++) {
-                      const m = restored[i]!;
-                      if (m.role === "user" && m.type === "text") {
-                        userCount++;
-                        const turn = turns[ti];
-                        if (turn && userCount >= turn.user_timestamps.length) {
-                          let lastAssistant = -1;
-                          for (let j = i + 1; j < restored.length; j++) {
-                            const rj = restored[j]!;
-                            if (rj.role === "user") break;
-                            if (rj.role === "assistant" && rj.type === "text") {
-                              lastAssistant = j;
-                            }
-                          }
-                          if (lastAssistant >= 0) {
-                            const am = restored[lastAssistant]!;
-                            if (am.role === "assistant" && am.type === "text") {
-                              restored[lastAssistant] = {
-                                id: am.id, role: "assistant" as const, type: "text" as const,
-                                content: am.content,
-                                timestamp: turn.agent_timestamp,
-                                durationSeconds: turn.duration_seconds,
-                                model: turn.model,
-                              };
-                            }
-                          }
-                          ti++;
-                          userCount = 0;
-                        }
-                      }
-                    }
-                  }
-
+                if (result.chat_messages && result.chat_messages.length > 0) {
+                  if (DEBUG) rlog.debug("Restoring", result.chat_messages.length, "chat_messages from history");
+                  const restored = restoreChatMessages(result.chat_messages);
                   setMessages(restored);
                 }
                 if (result.total_tokens || result.context_used) {
@@ -480,6 +425,89 @@ export default function AgentPanel({ sessionId, rpc, onSessionLink }: Props) {
       <ChatInput onSend={handleSend} onCancel={handleCancel} disabled={!connected} isBusy={agentStatus !== "idle"} />
     </div>
   );
+}
+
+/** 从后端 chat_messages 直接映射为前端 ChatMessage[] */
+function restoreChatMessages(chatMessages: {
+  id: string; type: string; role?: string; content?: string;
+  timestamp?: string; duration_ms?: number; duration_seconds?: number;
+  model?: string; sender?: string; turn_id?: string;
+  tool_call_id?: string; tool_name?: string;
+  arguments?: Record<string, unknown>; result?: string; is_error?: boolean;
+}[]): ChatMessage[] {
+  const restored: ChatMessage[] = [];
+  for (const cm of chatMessages) {
+    switch (cm.type) {
+      case "turn_start":
+        restored.push({
+          id: cm.id,
+          type: "turn_start",
+          turnId: cm.turn_id ?? "",
+          timestamp: cm.timestamp ?? "",
+        });
+        break;
+      case "text":
+        if (cm.role === "user") {
+          restored.push({
+            id: cm.id,
+            role: "user",
+            type: "text",
+            content: cm.content ?? "",
+            timestamp: cm.timestamp,
+            sender: cm.sender,
+          });
+        } else {
+          restored.push({
+            id: cm.id,
+            role: "assistant",
+            type: "text",
+            content: cm.content ?? "",
+            timestamp: cm.timestamp,
+            durationMs: cm.duration_ms,
+            model: cm.model,
+          });
+        }
+        break;
+      case "tool_group":
+        restored.push({
+          id: cm.id,
+          role: "assistant",
+          type: "tool_group",
+          timestamp: cm.timestamp,
+          durationMs: cm.duration_ms,
+          model: cm.model,
+          data: {
+            toolCallId: cm.tool_call_id ?? "",
+            toolName: cm.tool_name ?? "",
+            arguments: cm.arguments ?? {},
+            result: cm.result,
+            isError: cm.is_error,
+            startTime: cm.timestamp ?? "",
+          },
+        });
+        break;
+      case "error":
+        restored.push({
+          id: cm.id,
+          role: "assistant",
+          type: "error",
+          content: cm.content ?? "",
+          timestamp: cm.timestamp,
+          model: cm.model,
+        });
+        break;
+      case "turn_done":
+        restored.push({
+          id: cm.id,
+          type: "turn_done",
+          turnId: cm.turn_id ?? "",
+          timestamp: cm.timestamp ?? "",
+          durationSeconds: cm.duration_seconds ?? 0,
+        });
+        break;
+    }
+  }
+  return restored;
 }
 
 function formatTokenCount(tokens: number): string {

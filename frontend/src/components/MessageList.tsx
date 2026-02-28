@@ -7,10 +7,12 @@ import CodeBlock from "./CodeBlock";
 import Avatar from "./Avatar";
 
 export type ChatMessage =
-  | { id: string; role: "user"; type: "text"; content: string; timestamp?: string; turnId?: string }
-  | { id: string; role: "assistant"; type: "text"; content: string; timestamp?: string; durationSeconds?: number; model?: string }
-  | { id: string; role: "assistant"; type: "tool_group"; data: ToolGroupData }
-  | { id: string; role: "assistant"; type: "error"; content: string };
+  | { id: string; role: "user"; type: "text"; content: string; timestamp?: string; sender?: string }
+  | { id: string; role: "assistant"; type: "text"; content: string; timestamp?: string; durationMs?: number; model?: string }
+  | { id: string; role: "assistant"; type: "tool_group"; data: ToolGroupData; timestamp?: string; durationMs?: number; model?: string }
+  | { id: string; role: "assistant"; type: "error"; content: string; timestamp?: string; model?: string }
+  | { id: string; type: "turn_start"; turnId: string; timestamp: string }
+  | { id: string; type: "turn_done"; turnId: string; timestamp: string; durationSeconds: number };
 
 /** Agent 显示信息，由 AgentPanel 传入。 */
 export interface AgentDisplay {
@@ -51,13 +53,25 @@ function formatMessageTime(isoTimestamp: string): string {
   return `${date.getFullYear()}/${date.getMonth() + 1}/${date.getDate()} ${time}`;
 }
 
-function formatDuration(seconds: number): string {
-  if (seconds >= 60) {
-    const m = Math.floor(seconds / 60);
-    const s = seconds % 60;
-    return `${m}m ${s}s`;
-  }
-  return `${seconds}s`;
+function formatDurationMs(ms: number): string {
+  if (ms < 1000) return `${ms}ms`;
+  if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`;
+  const m = Math.floor(ms / 60000);
+  const s = Math.round((ms % 60000) / 1000);
+  return `${m}m ${s}s`;
+}
+
+function formatTurnDuration(seconds: number): string {
+  if (seconds < 60) return `${seconds} seconds`;
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  if (s === 0) return m === 1 ? "1 minute" : `${m} minutes`;
+  return m === 1 ? `1 minute ${s} seconds` : `${m} minutes ${s} seconds`;
+}
+
+/** 获取消息的有效 role（turn_start/turn_done 无 role） */
+function getMsgRole(msg: ChatMessage): string | undefined {
+  return "role" in msg ? msg.role : undefined;
 }
 
 // --- Props ---
@@ -131,7 +145,7 @@ export default function MessageList({ messages, rpc, agentDisplay, onSessionLink
     if (!contextMenu) return {};
     const msg = contextMenu.msgId ? findMessage(contextMenu.msgId) : null;
     return {
-      message_role: msg?.role ?? "",
+      message_role: getMsgRole(msg!) ?? "",
       message_type: msg?.type ?? "",
       markdown_mode: markdownMode,
     };
@@ -179,16 +193,42 @@ export default function MessageList({ messages, rpc, agentDisplay, onSessionLink
       <div className="message-list-scroller" ref={scrollRef} onScroll={handleScroll}>
         <div ref={listRef}>
           {messages.map((msg, idx) => {
-            // 连续同角色合并：仅首条显示头像和名称
-            const prev = idx > 0 ? messages[idx - 1] : null;
-            const showAvatar = !prev || prev.role !== msg.role;
-            // Agent 名称：优先使用该消息记录的 model，回退到全局 agentDisplay
-            const agentName = (msg.role === "assistant" && msg.type === "text" && msg.model)
-              ? msg.model
-              : agentDisplay.name;
+            // turn_start: 不渲染
+            if (msg.type === "turn_start") return null;
+
+            // turn_done: durationSeconds >= 60 时显示为行内文字
+            if (msg.type === "turn_done") {
+              if (msg.durationSeconds < 60) return null;
+              return (
+                <div key={msg.id} className="message-row assistant turn-done-row">
+                  <div className="avatar-col" />
+                  <div className="content-col">
+                    <span className="turn-done-text">
+                      Worked for {formatTurnDuration(msg.durationSeconds)}
+                    </span>
+                  </div>
+                </div>
+              );
+            }
+
+            const role = getMsgRole(msg)!;
+
+            // 连续同角色合并：仅首条显示头像和名称（跳过 turn_start/turn_done）
+            let showAvatar = true;
+            for (let j = idx - 1; j >= 0; j--) {
+              const prev = messages[j]!;
+              if (prev.type === "turn_start" || prev.type === "turn_done") continue;
+              showAvatar = getMsgRole(prev) !== role;
+              break;
+            }
+
+            // Agent 名称：优先使用消息自身的 model 字段
+            const msgModel = "model" in msg ? msg.model : undefined;
+            const agentName = (role === "assistant" && msgModel) ? msgModel : agentDisplay.name;
+
             return (
-              <div key={msg.id} className={`message-row ${msg.role}${showAvatar ? "" : " continuation"}`}>
-                {msg.role === "assistant" ? (
+              <div key={msg.id} className={`message-row ${role}${showAvatar ? "" : " continuation"}`}>
+                {role === "assistant" ? (
                   <>
                     <div className="avatar-col">
                       {showAvatar && <Avatar name={agentName} avatar={agentDisplay.avatar} />}
@@ -289,20 +329,44 @@ function renderBubble(
 
 /** 渲染时间 meta（响应式，与气泡同行或换行） */
 function renderMeta(msg: ChatMessage) {
-  if (msg.role === "user" && msg.type === "text" && msg.timestamp) {
+  // turn_start / turn_done 无 meta
+  if (msg.type === "turn_start" || msg.type === "turn_done") return null;
+
+  // User text: 时间
+  if (msg.type === "text" && msg.role === "user" && msg.timestamp) {
     return <span className="message-meta">{formatMessageTime(msg.timestamp)}</span>;
   }
-  if (msg.role === "assistant" && msg.type === "text" && msg.timestamp) {
-    const dur = msg.durationSeconds;
+
+  // Assistant text: durationMs >= 10s 时显示 ✻ 耗时 · 时间
+  if (msg.type === "text" && msg.role === "assistant" && msg.timestamp) {
     const timeStr = formatMessageTime(msg.timestamp);
-    if (dur != null && dur >= 10) {
+    if (msg.durationMs != null && msg.durationMs >= 10000) {
       return (
         <span className="message-meta">
-          ✻ {formatDuration(dur)} · {timeStr}
+          ✻ {formatDurationMs(msg.durationMs)} · {timeStr}
         </span>
       );
     }
     return <span className="message-meta">{timeStr}</span>;
   }
+
+  // Tool group: 已完成 → 耗时 · 时间，执行中 → 时间
+  if (msg.type === "tool_group" && msg.timestamp) {
+    const timeStr = formatMessageTime(msg.timestamp);
+    if (msg.durationMs != null) {
+      return (
+        <span className="message-meta">
+          {formatDurationMs(msg.durationMs)} · {timeStr}
+        </span>
+      );
+    }
+    return <span className="message-meta">{timeStr}</span>;
+  }
+
+  // Error: 时间
+  if (msg.type === "error" && msg.timestamp) {
+    return <span className="message-meta">{formatMessageTime(msg.timestamp)}</span>;
+  }
+
   return null;
 }

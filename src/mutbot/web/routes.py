@@ -299,7 +299,7 @@ async def handle_session_get(params: dict, ctx: RpcContext) -> dict:
 
 @workspace_rpc.method("session.messages")
 async def handle_session_messages(params: dict, ctx: RpcContext) -> dict:
-    """获取 Session 的持久化 messages（用于前端历史恢复）"""
+    """获取 Session 的持久化 chat_messages（用于前端历史恢复）"""
     sm = ctx.managers.get("session_manager")
     if not sm:
         return {"error": "session_manager not available"}
@@ -307,10 +307,6 @@ async def handle_session_messages(params: dict, ctx: RpcContext) -> dict:
     session = sm.get(session_id)
     if session is None:
         return {"error": "session not found"}
-    from mutbot.runtime import storage
-    data = storage.load_session_metadata(session_id)
-    if not data or "messages" not in data:
-        return {"session_id": session_id, "messages": []}
 
     # Agent 显示信息
     display_name = getattr(type(session), "display_name", "") or type(session).__name__
@@ -319,13 +315,24 @@ async def handle_session_messages(params: dict, ctx: RpcContext) -> dict:
     if avatar:
         agent_display["avatar"] = avatar
 
+    # 优先从内存中的 session 对象获取 chat_messages
+    from mutbot.session import AgentSession
+    chat_messages: list = []
+    if isinstance(session, AgentSession) and session.chat_messages:
+        chat_messages = session.chat_messages
+    else:
+        # 回退到磁盘
+        from mutbot.runtime import storage
+        data = storage.load_session_metadata(session_id)
+        if data:
+            chat_messages = data.get("chat_messages", [])
+
     return {
         "session_id": session_id,
-        "messages": data["messages"],
-        "total_tokens": data.get("total_tokens", 0),
-        "context_used": data.get("context_used", 0),
-        "context_window": data.get("context_window", 0),
-        "turn_timestamps": data.get("turn_timestamps", []),
+        "chat_messages": chat_messages,
+        "total_tokens": getattr(session, "total_tokens", 0),
+        "context_used": getattr(session, "context_used", 0),
+        "context_window": getattr(session, "context_window", 0),
         "agent_display": agent_display,
     }
 

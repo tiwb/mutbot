@@ -6,8 +6,8 @@ export interface ToolGroupData {
   arguments: Record<string, unknown>;
   result?: string;
   isError?: boolean;
-  startTime: number;
-  endTime?: number;
+  startTime: string;      // ISO 时间戳（后端生成）
+  endTime?: string;       // ISO 时间戳（后端生成）
 }
 
 interface Props {
@@ -16,9 +16,7 @@ interface Props {
 
 export default function ToolCallCard({ data }: Props) {
   const [expanded, setExpanded] = useState(false);
-  const isRunning = data.endTime === undefined;
-  const duration =
-    data.endTime !== undefined ? data.endTime - data.startTime : undefined;
+  const isRunning = data.result === undefined;
 
   return (
     <div
@@ -35,13 +33,6 @@ export default function ToolCallCard({ data }: Props) {
           </span>
         )}
         <span className="tool-card-meta">
-          {duration !== undefined && (
-            <span className="tool-card-duration">
-              {duration < 1000
-                ? `${duration}ms`
-                : `${(duration / 1000).toFixed(1)}s`}
-            </span>
-          )}
           <span className="tool-card-chevron">
             {expanded ? "\u25be" : "\u25b8"}
           </span>

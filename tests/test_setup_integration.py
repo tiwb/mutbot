@@ -86,9 +86,11 @@ class TestAgentBridgeHidden:
 
     def _make_bridge(self, loop):
         from mutbot.web.agent_bridge import AgentBridge
+        from mutbot.session import AgentSession
 
         agent = MagicMock()
         broadcast_calls = []
+        session = AgentSession(id="test-session", workspace_id="ws1", title="Test")
 
         async def mock_broadcast(session_id, data):
             broadcast_calls.append(data)
@@ -98,6 +100,8 @@ class TestAgentBridgeHidden:
             agent=agent,
             loop=loop,
             broadcast_fn=mock_broadcast,
+            session=session,
+            persist_fn=lambda: None,
         )
         return bridge, broadcast_calls
 

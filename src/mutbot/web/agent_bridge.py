@@ -32,6 +32,11 @@ def _local_iso_now() -> str:
     return datetime.now().astimezone().isoformat(timespec="seconds")
 
 
+def _gen_msg_id() -> str:
+    """生成消息 ID（m_ 前缀 + 10 位 hex）。"""
+    return "m_" + uuid4().hex[:10]
+
+
 class AgentBridge:
     """Manages one Session's Agent as an asyncio task.
 
@@ -55,7 +60,6 @@ class AgentBridge:
         broadcast_fn: BroadcastFn,
         session: AgentSession,
         persist_fn: Callable[[], None],
-        turn_timestamps: list[dict[str, Any]] | None = None,
     ) -> None:
         self.session_id = session_id
         self.agent = agent
@@ -78,8 +82,38 @@ class AgentBridge:
         self._agent_status: str = "idle"
         self._current_turn_id: str = ""
         self._turn_start_time: float = 0.0
-        self._turn_user_timestamps: list[str] = []
-        self.turn_timestamps: list[dict[str, Any]] = turn_timestamps or []
+
+        # --- Response 级状态追踪 ---
+        self._response_first_delta: bool = True
+        self._response_start_ts: str = ""
+        self._response_start_mono: float = 0.0
+
+        # --- Tool 时间追踪: tool_call_id → (iso_ts, mono_time) ---
+        self._tool_start_times: dict[str, tuple[str, float]] = {}
+
+    # --- chat_messages 便捷访问 ---
+
+    @property
+    def _chat_messages(self) -> list[dict[str, Any]]:
+        return self._session.chat_messages
+
+    def _append_chat_message(self, msg: dict[str, Any]) -> None:
+        self._session.chat_messages.append(msg)
+
+    def _find_chat_message(self, msg_id: str) -> dict[str, Any] | None:
+        """从末尾反向查找 chat_message（最近的消息优先）。"""
+        for i in range(len(self._chat_messages) - 1, -1, -1):
+            if self._chat_messages[i].get("id") == msg_id:
+                return self._chat_messages[i]
+        return None
+
+    def _find_last_chat_message(self, msg_type: str, role: str = "") -> dict[str, Any] | None:
+        """从末尾反向查找最后一条指定类型的 chat_message。"""
+        for i in range(len(self._chat_messages) - 1, -1, -1):
+            m = self._chat_messages[i]
+            if m.get("type") == msg_type and (not role or m.get("role") == role):
+                return m
+        return None
 
     # --- Broadcasting helpers ---
 
@@ -126,6 +160,10 @@ class AgentBridge:
         self._pending_tool_calls.clear()
         self._completed_results.clear()
         self._response_committed = False
+        self._response_first_delta = True
+        self._response_start_ts = ""
+        self._response_start_mono = 0.0
+        self._tool_start_times.clear()
 
     def _track_event(self, event: StreamEvent) -> None:
         """Track in-flight state from stream events."""
@@ -140,6 +178,10 @@ class AgentBridge:
             self._response_committed = True
             self._pending_text.clear()
             self._pending_tool_calls.clear()
+            # 重置 response 级状态，为下一个 response 准备
+            self._response_first_delta = True
+            self._response_start_ts = ""
+            self._response_start_mono = 0.0
         elif event.type == "turn_done":
             self._reset_turn_state()
 
@@ -204,6 +246,161 @@ class AgentBridge:
 
         self._reset_turn_state()
 
+    # --- chat_messages 事件处理 ---
+
+    def _get_model(self) -> str:
+        return getattr(self.agent.client, "model", "") or ""
+
+    def _handle_text_delta(self, event: StreamEvent) -> dict[str, Any]:
+        """处理 text_delta 事件，更新 chat_messages，返回增强后的事件数据。"""
+        data = serialize_stream_event(event)
+
+        if self._response_first_delta:
+            # 首个 text_delta: 创建新的 assistant text chat_message
+            self._response_first_delta = False
+            self._response_start_ts = _local_iso_now()
+            self._response_start_mono = time.monotonic()
+            msg_id = _gen_msg_id()
+            model = self._get_model()
+
+            self._append_chat_message({
+                "id": msg_id,
+                "type": "text",
+                "role": "assistant",
+                "content": event.text,
+                "timestamp": self._response_start_ts,
+                "model": model,
+            })
+            # 注入 timestamp、model、id 到首个 text_delta
+            data["timestamp"] = self._response_start_ts
+            data["model"] = model
+            data["id"] = msg_id
+        else:
+            # 后续 text_delta: 更新最后一条 assistant text 的 content
+            cm = self._find_last_chat_message("text", "assistant")
+            if cm:
+                cm["content"] += event.text
+
+        return data
+
+    def _handle_response_done(self, event: StreamEvent) -> dict[str, Any]:
+        """处理 response_done 事件，更新 duration_ms。"""
+        data = serialize_stream_event(event)
+
+        if self._response_start_mono:
+            duration_ms = round((time.monotonic() - self._response_start_mono) * 1000)
+            # 更新 chat_message
+            cm = self._find_last_chat_message("text", "assistant")
+            if cm:
+                cm["duration_ms"] = duration_ms
+            # 注入到事件
+            data["duration_ms"] = duration_ms
+
+        return data
+
+    def _handle_tool_exec_start(self, event: StreamEvent) -> dict[str, Any]:
+        """处理 tool_exec_start 事件，追加 tool_group chat_message。"""
+        data = serialize_stream_event(event)
+
+        if event.tool_call:
+            tc = event.tool_call
+            ts = _local_iso_now()
+            mono = time.monotonic()
+            msg_id = _gen_msg_id()
+            model = self._get_model()
+
+            self._tool_start_times[tc.id] = (ts, mono)
+
+            self._append_chat_message({
+                "id": msg_id,
+                "type": "tool_group",
+                "tool_call_id": tc.id,
+                "tool_name": tc.name,
+                "arguments": tc.arguments,
+                "timestamp": ts,
+                "model": model,
+            })
+            # 注入到事件
+            data["timestamp"] = ts
+            data["model"] = model
+            data["id"] = msg_id
+
+        return data
+
+    def _handle_tool_exec_end(self, event: StreamEvent) -> dict[str, Any]:
+        """处理 tool_exec_end 事件，更新 tool_group 结果和耗时。"""
+        data = serialize_stream_event(event)
+
+        if event.tool_result:
+            tr = event.tool_result
+            ts = _local_iso_now()
+            duration_ms: int | None = None
+
+            start_info = self._tool_start_times.pop(tr.tool_call_id, None)
+            if start_info:
+                _, start_mono = start_info
+                duration_ms = round((time.monotonic() - start_mono) * 1000)
+
+            # 更新对应的 tool_group chat_message
+            for i in range(len(self._chat_messages) - 1, -1, -1):
+                cm = self._chat_messages[i]
+                if cm.get("type") == "tool_group" and cm.get("tool_call_id") == tr.tool_call_id:
+                    cm["result"] = tr.content
+                    cm["is_error"] = tr.is_error
+                    if duration_ms is not None:
+                        cm["duration_ms"] = duration_ms
+                    break
+
+            data["timestamp"] = ts
+            if duration_ms is not None:
+                data["duration_ms"] = duration_ms
+
+        return data
+
+    def _handle_turn_done(self) -> dict[str, Any]:
+        """处理 turn_done 事件，追加 turn_done chat_message。"""
+        duration = round(time.monotonic() - self._turn_start_time) if self._turn_start_time else 0
+        ts = _local_iso_now()
+        msg_id = _gen_msg_id()
+
+        self._append_chat_message({
+            "id": msg_id,
+            "type": "turn_done",
+            "turn_id": self._current_turn_id,
+            "timestamp": ts,
+            "duration_seconds": duration,
+        })
+
+        return {
+            "type": "turn_done",
+            "id": msg_id,
+            "timestamp": ts,
+            "turn_id": self._current_turn_id,
+            "duration_seconds": duration,
+        }
+
+    def _handle_error(self, error_msg: str) -> dict[str, Any]:
+        """处理 error，追加 error chat_message。"""
+        msg_id = _gen_msg_id()
+        ts = _local_iso_now()
+        model = self._get_model()
+
+        self._append_chat_message({
+            "id": msg_id,
+            "type": "error",
+            "content": error_msg,
+            "timestamp": ts,
+            "model": model,
+        })
+
+        return {
+            "type": "error",
+            "error": error_msg,
+            "id": msg_id,
+            "timestamp": ts,
+            "model": model,
+        }
+
     # --- Input stream ---
 
     async def _input_stream(self):
@@ -232,40 +429,35 @@ class AgentBridge:
                     # 追踪飞行中状态
                     self._track_event(event)
 
-                    # turn_done 由下面增强版本广播，跳过通用序列化
-                    if event.type != "turn_done":
-                        data = serialize_stream_event(event)
+                    # --- 更新 chat_messages + 增强事件 ---
+                    if event.type == "text_delta":
+                        data = self._handle_text_delta(event)
                         await self.broadcast_fn(self.session_id, data)
 
-                    # 注入 agent_status 事件
-                    if event.type == "tool_exec_start":
+                    elif event.type == "response_done":
+                        data = self._handle_response_done(event)
+                        await self.broadcast_fn(self.session_id, data)
+
+                    elif event.type == "tool_exec_start":
+                        data = self._handle_tool_exec_start(event)
+                        await self.broadcast_fn(self.session_id, data)
                         tool_name = event.tool_call.name if event.tool_call else ""
                         await self._broadcast_status("tool_calling", tool_name=tool_name)
+
                     elif event.type == "tool_exec_end":
+                        data = self._handle_tool_exec_end(event)
+                        await self.broadcast_fn(self.session_id, data)
                         await self._broadcast_status("thinking")
+
                     elif event.type == "turn_done":
-                        # 计算耗时并广播增强的 turn_done
-                        turn_is_complete = self._input_queue.empty()
-                        duration = round(time.monotonic() - self._turn_start_time) if self._turn_start_time else 0
-                        ts = _local_iso_now()
-                        model = getattr(self.agent.client, "model", "") or ""
-                        turn_done_data: dict[str, Any] = {
-                            "type": "turn_done",
-                            "timestamp": ts,
-                            "turn_id": self._current_turn_id,
-                            "duration_seconds": duration,
-                            "model": model,
-                        }
-                        if turn_is_complete:
-                            # 记录 turn_timestamps
-                            self.turn_timestamps.append({
-                                "user_timestamps": list(self._turn_user_timestamps),
-                                "agent_timestamp": ts,
-                                "duration_seconds": duration,
-                                "model": model,
-                            })
-                        await self.broadcast_fn(self.session_id, turn_done_data)
+                        data = self._handle_turn_done()
+                        await self.broadcast_fn(self.session_id, data)
                         await self._broadcast_status("idle")
+
+                    else:
+                        # 其他事件（tool_use_start, tool_use_delta, tool_use_end 等）直接广播
+                        data = serialize_stream_event(event)
+                        await self.broadcast_fn(self.session_id, data)
 
                     # 注入 token_usage 事件
                     if event.type == "response_done" and event.response:
@@ -288,7 +480,7 @@ class AgentBridge:
             except Exception as exc:
                 logger.exception("Agent error in session %s", self.session_id)
                 self._reset_turn_state()
-                error_data = {"type": "error", "error": str(exc)}
+                error_data = self._handle_error(str(exc))
                 try:
                     await self.broadcast_fn(self.session_id, error_data)
                     await self._broadcast_status("idle")
@@ -304,19 +496,48 @@ class AgentBridge:
         hidden = (data or {}).get("hidden", False)
 
         if not hidden:
+            model = self._get_model()
+
             # Turn 归组：idle 时新建 turn，busy 时复用
             if self._agent_status == "idle":
                 self._current_turn_id = uuid4().hex[:12]
                 self._turn_start_time = time.monotonic()
-                self._turn_user_timestamps = []
+
+                # 追加 turn_start chat_message
+                turn_start_id = _gen_msg_id()
+                ts_start = _local_iso_now()
+                self._append_chat_message({
+                    "id": turn_start_id,
+                    "type": "turn_start",
+                    "turn_id": self._current_turn_id,
+                    "timestamp": ts_start,
+                })
+                # 广播 turn_start 事件
+                asyncio.ensure_future(self.broadcast_fn(self.session_id, {
+                    "type": "turn_start",
+                    "id": turn_start_id,
+                    "turn_id": self._current_turn_id,
+                    "timestamp": ts_start,
+                }))
 
             ts = _local_iso_now()
-            self._turn_user_timestamps.append(ts)
+            user_msg_id = _gen_msg_id()
+
+            # 追加 user text chat_message
+            self._append_chat_message({
+                "id": user_msg_id,
+                "type": "text",
+                "role": "user",
+                "content": text,
+                "timestamp": ts,
+                "sender": "User",
+            })
 
             # Broadcast user message to all connected clients
             user_event: dict[str, Any] = {
                 "type": "user_message", "text": text, "data": data or {},
                 "timestamp": ts, "turn_id": self._current_turn_id,
+                "model": model, "sender": "User", "id": user_msg_id,
             }
             asyncio.ensure_future(self.broadcast_fn(self.session_id, user_event))
             # 用户发消息后推送 thinking 状态（hidden 消息不推送）
