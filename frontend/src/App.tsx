@@ -23,6 +23,7 @@ import SessionListPanel from "./panels/SessionListPanel";
 import RpcMenu, { type MenuExecResult } from "./components/RpcMenu";
 import { WorkspaceRpc } from "./lib/workspace-rpc";
 import { AppRpc } from "./lib/app-rpc";
+import { isRemote } from "./lib/connection";
 import { getSessionIcon } from "./components/SessionIcons";
 import IconPicker from "./components/IconPicker";
 import WelcomePage from "./components/WelcomePage";
@@ -119,10 +120,14 @@ export default function App() {
     modelRef.current = createModel();
   }
 
+  // Remote mode: connection status tracking
+  const [remoteConnected, setRemoteConnected] = useState<boolean | null>(null);
+
   // 连接 /ws/app 获取工作区列表 + hash 路由
   useEffect(() => {
     const rpcInst = new AppRpc({
       onOpen: () => {
+        setRemoteConnected(true);
         rpcInst
           .call<Workspace[]>("workspace.list")
           .then((wss) => {
@@ -149,9 +154,24 @@ export default function App() {
           })
           .catch(() => {});
       },
+      onClose: () => {
+        setRemoteConnected((prev) => prev === null ? false : prev);
+      },
     });
     appRpcRef.current = rpcInst;
     setAppRpc(rpcInst);
+
+    // 远程模式：版本校验（直接访问 /v<version>/ 时检查版本一致性）
+    if (isRemote()) {
+      const urlVersion = location.pathname.match(/^\/v([^/]+)\//)?.[1];
+      rpcInst.on("welcome", (data) => {
+        const serverVersion = (data as { version?: string }).version;
+        if (urlVersion && serverVersion && serverVersion !== urlVersion) {
+          // 版本不匹配，重定向到根路径让 Landing Page 重新匹配
+          location.href = `/${location.hash}`;
+        }
+      });
+    }
 
     return () => {
       rpcInst.close();
@@ -921,8 +941,30 @@ export default function App() {
     [sessions, activeSessionId, workspace, rpc, handleSelectSession, handleUpdateTabConfig, handleTerminalExited],
   );
 
-  // 无工作区 → 显示工作区选择器
+  // 无工作区 → 显示工作区选择器（或远程降级页）
   if (!workspace) {
+    // 远程模式连接失败 → 降级提示
+    if (isRemote() && remoteConnected === false) {
+      return (
+        <div className="remote-fallback">
+          <div className="remote-fallback-card">
+            <h1>MutBot</h1>
+            <p className="remote-fallback-subtitle">Define Your AI</p>
+            <div className="remote-fallback-warning">
+              Could not connect to local MutBot at localhost:8741.
+              <br />
+              Make sure MutBot is running, then try again.
+            </div>
+            <div className="remote-fallback-actions">
+              <button onClick={() => location.reload()}>Retry</button>
+              <a href="http://localhost:8741/">Open localhost:8741</a>
+              <a href="/">Back to mutbot.ai</a>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
     return (
       <WorkspaceSelector
         workspaces={workspaces}

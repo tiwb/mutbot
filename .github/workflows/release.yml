@@ -1,0 +1,95 @@
+name: Release to PyPI
+on:
+  push:
+    tags: ['v*']
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.11' }
+
+      - name: Set version from tag
+        run: |
+          VERSION=${GITHUB_REF_NAME#v}
+          sed -i "s/^version = .*/version = \"${VERSION}\"/" pyproject.toml
+          find src -name '__init__.py' -path '*/src/*' -maxdepth 3 \
+            -exec sed -i "s/^__version__ = .*/__version__ = \"${VERSION}\"/" {} +
+
+      - run: pip install build
+      - run: python -m build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { name: dist, path: dist/ }
+      - uses: pypa/gh-action-pypi-publish@release/v1
+
+  sync-frontend:
+    needs: publish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+
+      - name: Extract version from tag
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Build frontend
+        run: cd frontend && npm ci && npx tsc -b && npx vite build --outDir dist
+
+      - name: Push to mutbot.ai
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          cd /tmp
+          git clone https://x-access-token:${{ secrets.MUTBOT_AI_TOKEN }}@github.com/tiwb/mutbot.ai.git
+          cd mutbot.ai
+
+          # 部署版本化目录
+          rm -rf "public/v${VERSION}"
+          cp -r "$GITHUB_WORKSPACE/frontend/dist" "public/v${VERSION}"
+
+          # 提取入口文件名（Vite 构建产物）
+          JS_ENTRY=$(cd "public/v${VERSION}" && ls assets/index-*.js | head -1)
+          CSS_ENTRY=$(cd "public/v${VERSION}" && ls assets/index-*.css | head -1)
+
+          # 更新 versions.json（含入口文件信息）
+          python3 -c "
+          import json, datetime
+          path = 'public/versions.json'
+          try:
+              data = json.load(open(path))
+          except FileNotFoundError:
+              data = {'latest': '', 'versions': []}
+          ver, js, css = '${VERSION}', '${JS_ENTRY}', '${CSS_ENTRY}'
+          data['latest'] = ver
+          entry = {'js': js, 'css': css}
+          existing = next((v for v in data['versions'] if v['version'] == ver), None)
+          if existing:
+              existing['entry'] = entry
+          else:
+              data['versions'].append({'version': ver, 'date': datetime.date.today().isoformat(), 'entry': entry})
+          json.dump(data, open(path, 'w'), indent=2)
+          "
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add "public/v${VERSION}" public/versions.json
+          git diff --cached --quiet || {
+            git commit -m "chore: 同步 mutbot 前端 v${VERSION}"
+            git push
+          }

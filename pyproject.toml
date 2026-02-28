@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mutbot"
-version = "0.1.0"
+version = "0.2.999"
 description = "A Python AI Bot based on mutagent"
 readme = "README.md"
 license = "MIT"
@@ -14,7 +14,7 @@ authors = [
 ]
 keywords = ["ai", "agent", "llm", "runtime", "hot-reload"]
 dependencies = [
-    "mutagent[web-extract]>=0.1.1",
+    "mutagent[web-extract]~=0.2.0",
     "fastapi>=0.100.0",
     "uvicorn[standard]>=0.20.0",
     "pywinpty>=2.0.0; sys_platform == 'win32'",

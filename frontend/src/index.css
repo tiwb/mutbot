@@ -2679,3 +2679,73 @@ body,
   from { opacity: 0; transform: translateX(-50%) translateY(10px); }
   to   { opacity: 1; transform: translateX(-50%) translateY(0); }
 }
+
+/* ====== Remote fallback (degradation UI) ====== */
+
+.remote-fallback {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  background: var(--bg);
+  color: var(--text);
+}
+
+.remote-fallback-card {
+  text-align: center;
+  max-width: 420px;
+  padding: 48px 32px;
+}
+
+.remote-fallback-card h1 {
+  font-size: 28px;
+  font-weight: 600;
+  margin: 0 0 4px;
+}
+
+.remote-fallback-subtitle {
+  color: var(--text-dim);
+  font-size: 14px;
+  margin: 0 0 32px;
+}
+
+.remote-fallback-warning {
+  background: var(--bg-tool);
+  border: 1px solid var(--warning);
+  border-radius: 6px;
+  padding: 16px;
+  font-size: 14px;
+  line-height: 1.6;
+  margin-bottom: 24px;
+}
+
+.remote-fallback-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  align-items: center;
+}
+
+.remote-fallback-actions button {
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  padding: 8px 24px;
+  border-radius: 4px;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.remote-fallback-actions button:hover {
+  opacity: 0.9;
+}
+
+.remote-fallback-actions a {
+  color: var(--accent);
+  font-size: 13px;
+  text-decoration: none;
+}
+
+.remote-fallback-actions a:hover {
+  text-decoration: underline;
+}

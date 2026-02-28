@@ -22,6 +22,14 @@ router = APIRouter()
 connection_manager = ConnectionManager()
 workspace_connection_manager = ConnectionManager()
 
+
+@router.get("/api/health")
+async def health():
+    """健康检查端点，返回服务状态和版本号。"""
+    import mutbot
+    return {"status": "ok", "version": mutbot.__version__}
+
+
 # Workspace RPC dispatcher
 workspace_rpc = RpcDispatcher()
 
@@ -1055,13 +1063,15 @@ async def websocket_app(websocket: WebSocket):
     await websocket.accept()
     logger.info("App WS connected (origin=%s)", origin or "none")
 
-    # 推送 welcome 事件：应用状态（setup_required 等）
+    # 推送 welcome 事件：应用状态（版本、setup_required 等）
+    import mutbot
     from mutbot.runtime.config import load_mutbot_config
     _cfg = load_mutbot_config()
     await websocket.send_json({
         "type": "event",
         "event": "welcome",
         "data": {
+            "version": mutbot.__version__,
             "setup_required": not bool(_cfg.get("providers")),
         },
     })

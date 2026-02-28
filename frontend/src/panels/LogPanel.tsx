@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { getWsUrl } from "../lib/connection";
 import type { WorkspaceRpc } from "../lib/workspace-rpc";
 
 interface LogEntry {
@@ -29,8 +30,7 @@ export default function LogPanel({ rpc }: { rpc?: WorkspaceRpc | null }) {
 
   // WebSocket for real-time streaming
   useEffect(() => {
-    const protocol = location.protocol === "https:" ? "wss:" : "ws:";
-    const url = `${protocol}//${location.host}/ws/logs`;
+    const url = getWsUrl("/ws/logs");
     const ws = new WebSocket(url);
 
     ws.onmessage = (event) => {

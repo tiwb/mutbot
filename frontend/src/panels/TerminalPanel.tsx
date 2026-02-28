@@ -3,6 +3,7 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import "@xterm/xterm/css/xterm.css";
+import { getWsUrl } from "../lib/connection";
 import type { WorkspaceRpc } from "../lib/workspace-rpc";
 import ContextMenu, { type ContextMenuItem } from "../components/ContextMenu";
 
@@ -18,12 +19,11 @@ interface Props {
 
 /** Build WS URL with terminal dimensions. */
 function buildWsUrl(termId: string, rows?: number, cols?: number): string {
-  const protocol = location.protocol === "https:" ? "wss:" : "ws:";
   const params = new URLSearchParams();
   if (rows) params.set("rows", String(rows));
   if (cols) params.set("cols", String(cols));
   const qs = params.toString();
-  const base = `${protocol}//${location.host}/ws/terminal/${termId}`;
+  const base = getWsUrl(`/ws/terminal/${termId}`);
   return qs ? `${base}?${qs}` : base;
 }
 

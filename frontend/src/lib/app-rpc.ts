@@ -6,6 +6,7 @@
  */
 
 import { ReconnectingWebSocket } from "./websocket";
+import { getWsUrl } from "./connection";
 
 const DEFAULT_TIMEOUT = 30_000;
 
@@ -38,8 +39,7 @@ export class AppRpc {
     onOpen?: () => void;
     onClose?: () => void;
   }) {
-    const protocol = location.protocol === "https:" ? "wss:" : "ws:";
-    const url = `${protocol}//${location.host}/ws/app`;
+    const url = getWsUrl("/ws/app");
 
     this.ws = new ReconnectingWebSocket(url, (msg) => this.handleMessage(msg), {
       tokenFn: opts?.tokenFn,

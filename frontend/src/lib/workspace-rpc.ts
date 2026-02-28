@@ -7,6 +7,7 @@
  */
 
 import { ReconnectingWebSocket } from "./websocket";
+import { getWsUrl } from "./connection";
 
 /** RPC 调用默认超时 (ms) */
 const DEFAULT_TIMEOUT = 30_000;
@@ -45,8 +46,7 @@ export class WorkspaceRpc {
       onClose?: () => void;
     },
   ) {
-    const protocol = location.protocol === "https:" ? "wss:" : "ws:";
-    const url = `${protocol}//${location.host}/ws/workspace/${workspaceId}`;
+    const url = getWsUrl(`/ws/workspace/${workspaceId}`);
 
     this.ws = new ReconnectingWebSocket(url, (msg) => this.handleMessage(msg), {
       tokenFn: opts?.tokenFn,

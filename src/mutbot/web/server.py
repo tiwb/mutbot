@@ -307,7 +307,8 @@ async def lifespan(app: FastAPI):
     )
 
 
-app = FastAPI(title="MutBot", version="0.1.0", lifespan=lifespan)
+import mutbot
+app = FastAPI(title="MutBot", version=mutbot.__version__, lifespan=lifespan)
 
 
 # ---------------------------------------------------------------------------

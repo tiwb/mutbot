@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ReconnectingWebSocket } from "../lib/websocket";
+import { getWsUrl } from "../lib/connection";
 import type { WorkspaceRpc } from "../lib/workspace-rpc";
 import { rlog, setLogSocket } from "../lib/remote-log";
 import MessageList, { type ChatMessage, type AgentDisplay } from "../components/MessageList";
@@ -300,8 +301,7 @@ export default function AgentPanel({ sessionId, rpc, onSessionLink }: Props) {
     // Track whether this session was already replayed from cache
     const hadCache = !!cached && cached.length > 0;
 
-    const protocol = location.protocol === "https:" ? "wss:" : "ws:";
-    const url = `${protocol}//${location.host}/ws/session/${sessionId}`;
+    const url = getWsUrl(`/ws/session/${sessionId}`);
 
     const ws = new ReconnectingWebSocket(
       url,
