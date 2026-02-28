@@ -171,12 +171,6 @@ async def handle_menu_execute(params: dict, ctx: RpcContext) -> dict:
         if session:
             await ctx.broadcast_event("session_created", _session_dict(session))
 
-    elif result.action == "session_ended" and sm and session_id:
-        await sm.stop(session_id)
-        session = sm.get(session_id)
-        data = _session_dict(session) if session else {"session_id": session_id}
-        await ctx.broadcast_event("session_updated", data)
-
     elif result.action == "session_deleted" and sm and session_id:
         await sm.stop(session_id)
         sm.delete(session_id)
@@ -188,6 +182,19 @@ async def handle_menu_execute(params: dict, ctx: RpcContext) -> dict:
                 ws.sessions.remove(session_id)
                 wm.update(ws)
         await ctx.broadcast_event("session_deleted", {"session_id": session_id})
+
+    elif result.action == "session_deleted_batch" and sm:
+        batch_ids = result.data.get("session_ids", [])
+        wm = ctx.managers.get("workspace_manager")
+        ws = wm.get(ctx.workspace_id) if wm else None
+        for sid in batch_ids:
+            await sm.stop(sid)
+            sm.delete(sid)
+            if ws and sid in ws.sessions:
+                ws.sessions.remove(sid)
+            await ctx.broadcast_event("session_deleted", {"session_id": sid})
+        if ws and wm:
+            wm.update(ws)
 
     return result_dict
 
@@ -245,6 +252,10 @@ async def handle_session_create(params: dict, ctx: RpcContext) -> dict:
         config.setdefault("file_path", f"untitled-{int(time.time() * 1000)}.md")
 
     session = sm.create(ctx.workspace_id, session_type=session_type, config=config)
+    # TerminalSession: PTY 创建后设置 running 状态
+    if issubclass(session_cls, TerminalSession):
+        session.status = "running"
+        sm._persist(session)
     ws.sessions.append(session.id)
     wm.update(ws)
 
@@ -276,11 +287,19 @@ async def handle_session_types(params: dict, ctx: RpcContext) -> list[dict]:
 
 @workspace_rpc.method("session.list")
 async def handle_session_list(params: dict, ctx: RpcContext) -> list[dict]:
-    """列出 workspace 下的所有 Session"""
+    """列出 workspace 下的所有 Session，按 workspace.sessions 顺序返回"""
     sm = ctx.managers.get("session_manager")
     if not sm:
         return []
     workspace_id = params.get("workspace_id", ctx.workspace_id)
+    # 按 workspace.sessions 列表顺序排列
+    wm = ctx.managers.get("workspace_manager")
+    ws = wm.get(workspace_id) if wm else None
+    if ws and ws.sessions:
+        order = {sid: idx for idx, sid in enumerate(ws.sessions)}
+        all_sessions = sm.list_by_workspace(workspace_id)
+        all_sessions.sort(key=lambda s: order.get(s.id, len(order)))
+        return [_session_dict(s) for s in all_sessions]
     return [_session_dict(s) for s in sm.list_by_workspace(workspace_id)]
 
 
@@ -372,6 +391,28 @@ async def handle_session_delete(params: dict, ctx: RpcContext) -> dict:
     return {"status": "deleted"}
 
 
+@workspace_rpc.method("session.delete_batch")
+async def handle_session_delete_batch(params: dict, ctx: RpcContext) -> dict:
+    """批量删除 sessions。"""
+    sm = ctx.managers.get("session_manager")
+    wm = ctx.managers.get("workspace_manager")
+    if not sm:
+        return {"error": "session_manager not available"}
+    session_ids = params.get("session_ids", [])
+    if not session_ids:
+        return {"error": "no session_ids provided"}
+    ws = wm.get(ctx.workspace_id) if wm else None
+    for sid in session_ids:
+        await sm.stop(sid)
+        sm.delete(sid)
+        if ws and sid in ws.sessions:
+            ws.sessions.remove(sid)
+        await ctx.broadcast_event("session_deleted", {"session_id": sid})
+    if ws and wm:
+        wm.update(ws)
+    return {"status": "deleted", "count": len(session_ids)}
+
+
 @workspace_rpc.method("session.update")
 async def handle_session_update(params: dict, ctx: RpcContext) -> dict:
     """更新 Session 字段"""
@@ -449,6 +490,24 @@ async def handle_workspace_update(params: dict, ctx: RpcContext) -> dict:
         ws.layout = params["layout"]
     wm.update(ws)
     return _workspace_dict(ws)
+
+
+@workspace_rpc.method("workspace.reorder_sessions")
+async def handle_reorder_sessions(params: dict, ctx: RpcContext) -> dict:
+    """更新 workspace 中的 session 排列顺序。"""
+    wm = ctx.managers.get("workspace_manager")
+    if not wm:
+        return {"error": "workspace_manager not available"}
+    ws = wm.get(ctx.workspace_id)
+    if ws is None:
+        return {"error": "workspace not found"}
+    new_order = params.get("session_ids", [])
+    # 校验 ID 集合一致
+    if set(new_order) != set(ws.sessions):
+        return {"error": "session_ids mismatch"}
+    ws.sessions = new_order
+    wm.update(ws)
+    return {"status": "ok"}
 
 
 # ---------------------------------------------------------------------------
@@ -672,8 +731,8 @@ async def websocket_session(websocket: WebSocket, session_id: str):
     bridge = None
 
     # active session → 立即启动 agent bridge
-    # ended session → 延迟到用户发消息时再启动（避免无限重试）
-    if session.status == "active":
+    # stopped/empty status session → 延迟到用户发消息时再启动
+    if session.status not in ("", "stopped"):
         try:
             bridge = sm.start(session_id, loop, connection_manager.broadcast)
         except Exception as exc:
@@ -692,9 +751,9 @@ async def websocket_session(websocket: WebSocket, session_id: str):
                 text = raw.get("text", "")
                 data = raw.get("data")
                 if text:
-                    # 延迟启动：ended session 在用户发消息时激活
+                    # 延迟启动：非活跃 session 在用户发消息时激活
                     if bridge is None:
-                        was_ended = session.status == "ended"
+                        was_inactive = session.status in ("", "stopped")
                         try:
                             bridge = sm.start(session_id, loop, connection_manager.broadcast)
                         except Exception as exc:
@@ -703,7 +762,7 @@ async def websocket_session(websocket: WebSocket, session_id: str):
                             await websocket.send_json({"type": "error", "error": str(exc)})
                             break
                         # 广播 session 重新激活事件
-                        if was_ended:
+                        if was_inactive:
                             await workspace_connection_manager.broadcast(
                                 session.workspace_id,
                                 make_event("session_updated", _session_dict(session)),

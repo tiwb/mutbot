@@ -516,25 +516,12 @@ class TestTabContextMenus:
         assert _get_attr_default(CloseOthersMenu, "display_name") == "Close Others"
         assert _get_attr_default(CloseOthersMenu, "client_action") == "close_others"
 
-    def test_end_session_menu_check_enabled_active(self):
-        from mutbot.builtins.menus import EndSessionMenu
-        assert EndSessionMenu.check_enabled({"session_status": "active"}) is True
-
-    def test_end_session_menu_check_enabled_ended(self):
-        from mutbot.builtins.menus import EndSessionMenu
-        assert EndSessionMenu.check_enabled({"session_status": "ended"}) is False
-
-    def test_end_session_menu_check_enabled_no_status(self):
-        from mutbot.builtins.menus import EndSessionMenu
-        assert EndSessionMenu.check_enabled({}) is None
-
     def test_tab_context_discovery(self):
         menus = menu_registry.get_by_category("Tab/Context")
         names = [c.__name__ for c in menus]
         assert "RenameSessionMenu" in names
         assert "CloseTabMenu" in names
         assert "CloseOthersMenu" in names
-        assert "EndSessionMenu" in names
 
     def test_tab_context_query(self):
         ctx = _make_context()
@@ -569,11 +556,6 @@ class TestSessionListContextMenus:
         assert _get_attr_default(RenameSessionListMenu, "display_category") == "SessionList/Context"
         assert _get_attr_default(RenameSessionListMenu, "client_action") == "start_rename"
 
-    def test_end_session_list_menu_check_enabled(self):
-        from mutbot.builtins.menus import EndSessionListMenu
-        assert EndSessionListMenu.check_enabled({"session_status": "active"}) is True
-        assert EndSessionListMenu.check_enabled({"session_status": "ended"}) is False
-
     def test_delete_session_menu_attributes(self):
         from mutbot.builtins.menus import DeleteSessionMenu
         assert _get_attr_default(DeleteSessionMenu, "display_name") == "Delete"
@@ -583,7 +565,6 @@ class TestSessionListContextMenus:
         menus = menu_registry.get_by_category("SessionList/Context")
         names = [c.__name__ for c in menus]
         assert "RenameSessionListMenu" in names
-        assert "EndSessionListMenu" in names
         assert "DeleteSessionMenu" in names
 
     def test_session_list_context_query(self):
@@ -592,7 +573,6 @@ class TestSessionListContextMenus:
         assert len(result) >= 3
         names = [it["name"] for it in result]
         assert "Rename" in names
-        assert "End Session" in names
         assert "Delete" in names
 
     def test_session_list_context_sorted_by_order(self):

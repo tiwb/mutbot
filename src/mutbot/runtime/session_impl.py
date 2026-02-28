@@ -281,7 +281,7 @@ def _session_from_dict(data: dict) -> Session:
         "workspace_id": data.get("workspace_id", ""),
         "title": data.get("title", ""),
         "type": raw_type,
-        "status": data.get("status", "ended"),
+        "status": data.get("status", ""),
         "created_at": data.get("created_at", ""),
         "updated_at": data.get("updated_at", ""),
         "config": data.get("config") or {},
@@ -655,6 +655,40 @@ class SessionManager:
             # 事件循环已关闭
             pass
 
+    def _maybe_broadcast_updated(self, session: Session) -> None:
+        """如果配置了广播回调，广播 session_updated 事件。"""
+        if self._broadcast_fn is None or self._event_loop is None:
+            return
+        data = session.serialize()
+        qname = data.get("type", "")
+        parts = qname.rsplit(".", 1)
+        name = parts[-1] if parts else qname
+        if name.endswith("Session"):
+            name = name[:-7]
+        data["kind"] = name.lower()
+        data["icon"] = session.config.get("icon") or getattr(type(session), "display_icon", "") or ""
+
+        event = {"type": "event", "event": "session_updated", "data": data}
+        loop = self._event_loop
+        broadcast = self._broadcast_fn
+        workspace_id = session.workspace_id
+        try:
+            loop.call_soon_threadsafe(
+                asyncio.ensure_future, broadcast(workspace_id, event)
+            )
+        except RuntimeError:
+            pass
+
+    def set_session_status(self, session_id: str, status: str) -> None:
+        """更新 session 状态并广播（供 AgentBridge 等外部组件调用）。"""
+        session = self._sessions.get(session_id)
+        if session is None or session.status == status:
+            return
+        session.status = status
+        session.updated_at = datetime.now(timezone.utc).isoformat()
+        self._persist(session)
+        self._maybe_broadcast_updated(session)
+
     # --- Agent 生命周期 ---
 
     def start(self, session_id: str, loop: asyncio.AbstractEventLoop, broadcast_fn=None) -> AgentBridge:
@@ -698,10 +732,14 @@ class SessionManager:
         def _persist_fn():
             sm._persist(session)
 
+        def _session_status_fn(status: str) -> None:
+            sm.set_session_status(session_id, status)
+
         bridge = AgentBridge(
             session_id, agent, loop, broadcast_fn,
             session=session,
             persist_fn=_persist_fn,
+            session_status_fn=_session_status_fn,
         )
 
         # --- Session 级日志 FileHandler ---
@@ -716,13 +754,6 @@ class SessionManager:
 
         bridge.start()
         logger.info("Session %s: agent started", session_id)
-
-        # 重新激活 ended session（用户主动打开时恢复为 active）
-        if session.status == "ended":
-            session.status = "active"
-            session.updated_at = datetime.now(timezone.utc).isoformat()
-            self._persist(session)
-            logger.info("Session %s: reactivated (ended → active)", session_id)
 
         # 如果 config 中有 initial_message，自动作为隐藏消息发送（不显示在聊天界面）
         initial_message = session.config.pop("initial_message", None)

@@ -100,6 +100,9 @@ class AddSessionMenu(Menu):
             session_type=session_type,
             config=config if config else None,
         )
+        # TerminalSession: PTY 创建后设置 running 状态
+        if issubclass(session_cls, TerminalSession):
+            session.status = "running"
 
         # 将 workspace 的 sessions 列表也更新
         if context.managers.get("workspace_manager"):
@@ -167,28 +170,6 @@ class CloseAllMenu(Menu):
     client_action = "close_all"
 
 
-class EndSessionMenu(Menu):
-    """Tab 右键菜单 — 结束 Session"""
-    display_name = "End Session"
-    display_icon = "square"
-    display_category = "Tab/Context"
-    display_order = "1manage:0"
-
-    @classmethod
-    def check_enabled(cls, context: dict) -> bool | None:
-        status = context.get("session_status")
-        if status is not None:
-            return status == "active"
-        return None
-
-    def execute(self, params: dict, context: RpcContext) -> MenuResult:
-        sm = context.managers.get("session_manager")
-        session_id = params.get("session_id", "")
-        if not sm or not session_id:
-            return MenuResult(action="error", data={"message": "missing session_manager or session_id"})
-        # 实际的 async stop 由 handle_menu_execute 处理
-        return MenuResult(action="session_ended", data={"session_id": session_id})
-
 
 # ---------------------------------------------------------------------------
 # 内置菜单：Session 列表右键菜单 (SessionList/Context)
@@ -211,41 +192,39 @@ class ChangeIconSessionListMenu(Menu):
     client_action = "change_icon"
 
 
-class EndSessionListMenu(Menu):
-    """Session 列表右键菜单 — 结束 Session"""
-    display_name = "End Session"
-    display_category = "SessionList/Context"
-    display_order = "1manage:0"
-
-    @classmethod
-    def check_enabled(cls, context: dict) -> bool | None:
-        status = context.get("session_status")
-        if status is not None:
-            return status == "active"
-        return None
-
-    def execute(self, params: dict, context: RpcContext) -> MenuResult:
-        sm = context.managers.get("session_manager")
-        session_id = params.get("session_id", "")
-        if not sm or not session_id:
-            return MenuResult(action="error", data={"message": "missing session_manager or session_id"})
-        # 实际的 async stop 由 handle_menu_execute 处理
-        return MenuResult(action="session_ended", data={"session_id": session_id})
-
 
 class DeleteSessionMenu(Menu):
-    """Session 列表右键菜单 — 删除 Session"""
+    """Session 列表右键菜单 — 删除 Session（支持多选批量删除）"""
     display_name = "Delete"
     display_category = "SessionList/Context"
     display_order = "2danger:0"
 
+    @classmethod
+    def dynamic_items(cls, context: RpcContext) -> list[MenuItem]:
+        menu_ctx = getattr(context, "_menu_context", {})
+        session_ids = menu_ctx.get("session_ids", [])
+        count = len(session_ids) if isinstance(session_ids, list) else 0
+        name = f"Delete ({count})" if count > 1 else "Delete"
+        return [MenuItem(
+            id=f"{cls.__module__}.{cls.__qualname__}",
+            name=name,
+            order="2danger:0",
+        )]
+
     def execute(self, params: dict, context: RpcContext) -> MenuResult:
         sm = context.managers.get("session_manager")
+        if not sm:
+            return MenuResult(action="error", data={"message": "missing session_manager"})
+        session_ids = params.get("session_ids", [])
         session_id = params.get("session_id", "")
-        if not sm or not session_id:
-            return MenuResult(action="error", data={"message": "missing session_manager or session_id"})
-        # 实际的 async stop + delete 由 handle_menu_execute 处理
-        return MenuResult(action="session_deleted", data={"session_id": session_id})
+        # 多选时使用 session_ids，单选时回退到 session_id
+        if not session_ids and session_id:
+            session_ids = [session_id]
+        if not session_ids:
+            return MenuResult(action="error", data={"message": "missing session_id(s)"})
+        if len(session_ids) == 1:
+            return MenuResult(action="session_deleted", data={"session_id": session_ids[0]})
+        return MenuResult(action="session_deleted_batch", data={"session_ids": session_ids})
 
 
 # ---------------------------------------------------------------------------

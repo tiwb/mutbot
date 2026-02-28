@@ -60,6 +60,7 @@ class AgentBridge:
         broadcast_fn: BroadcastFn,
         session: AgentSession,
         persist_fn: Callable[[], None],
+        session_status_fn: Callable[[str], None] | None = None,
     ) -> None:
         self.session_id = session_id
         self.agent = agent
@@ -67,6 +68,7 @@ class AgentBridge:
         self.broadcast_fn = broadcast_fn
         self._session = session
         self._persist_fn = persist_fn
+        self._session_status_fn = session_status_fn
         self._input_queue: asyncio.Queue[InputEvent | None] = asyncio.Queue()
         self._agent_task: asyncio.Task | None = None
         # Session 级累计 token 计数器（从 session 元数据恢复）
@@ -118,11 +120,17 @@ class AgentBridge:
     # --- Broadcasting helpers ---
 
     async def _broadcast_status(self, status: str, **extra: Any) -> None:
-        """推送 agent_status 事件。"""
+        """推送 agent_status 事件，并同步更新 session.status。"""
         self._agent_status = status
         data: dict[str, Any] = {"type": "agent_status", "status": status}
         data.update(extra)
         await self.broadcast_fn(self.session_id, data)
+        # 同步 session.status：working → "running"，idle → ""
+        if self._session_status_fn is not None:
+            if status == "idle":
+                self._session_status_fn("")
+            elif status in ("thinking", "tool_calling"):
+                self._session_status_fn("running")
 
     async def _broadcast_token_usage(self, usage: dict[str, int]) -> None:
         """从 response usage 计算并推送 token_usage 事件。"""

@@ -73,7 +73,7 @@ class TestSessionHierarchy:
 
     def test_session_base_defaults(self):
         s = AgentSession(id="a", workspace_id="w", title="t")
-        assert s.status == "active"
+        assert s.status == ""
         assert s.created_at == ""
         assert s.updated_at == ""
         assert s.config == {}
@@ -311,3 +311,101 @@ class TestSessionManager:
         sm = self._make_manager()
         s = sm.create("ws1", session_type="mutbot.session.AgentSession", config={"terminal_id": "t1"})
         assert s.config == {"terminal_id": "t1"}
+
+
+# ---------------------------------------------------------------------------
+# Session status 模型
+# ---------------------------------------------------------------------------
+
+class TestSessionStatus:
+    """Session status 为开放字符串，默认空，各子类自行管理"""
+
+    def test_base_status_default_empty(self):
+        """Session 基类 status 默认为空字符串"""
+        s = AgentSession(id="a", workspace_id="w", title="t")
+        assert s.status == ""
+
+    def test_terminal_status_default_empty(self):
+        s = TerminalSession(id="a", workspace_id="w", title="t")
+        assert s.status == ""
+
+    def test_document_status_default_empty(self):
+        s = DocumentSession(id="a", workspace_id="w", title="t")
+        assert s.status == ""
+
+    def test_status_set_arbitrary_string(self):
+        """status 可设置任意字符串值"""
+        s = AgentSession(id="a", workspace_id="w", title="t")
+        s.status = "running"
+        assert s.status == "running"
+        s.status = "custom_state"
+        assert s.status == "custom_state"
+        s.status = ""
+        assert s.status == ""
+
+    def test_status_persists_through_serialize(self):
+        """status 持久化和恢复正确"""
+        s = AgentSession(id="a", workspace_id="w", title="t")
+        s.status = "running"
+        data = s.serialize()
+        assert data["status"] == "running"
+
+    def test_status_restore_from_dict(self):
+        """从 dict 恢复 status 保留原始值"""
+        data = {
+            "id": "a", "workspace_id": "w", "title": "t",
+            "type": "mutbot.session.AgentSession",
+            "status": "stopped",
+        }
+        restored = _session_from_dict(data)
+        assert restored.status == "stopped"
+
+    def test_status_restore_empty(self):
+        """空 status 从 dict 恢复为空字符串"""
+        data = {
+            "id": "a", "workspace_id": "w", "title": "t",
+            "type": "mutbot.session.AgentSession",
+            "status": "",
+        }
+        restored = _session_from_dict(data)
+        assert restored.status == ""
+
+    def test_status_restore_missing_defaults_empty(self):
+        """缺少 status 字段时默认为空字符串"""
+        data = {
+            "id": "a", "workspace_id": "w", "title": "t",
+            "type": "mutbot.session.AgentSession",
+        }
+        restored = _session_from_dict(data)
+        assert restored.status == ""
+
+    def test_status_roundtrip_custom_value(self):
+        """自定义 status 完整往返测试"""
+        original = AgentSession(id="rt", workspace_id="w", title="t")
+        original.status = "my_custom_status"
+        data = original.serialize()
+        restored = _session_from_dict(data)
+        assert restored.status == "my_custom_status"
+
+    def test_set_session_status(self):
+        """SessionManager.set_session_status 更新 status"""
+        sm = SessionManager()
+        s = sm.create("ws1", session_type="mutbot.session.AgentSession")
+        assert s.status == ""
+        sm.set_session_status(s.id, "running")
+        assert s.status == "running"
+        sm.set_session_status(s.id, "")
+        assert s.status == ""
+
+    def test_set_session_status_noop_same_value(self):
+        """相同 status 不触发更新"""
+        sm = SessionManager()
+        s = sm.create("ws1", session_type="mutbot.session.AgentSession")
+        old_updated = s.updated_at
+        sm.set_session_status(s.id, "")  # 相同值
+        assert s.updated_at == old_updated  # 未变
+
+    def test_set_session_status_nonexistent(self):
+        """不存在的 session 静默返回"""
+        sm = SessionManager()
+        sm.set_session_status("nonexistent", "running")  # 不抛异常

@@ -52,43 +52,6 @@ function resolveSessionId(
 }
 
 // ---------------------------------------------------------------------------
-// Terminal close confirmation dialog
-// ---------------------------------------------------------------------------
-
-function ConfirmDialog({
-  message,
-  confirmLabel,
-  cancelLabel,
-  dismissLabel,
-  onConfirm,
-  onCancel,
-  onDismiss,
-}: {
-  message: string;
-  confirmLabel: string;
-  cancelLabel: string;
-  dismissLabel?: string;
-  onConfirm: () => void;
-  onCancel: () => void;
-  onDismiss?: () => void;
-}) {
-  return (
-    <div className="confirm-overlay">
-      <div className="confirm-dialog">
-        <p>{message}</p>
-        <div className="confirm-actions">
-          <button className="confirm-btn-primary" onClick={onConfirm}>{confirmLabel}</button>
-          <button className="confirm-btn-secondary" onClick={onCancel}>{cancelLabel}</button>
-          {dismissLabel && onDismiss && (
-            <button className="confirm-btn-secondary" onClick={onDismiss}>{dismissLabel}</button>
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
 // Main App
 // ---------------------------------------------------------------------------
 
@@ -101,12 +64,6 @@ export default function App() {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- setEditingTab is internal API
   const layoutRef = useRef<any>(null);
   const [, forceUpdate] = useState(0);
-
-  // Pending "End Session" confirmation state
-  const [pendingEndSession, setPendingEndSession] = useState<{
-    nodeId?: string;   // if set, also close the tab
-    sessionId: string;
-  } | null>(null);
 
   // Tab context menu state
   const [tabContextMenu, setTabContextMenu] = useState<{
@@ -465,6 +422,46 @@ export default function App() {
       const model = modelRef.current;
       if (!model) return action;
 
+      // Tab 切换同步 activeSessionId
+      if (action.type === Actions.SELECT_TAB) {
+        const nodeId = (action as any).data?.tabNode;
+        if (nodeId) {
+          let tabNode: TabNode | null = null;
+          model.visitNodes((node) => {
+            if (node.getId() === nodeId && node.getType() === "tab") {
+              tabNode = node as TabNode;
+            }
+          });
+          if (tabNode) {
+            const sessionId = resolveSessionId(tabNode, sessions);
+            if (sessionId) setActiveSessionId(sessionId);
+          }
+        }
+        return action;
+      }
+
+      // 跨 tabset 切换焦点同步 activeSessionId
+      if (action.type === Actions.SET_ACTIVE_TABSET) {
+        const tabsetId = (action as any).data?.tabsetNode;
+        if (tabsetId) {
+          let foundTabset: TabSetNode | null = null;
+          model.visitNodes((node) => {
+            if (node.getId() === tabsetId && node.getType() === "tabset") {
+              foundTabset = node as TabSetNode;
+            }
+          });
+          const tsNode = foundTabset as TabSetNode | null;
+          if (tsNode) {
+            const selectedNode = tsNode.getSelectedNode();
+            if (selectedNode && selectedNode.getType() === "tab") {
+              const sessionId = resolveSessionId(selectedNode as TabNode, sessions);
+              if (sessionId) setActiveSessionId(sessionId);
+            }
+          }
+        }
+        return action;
+      }
+
       // Intercept tab rename to sync with session title
       if (action.type === Actions.RENAME_TAB) {
         const nodeId = (action as any).data?.node;
@@ -496,23 +493,32 @@ export default function App() {
   );
 
   // ------------------------------------------------------------------
-  // End Session handling
+  // Window blur/focus: clear activeSessionId when window loses focus
   // ------------------------------------------------------------------
 
-  const handleEndSessionConfirm = useCallback(() => {
-    if (!pendingEndSession) return;
-    const { nodeId, sessionId } = pendingEndSession;
-    rpcRef.current?.call("session.stop", { session_id: sessionId });
-    if (nodeId) {
+  useEffect(() => {
+    const handleBlur = () => {
+      setActiveSessionId(null);
+    };
+    const handleFocus = () => {
+      // 恢复焦点时，从当前 active tab 恢复 activeSessionId
       const model = modelRef.current;
-      if (model) model.doAction(Actions.deleteTab(nodeId));
-    }
-    setPendingEndSession(null);
-  }, [pendingEndSession]);
-
-  const handleEndSessionCancel = useCallback(() => {
-    setPendingEndSession(null);
-  }, []);
+      if (!model) return;
+      const activeTabset = model.getActiveTabset();
+      if (!activeTabset) return;
+      const selectedNode = activeTabset.getSelectedNode();
+      if (selectedNode && selectedNode.getType() === "tab") {
+        const sessionId = resolveSessionId(selectedNode as TabNode, sessions);
+        if (sessionId) setActiveSessionId(sessionId);
+      }
+    };
+    window.addEventListener("blur", handleBlur);
+    window.addEventListener("focus", handleFocus);
+    return () => {
+      window.removeEventListener("blur", handleBlur);
+      window.removeEventListener("focus", handleFocus);
+    };
+  }, [sessions]);
 
   // ------------------------------------------------------------------
   // Layout callbacks
@@ -545,7 +551,7 @@ export default function App() {
         rpcRef.current?.call("session.update", {
           session_id: sessionId,
           config: { terminal_id: terminalId },
-          status: "active",
+          status: "running",
         });
       }
     },
@@ -554,8 +560,8 @@ export default function App() {
 
   const handleTerminalExited = useCallback(
     (sessionId: string) => {
-      // Sync session status to "ended" when terminal process exits
-      rpcRef.current?.call("session.update", { session_id: sessionId, status: "ended" }).catch(() => {});
+      // Sync session status to "stopped" when terminal process exits
+      rpcRef.current?.call("session.update", { session_id: sessionId, status: "stopped" }).catch(() => {});
     },
     [],
   );
@@ -604,16 +610,6 @@ export default function App() {
   // Session close/delete from context menu
   // ------------------------------------------------------------------
 
-  const handleEndSession = useCallback(
-    (sessionId: string) => {
-      const session = sessions.find((s) => s.id === sessionId);
-      if (!session || session.status === "ended") return;
-      // Show confirmation dialog
-      setPendingEndSession({ sessionId });
-    },
-    [sessions],
-  );
-
   const handleRenameSession = useCallback(
     (sessionId: string, newTitle: string) => {
       rpcRef.current?.call("session.update", { session_id: sessionId, title: newTitle });
@@ -621,10 +617,23 @@ export default function App() {
     [],
   );
 
-  const handleDeleteSession = useCallback(
-    (sessionId: string) => {
-      // Soft-delete: backend stops + marks deleted, event handler updates UI
-      rpcRef.current?.call("session.delete", { session_id: sessionId }).catch(() => {});
+  const handleReorderSessions = useCallback(
+    (sessionIds: string[]) => {
+      setSessions((prev) => {
+        const map = new Map(prev.map((s) => [s.id, s]));
+        return sessionIds.map((id) => map.get(id)).filter(Boolean) as Session[];
+      });
+    },
+    [],
+  );
+
+  const handleDeleteSessions = useCallback(
+    (sessionIds: string[]) => {
+      if (sessionIds.length === 1) {
+        rpcRef.current?.call("session.delete", { session_id: sessionIds[0] }).catch(() => {});
+      } else if (sessionIds.length > 1) {
+        rpcRef.current?.call("session.delete_batch", { session_ids: sessionIds }).catch(() => {});
+      }
     },
     [],
   );
@@ -754,14 +763,10 @@ export default function App() {
   );
 
   const handleTabMenuResult = useCallback(
-    (result: MenuExecResult) => {
-      // 状态更新由 event handler 统一处理，这里只做发起者特有的 UI 操作（关闭 tab）
-      if (result.action === "session_ended" && tabContextMenu?.nodeId) {
-        const model = modelRef.current;
-        if (model) model.doAction(Actions.deleteTab(tabContextMenu.nodeId));
-      }
+    (_result: MenuExecResult) => {
+      // 状态更新由 event handler 统一处理
     },
-    [tabContextMenu],
+    [],
   );
 
   // --- Icon Picker handlers ---
@@ -904,9 +909,9 @@ export default function App() {
             rpc={rpc}
             onSelect={handleSelectSession}
             onModeChange={handleSidebarModeChange}
-            onCloseSession={handleEndSession}
-            onDeleteSession={handleDeleteSession}
+            onDeleteSessions={handleDeleteSessions}
             onRenameSession={handleRenameSession}
+            onReorderSessions={handleReorderSessions}
             onChangeIcon={(sessionId, position) => setIconPicker({ sessionId, position })}
             onHeaderAction={handleHeaderAction}
           />
@@ -929,15 +934,6 @@ export default function App() {
           )}
         </div>
       </div>
-      {pendingEndSession && (
-        <ConfirmDialog
-          message="End this session? The process will be terminated."
-          confirmLabel="End Session"
-          cancelLabel="Cancel"
-          onConfirm={handleEndSessionConfirm}
-          onCancel={handleEndSessionCancel}
-        />
-      )}
       {tabContextMenu && (
         <RpcMenu
           rpc={rpc}

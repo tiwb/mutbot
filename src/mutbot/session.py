@@ -32,7 +32,7 @@ class Session(mutobj.Declaration):
     workspace_id: str
     title: str
     type: str = ""
-    status: str = "active"
+    status: str = ""
     created_at: str = ""
     updated_at: str = ""
     config: dict = mutobj.field(default_factory=dict)

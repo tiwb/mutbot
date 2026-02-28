@@ -57,6 +57,9 @@ class FakeSessionManager:
     def get_session_events(self, session_id):
         return self.events.get(session_id, [])
 
+    def _persist(self, session):
+        pass
+
     async def stop(self, session_id):
         self.stopped.append(session_id)
         s = self.sessions.get(session_id)
@@ -410,10 +413,176 @@ class TestMethodRegistration:
         expected = [
             "menu.query", "menu.execute",
             "session.create", "session.list", "session.get",
-            "session.stop", "session.delete", "session.update",
-            "workspace.get", "workspace.update",
+            "session.stop", "session.delete", "session.delete_batch",
+            "session.update", "session.messages",
+            "workspace.get", "workspace.update", "workspace.reorder_sessions",
             "terminal.create", "terminal.list", "terminal.delete",
             "file.read", "log.query",
         ]
         for method in expected:
             assert method in workspace_rpc.methods, f"Missing handler: {method}"
+
+
+# ---------------------------------------------------------------------------
+# workspace.reorder_sessions handler 测试
+# ---------------------------------------------------------------------------
+
+class TestReorderSessions:
+
+    @pytest.mark.asyncio
+    async def test_reorder_success(self):
+        """正确重排 session 顺序"""
+        wm = FakeWorkspaceManager()
+        wm.workspaces["ws_test"] = FakeWorkspace(sessions=["s1", "s2", "s3"])
+        ctx = _make_context(workspace_manager=wm)
+
+        resp = await _dispatch("workspace.reorder_sessions",
+                               {"session_ids": ["s3", "s1", "s2"]}, ctx)
+        assert resp["result"]["status"] == "ok"
+        assert wm.workspaces["ws_test"].sessions == ["s3", "s1", "s2"]
+
+    @pytest.mark.asyncio
+    async def test_reorder_persisted(self):
+        """重排后 workspace 被 update（持久化）"""
+        wm = FakeWorkspaceManager()
+        wm.workspaces["ws_test"] = FakeWorkspace(sessions=["s1", "s2"])
+        ctx = _make_context(workspace_manager=wm)
+
+        await _dispatch("workspace.reorder_sessions",
+                        {"session_ids": ["s2", "s1"]}, ctx)
+        # FakeWorkspaceManager.update 将 ws 存回 dict，验证已调用
+        assert wm.workspaces["ws_test"].sessions == ["s2", "s1"]
+
+    @pytest.mark.asyncio
+    async def test_reorder_mismatch_ids(self):
+        """ID 集合不一致时返回错误"""
+        wm = FakeWorkspaceManager()
+        wm.workspaces["ws_test"] = FakeWorkspace(sessions=["s1", "s2"])
+        ctx = _make_context(workspace_manager=wm)
+
+        resp = await _dispatch("workspace.reorder_sessions",
+                               {"session_ids": ["s1", "s3"]}, ctx)
+        assert "error" in resp["result"]
+
+    @pytest.mark.asyncio
+    async def test_reorder_missing_workspace(self):
+        """workspace 不存在时返回错误"""
+        ctx = _make_context()
+        resp = await _dispatch("workspace.reorder_sessions",
+                               {"session_ids": ["s1"]}, ctx)
+        assert "error" in resp["result"]
+
+
+# ---------------------------------------------------------------------------
+# session.delete_batch handler 测试
+# ---------------------------------------------------------------------------
+
+class TestDeleteBatch:
+
+    @pytest.mark.asyncio
+    async def test_delete_batch_multiple(self):
+        """批量删除多个 session"""
+        sm = FakeSessionManager()
+        sm.sessions["s1"] = FakeSession(id="s1")
+        sm.sessions["s2"] = FakeSession(id="s2")
+        sm.sessions["s3"] = FakeSession(id="s3")
+        wm = FakeWorkspaceManager()
+        wm.workspaces["ws_test"] = FakeWorkspace(sessions=["s1", "s2", "s3"])
+        broadcasted: list = []
+        ctx = _make_context(broadcasted, session_manager=sm, workspace_manager=wm)
+
+        resp = await _dispatch("session.delete_batch",
+                               {"session_ids": ["s1", "s3"]}, ctx)
+        result = resp["result"]
+        assert result["status"] == "deleted"
+        assert result["count"] == 2
+        # s1, s3 已删除，s2 保留
+        assert "s1" not in sm.sessions
+        assert "s2" in sm.sessions
+        assert "s3" not in sm.sessions
+
+    @pytest.mark.asyncio
+    async def test_delete_batch_updates_workspace(self):
+        """批量删除后 workspace.sessions 列表同步更新"""
+        sm = FakeSessionManager()
+        sm.sessions["s1"] = FakeSession(id="s1")
+        sm.sessions["s2"] = FakeSession(id="s2")
+        wm = FakeWorkspaceManager()
+        wm.workspaces["ws_test"] = FakeWorkspace(sessions=["s1", "s2"])
+        ctx = _make_context(session_manager=sm, workspace_manager=wm)
+
+        await _dispatch("session.delete_batch", {"session_ids": ["s1"]}, ctx)
+        assert wm.workspaces["ws_test"].sessions == ["s2"]
+
+    @pytest.mark.asyncio
+    async def test_delete_batch_broadcasts_events(self):
+        """每个被删 session 广播一个 session_deleted 事件"""
+        sm = FakeSessionManager()
+        sm.sessions["s1"] = FakeSession(id="s1")
+        sm.sessions["s2"] = FakeSession(id="s2")
+        wm = FakeWorkspaceManager()
+        wm.workspaces["ws_test"] = FakeWorkspace(sessions=["s1", "s2"])
+        broadcasted: list = []
+        ctx = _make_context(broadcasted, session_manager=sm, workspace_manager=wm)
+
+        await _dispatch("session.delete_batch", {"session_ids": ["s1", "s2"]}, ctx)
+        deleted_events = [e for e in broadcasted if e.get("event") == "session_deleted"]
+        assert len(deleted_events) == 2
+        deleted_ids = {e["data"]["session_id"] for e in deleted_events}
+        assert deleted_ids == {"s1", "s2"}
+
+    @pytest.mark.asyncio
+    async def test_delete_batch_empty_list(self):
+        """空列表返回错误"""
+        ctx = _make_context()
+        resp = await _dispatch("session.delete_batch", {"session_ids": []}, ctx)
+        assert "error" in resp["result"]
+
+    @pytest.mark.asyncio
+    async def test_delete_batch_calls_stop(self):
+        """批量删除前调用 stop 清理资源"""
+        sm = FakeSessionManager()
+        sm.sessions["s1"] = FakeSession(id="s1")
+        sm.sessions["s2"] = FakeSession(id="s2")
+        wm = FakeWorkspaceManager()
+        wm.workspaces["ws_test"] = FakeWorkspace(sessions=["s1", "s2"])
+        ctx = _make_context(session_manager=sm, workspace_manager=wm)
+
+        await _dispatch("session.delete_batch", {"session_ids": ["s1", "s2"]}, ctx)
+        assert "s1" in sm.stopped
+        assert "s2" in sm.stopped
+
+
+# ---------------------------------------------------------------------------
+# session.list 排序测试
+# ---------------------------------------------------------------------------
+
+class TestSessionListOrder:
+
+    @pytest.mark.asyncio
+    async def test_list_follows_workspace_order(self):
+        """session.list 按 workspace.sessions 顺序返回"""
+        sm = FakeSessionManager()
+        sm.sessions["s1"] = FakeSession(id="s1", title="First")
+        sm.sessions["s2"] = FakeSession(id="s2", title="Second")
+        sm.sessions["s3"] = FakeSession(id="s3", title="Third")
+        wm = FakeWorkspaceManager()
+        # workspace 中顺序是 s3, s1, s2
+        wm.workspaces["ws_test"] = FakeWorkspace(sessions=["s3", "s1", "s2"])
+        ctx = _make_context(session_manager=sm, workspace_manager=wm)
+
+        resp = await _dispatch("session.list", {"workspace_id": "ws_test"}, ctx)
+        result = resp["result"]
+        ids = [s["id"] for s in result]
+        assert ids == ["s3", "s1", "s2"]
+
+    @pytest.mark.asyncio
+    async def test_list_without_workspace_returns_all(self):
+        """无 workspace 时返回全部（不排序）"""
+        sm = FakeSessionManager()
+        sm.sessions["s1"] = FakeSession(id="s1")
+        ctx = _make_context(session_manager=sm)
+
+        resp = await _dispatch("session.list", {"workspace_id": "ws_test"}, ctx)
+        result = resp["result"]
+        assert len(result) == 1

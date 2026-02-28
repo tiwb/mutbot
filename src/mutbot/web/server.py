@@ -133,7 +133,7 @@ def _ensure_setup_session(ws, sm, wm) -> None:
     existing = sm.list_by_workspace(ws.id)
     guide = next(
         (s for s in existing
-         if s.type == guide_type and s.status == "active"),
+         if s.type == guide_type and s.status != "stopped"),
         None,
     )
 
@@ -208,15 +208,15 @@ async def lifespan(app: FastAPI):
         all_session_ids.update(ws.sessions)
     session_manager.load_from_disk(all_session_ids)
 
-    # 服务器重启：所有旧 session 标记为 ended（无运行中的 agent）
-    _ended = 0
+    # 服务器重启：清除残留的运行时状态（running → 空，无运行中的 agent/PTY）
+    _cleared = 0
     for session in session_manager._sessions.values():
-        if session.status == "active":
-            session.status = "ended"
+        if session.status == "running":
+            session.status = ""
             session_manager._persist(session)
-            _ended += 1
-    if _ended:
-        logger.info("Marked %d stale session(s) as ended on restart", _ended)
+            _cleared += 1
+    if _cleared:
+        logger.info("Cleared %d stale 'running' session(s) on restart", _cleared)
 
     ws = workspace_manager.ensure_default()
 
