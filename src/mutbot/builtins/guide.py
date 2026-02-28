@@ -50,6 +50,7 @@ class GuideSession(AgentSession):
         from mutagent.toolkits.web_toolkit import WebToolkit
         from mutbot.toolkits.session_toolkit import SessionToolkit
         from mutbot.runtime.session_impl import setup_environment, create_llm_client
+        import mutagent.builtins.web_local  # noqa: F401  -- 注册 LocalFetchImpl
 
         setup_environment(config)
 
