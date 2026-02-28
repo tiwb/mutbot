@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { ReconnectingWebSocket } from "../lib/websocket";
 import type { WorkspaceRpc } from "../lib/workspace-rpc";
 import { rlog, setLogSocket } from "../lib/remote-log";
-import MessageList, { type ChatMessage } from "../components/MessageList";
+import MessageList, { type ChatMessage, type AgentDisplay } from "../components/MessageList";
 import ChatInput from "../components/ChatInput";
 import AgentStatusBar from "../components/AgentStatusBar";
 import ModelSelector from "../components/ModelSelector";
@@ -39,7 +39,14 @@ export default function AgentPanel({ sessionId, rpc, onSessionLink }: Props) {
   const [agentStatus, setAgentStatus] = useState<AgentStatus>("idle");
   const [tokenUsage, setTokenUsage] = useState<TokenUsage | null>(null);
   const [currentModel, setCurrentModel] = useState("");
+  const [agentDisplayBase, setAgentDisplayBase] = useState<AgentDisplay>({ name: "Agent" });
   const [scrollSignal, setScrollSignal] = useState(0);
+
+  // Agent 显示名称优先使用模型名
+  const agentDisplay: AgentDisplay = {
+    ...agentDisplayBase,
+    name: currentModel || agentDisplayBase.name,
+  };
   const wsRef = useRef<ReconnectingWebSocket | null>(null);
   const pendingTextRef = useRef(pendingTextCache.get(sessionId) ?? "");
   const messagesRef = useRef<ChatMessage[]>(messages);
@@ -145,6 +152,24 @@ export default function AgentPanel({ sessionId, rpc, onSessionLink }: Props) {
       pendingTextRef.current = "";
     } else if (eventType === "turn_done") {
       pendingTextRef.current = "";
+      // 回填最后一条 assistant text 消息的时间元数据
+      const ts = data.timestamp as string | undefined;
+      const dur = data.duration_seconds as number | undefined;
+      const model = data.model as string | undefined;
+      if (ts) {
+        setMessages((prev) => {
+          for (let i = prev.length - 1; i >= 0; i--) {
+            const m = prev[i]!;
+            if (m.role === "assistant" && m.type === "text") {
+              const updated = [...prev];
+              updated[i] = { id: m.id, role: "assistant" as const, type: "text" as const, content: m.content, timestamp: ts, durationSeconds: dur, model };
+              return updated;
+            }
+            if (m.role === "user") break;
+          }
+          return prev;
+        });
+      }
       if (DEBUG) {
         setMessages((prev) => {
           rlog.debug("turn_done: total msgs =", prev.length);
@@ -181,6 +206,8 @@ export default function AgentPanel({ sessionId, rpc, onSessionLink }: Props) {
       }
     } else if (eventType === "user_message") {
       const text = data.text as string;
+      const timestamp = data.timestamp as string | undefined;
+      const turnId = data.turn_id as string | undefined;
       setMessages((prev) => [
         ...prev,
         {
@@ -188,6 +215,8 @@ export default function AgentPanel({ sessionId, rpc, onSessionLink }: Props) {
           role: "user" as const,
           type: "text" as const,
           content: text,
+          timestamp,
+          turnId,
         },
       ]);
     } else if (eventType === "agent_status") {
@@ -249,13 +278,16 @@ export default function AgentPanel({ sessionId, rpc, onSessionLink }: Props) {
                 total_tokens: number;
                 context_used: number;
                 context_window: number;
+                turn_timestamps?: { user_timestamps: string[]; agent_timestamp: string; duration_seconds: number; model?: string }[];
+                agent_display?: { name: string; avatar?: string };
               }>("session.messages", { session_id: sessionId }).then((result) => {
+                if (result.agent_display) {
+                  setAgentDisplayBase(result.agent_display);
+                }
                 if (result.messages && result.messages.length > 0) {
                   if (DEBUG) rlog.debug("Restoring", result.messages.length, "messages from history");
                   const restored: ChatMessage[] = [];
-                  // Track tool_call results from subsequent user messages
                   const toolResultMap = new Map<string, { content: string; isError: boolean }>();
-                  // Pre-scan for tool results
                   for (const msg of result.messages) {
                     if (msg.role === "user" && msg.tool_results) {
                       for (const tr of msg.tool_results) {
@@ -263,14 +295,29 @@ export default function AgentPanel({ sessionId, rpc, onSessionLink }: Props) {
                       }
                     }
                   }
+
+                  // 按 turn 分配时间戳：每轮 turn 的用户消息和 agent 响应
+                  const turns = result.turn_timestamps ?? [];
+                  let turnIdx = 0;
+                  let userMsgInTurn = 0;
+
                   for (const msg of result.messages) {
                     if (msg.role === "user" && !msg.tool_results) {
+                      const turn = turns[turnIdx];
+                      const ts = turn?.user_timestamps?.[userMsgInTurn];
                       restored.push({
                         id: crypto.randomUUID(),
                         role: "user",
                         type: "text",
                         content: msg.content,
+                        timestamp: ts,
                       });
+                      userMsgInTurn++;
+                      // 当前 turn 的用户消息已全部匹配，推进到下一个 turn
+                      if (turn && userMsgInTurn >= turn.user_timestamps.length) {
+                        turnIdx++;
+                        userMsgInTurn = 0;
+                      }
                     } else if (msg.role === "assistant") {
                       if (msg.content) {
                         restored.push({
@@ -299,8 +346,50 @@ export default function AgentPanel({ sessionId, rpc, onSessionLink }: Props) {
                           });
                         }
                       }
+                      // 如果这是该 turn 最后的 assistant 消息（下一条是 user 或结束）
+                      // 回填 timestamp 和 duration
+                    } else if (msg.role === "user" && msg.tool_results) {
+                      // tool_results 消息不显示，跳过
                     }
                   }
+
+                  // 回填 agent 时间戳：对每个 turn，找最后一条 assistant text 消息
+                  if (turns.length > 0) {
+                    let ti = 0;
+                    let userCount = 0;
+                    for (let i = 0; i < restored.length; i++) {
+                      const m = restored[i]!;
+                      if (m.role === "user" && m.type === "text") {
+                        userCount++;
+                        const turn = turns[ti];
+                        if (turn && userCount >= turn.user_timestamps.length) {
+                          let lastAssistant = -1;
+                          for (let j = i + 1; j < restored.length; j++) {
+                            const rj = restored[j]!;
+                            if (rj.role === "user") break;
+                            if (rj.role === "assistant" && rj.type === "text") {
+                              lastAssistant = j;
+                            }
+                          }
+                          if (lastAssistant >= 0) {
+                            const am = restored[lastAssistant]!;
+                            if (am.role === "assistant" && am.type === "text") {
+                              restored[lastAssistant] = {
+                                id: am.id, role: "assistant" as const, type: "text" as const,
+                                content: am.content,
+                                timestamp: turn.agent_timestamp,
+                                durationSeconds: turn.duration_seconds,
+                                model: turn.model,
+                              };
+                            }
+                          }
+                          ti++;
+                          userCount = 0;
+                        }
+                      }
+                    }
+                  }
+
                   setMessages(restored);
                 }
                 if (result.total_tokens || result.context_used) {
@@ -386,7 +475,7 @@ export default function AgentPanel({ sessionId, rpc, onSessionLink }: Props) {
         {tokenUsage && <TokenUsageDisplay usage={tokenUsage} />}
         {DEBUG && <span style={{ marginLeft: "auto", opacity: 0.5, fontSize: "0.8em" }}>msgs: {messages.length}</span>}
       </div>
-      <MessageList messages={messages} rpc={rpc ?? null} onSessionLink={onSessionLink} scrollToBottomSignal={scrollSignal} />
+      <MessageList messages={messages} rpc={rpc ?? null} agentDisplay={agentDisplay} onSessionLink={onSessionLink} scrollToBottomSignal={scrollSignal} />
       <AgentStatusBar isBusy={agentStatus !== "idle"} />
       <ChatInput onSend={handleSend} onCancel={handleCancel} disabled={!connected} isBusy={agentStatus !== "idle"} />
     </div>
@@ -406,14 +495,15 @@ function TokenUsageDisplay({ usage }: { usage: TokenUsage }) {
     : usage.contextPercent > 50 ? "var(--warning)"
     : "var(--success)";
 
-  const contextText = usage.contextPercent != null
-    ? `${usage.contextPercent}%`
-    : formatTokenCount(usage.contextUsed);
+  const sizeText = formatTokenCount(usage.contextUsed);
 
   return (
     <span className="token-usage">
       <span title={`${usage.contextUsed.toLocaleString()} / ${usage.contextWindow?.toLocaleString() ?? "?"} tokens`}>
-        Context: <span style={percentColor ? { color: percentColor } : undefined}>{contextText}</span>
+        Context: {sizeText}
+        {usage.contextPercent != null && (
+          <span style={percentColor ? { color: percentColor } : undefined}> ({usage.contextPercent}%)</span>
+        )}
       </span>
       <span className="token-usage-sep">|</span>
       <span title={`Session total: ${usage.sessionTotalTokens.toLocaleString()} tokens`}>

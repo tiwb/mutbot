@@ -4,12 +4,19 @@ import Markdown from "./Markdown";
 import ToolCallCard, { type ToolGroupData } from "./ToolCallCard";
 import RpcMenu from "./RpcMenu";
 import CodeBlock from "./CodeBlock";
+import Avatar from "./Avatar";
 
 export type ChatMessage =
-  | { id: string; role: "user"; type: "text"; content: string }
-  | { id: string; role: "assistant"; type: "text"; content: string }
+  | { id: string; role: "user"; type: "text"; content: string; timestamp?: string; turnId?: string }
+  | { id: string; role: "assistant"; type: "text"; content: string; timestamp?: string; durationSeconds?: number; model?: string }
   | { id: string; role: "assistant"; type: "tool_group"; data: ToolGroupData }
   | { id: string; role: "assistant"; type: "error"; content: string };
+
+/** Agent 显示信息，由 AgentPanel 传入。 */
+export interface AgentDisplay {
+  name: string;
+  avatar?: string;
+}
 
 type MarkdownMode = "rendered" | "source";
 
@@ -23,16 +30,49 @@ function loadMarkdownMode(): MarkdownMode {
   return "rendered";
 }
 
+// --- 时间格式化 ---
+
+function formatMessageTime(isoTimestamp: string): string {
+  const date = new Date(isoTimestamp);
+  const now = new Date();
+  const hh = date.getHours().toString().padStart(2, "0");
+  const mm = date.getMinutes().toString().padStart(2, "0");
+  const time = `${hh}:${mm}`;
+  if (
+    date.getFullYear() === now.getFullYear() &&
+    date.getMonth() === now.getMonth() &&
+    date.getDate() === now.getDate()
+  ) {
+    return time;
+  }
+  if (date.getFullYear() === now.getFullYear()) {
+    return `${date.getMonth() + 1}/${date.getDate()} ${time}`;
+  }
+  return `${date.getFullYear()}/${date.getMonth() + 1}/${date.getDate()} ${time}`;
+}
+
+function formatDuration(seconds: number): string {
+  if (seconds >= 60) {
+    const m = Math.floor(seconds / 60);
+    const s = seconds % 60;
+    return `${m}m ${s}s`;
+  }
+  return `${seconds}s`;
+}
+
+// --- Props ---
+
 interface Props {
   messages: ChatMessage[];
   rpc: WorkspaceRpc | null;
+  agentDisplay: AgentDisplay;
   onSessionLink?: (sessionId: string) => void;
   scrollToBottomSignal?: number;
 }
 
 const AT_BOTTOM_THRESHOLD = 150;
 
-export default function MessageList({ messages, rpc, onSessionLink, scrollToBottomSignal }: Props) {
+export default function MessageList({ messages, rpc, agentDisplay, onSessionLink, scrollToBottomSignal }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const [atBottom, setAtBottom] = useState(true);
@@ -43,7 +83,6 @@ export default function MessageList({ messages, rpc, onSessionLink, scrollToBott
     msgId: string | null;
   } | null>(null);
 
-  // Track atBottom via scroll events
   const handleScroll = useCallback(() => {
     const el = scrollRef.current;
     if (!el) return;
@@ -52,7 +91,6 @@ export default function MessageList({ messages, rpc, onSessionLink, scrollToBott
     setAtBottom(isAtBottom);
   }, []);
 
-  // Auto-scroll when new content arrives (if user is at bottom)
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
@@ -61,7 +99,6 @@ export default function MessageList({ messages, rpc, onSessionLink, scrollToBott
     }
   }, [messages]);
 
-  // Force scroll to bottom on send signal
   useEffect(() => {
     if (scrollToBottomSignal && scrollToBottomSignal > 0) {
       const el = scrollRef.current;
@@ -74,7 +111,6 @@ export default function MessageList({ messages, rpc, onSessionLink, scrollToBott
     }
   }, [scrollToBottomSignal]);
 
-  // 从 messages 数组中查找消息
   const findMessage = useCallback(
     (id: string) => messages.find((m) => m.id === id) ?? null,
     [messages],
@@ -82,7 +118,6 @@ export default function MessageList({ messages, rpc, onSessionLink, scrollToBott
 
   const handleContextMenu = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
-    // 从 target 向上查找 .message[data-msg-id]
     let el = e.target as HTMLElement | null;
     while (el && !el.hasAttribute("data-msg-id")) {
       if (el === e.currentTarget) { el = null; break; }
@@ -92,7 +127,6 @@ export default function MessageList({ messages, rpc, onSessionLink, scrollToBott
     setContextMenu({ position: { x: e.clientX, y: e.clientY }, msgId });
   }, []);
 
-  // 构建 RpcMenu context
   const menuContext = (() => {
     if (!contextMenu) return {};
     const msg = contextMenu.msgId ? findMessage(contextMenu.msgId) : null;
@@ -144,11 +178,45 @@ export default function MessageList({ messages, rpc, onSessionLink, scrollToBott
     <div className="message-list" onContextMenu={handleContextMenu}>
       <div className="message-list-scroller" ref={scrollRef} onScroll={handleScroll}>
         <div ref={listRef}>
-          {messages.map((msg) => (
-            <div key={msg.id}>
-              {renderMessage(msg, markdownMode, onSessionLink)}
-            </div>
-          ))}
+          {messages.map((msg, idx) => {
+            // 连续同角色合并：仅首条显示头像和名称
+            const prev = idx > 0 ? messages[idx - 1] : null;
+            const showAvatar = !prev || prev.role !== msg.role;
+            // Agent 名称：优先使用该消息记录的 model，回退到全局 agentDisplay
+            const agentName = (msg.role === "assistant" && msg.type === "text" && msg.model)
+              ? msg.model
+              : agentDisplay.name;
+            return (
+              <div key={msg.id} className={`message-row ${msg.role}${showAvatar ? "" : " continuation"}`}>
+                {msg.role === "assistant" ? (
+                  <>
+                    <div className="avatar-col">
+                      {showAvatar && <Avatar name={agentName} avatar={agentDisplay.avatar} />}
+                    </div>
+                    <div className="content-col">
+                      {showAvatar && <div className="message-sender">{agentName}</div>}
+                      <div className="bubble-wrap">
+                        {renderBubble(msg, markdownMode, onSessionLink)}
+                        {renderMeta(msg)}
+                      </div>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="content-col">
+                      <div className="bubble-wrap">
+                        {renderBubble(msg, markdownMode, onSessionLink)}
+                        {renderMeta(msg)}
+                      </div>
+                    </div>
+                    <div className="avatar-col">
+                      {showAvatar && <Avatar name="User" />}
+                    </div>
+                  </>
+                )}
+              </div>
+            );
+          })}
         </div>
       </div>
       {!atBottom && (
@@ -176,7 +244,8 @@ export default function MessageList({ messages, rpc, onSessionLink, scrollToBott
   );
 }
 
-function renderMessage(
+/** 渲染消息气泡内容（不含 meta） */
+function renderBubble(
   msg: ChatMessage,
   markdownMode: MarkdownMode,
   onSessionLink?: (sessionId: string) => void,
@@ -184,7 +253,7 @@ function renderMessage(
   switch (msg.type) {
     case "text":
       return (
-        <div className={`message ${msg.role} text`} data-msg-id={msg.id}>
+        <div className={`message-bubble ${msg.role} text`} data-msg-id={msg.id}>
           {msg.role === "assistant" ? (
             markdownMode === "source" ? (
               <CodeBlock code={msg.content} lang="markdown" />
@@ -201,14 +270,14 @@ function renderMessage(
 
     case "tool_group":
       return (
-        <div className="message assistant tool-group" data-msg-id={msg.id}>
+        <div className="message-bubble assistant tool-group" data-msg-id={msg.id}>
           <ToolCallCard data={msg.data} />
         </div>
       );
 
     case "error":
       return (
-        <div className="message assistant error" data-msg-id={msg.id}>
+        <div className="message-bubble assistant error" data-msg-id={msg.id}>
           <div className="tool-label">Error</div>
           <div className="message-content">
             <pre>{msg.content}</pre>
@@ -216,4 +285,24 @@ function renderMessage(
         </div>
       );
   }
+}
+
+/** 渲染时间 meta（响应式，与气泡同行或换行） */
+function renderMeta(msg: ChatMessage) {
+  if (msg.role === "user" && msg.type === "text" && msg.timestamp) {
+    return <span className="message-meta">{formatMessageTime(msg.timestamp)}</span>;
+  }
+  if (msg.role === "assistant" && msg.type === "text" && msg.timestamp) {
+    const dur = msg.durationSeconds;
+    const timeStr = formatMessageTime(msg.timestamp);
+    if (dur != null && dur >= 10) {
+      return (
+        <span className="message-meta">
+          ✻ {formatDuration(dur)} · {timeStr}
+        </span>
+      );
+    }
+    return <span className="message-meta">{timeStr}</span>;
+  }
+  return null;
 }

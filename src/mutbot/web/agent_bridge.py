@@ -8,7 +8,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
+from datetime import datetime, timezone
 from typing import Any, Callable, Awaitable, TYPE_CHECKING
+from uuid import uuid4
 
 from mutagent.messages import InputEvent, Message, StreamEvent, ToolCall, ToolResult
 
@@ -22,6 +25,11 @@ logger = logging.getLogger(__name__)
 
 # Type alias for the async broadcast function
 BroadcastFn = Callable[[str, dict[str, Any]], Awaitable[None]]
+
+
+def _local_iso_now() -> str:
+    """返回本地时区的 ISO 格式时间戳。"""
+    return datetime.now().astimezone().isoformat(timespec="seconds")
 
 
 class AgentBridge:
@@ -47,6 +55,7 @@ class AgentBridge:
         broadcast_fn: BroadcastFn,
         session: AgentSession,
         persist_fn: Callable[[], None],
+        turn_timestamps: list[dict[str, Any]] | None = None,
     ) -> None:
         self.session_id = session_id
         self.agent = agent
@@ -65,10 +74,18 @@ class AgentBridge:
         self._completed_results: list[ToolResult] = []
         self._response_committed: bool = False
 
+        # --- Turn 时间追踪 ---
+        self._agent_status: str = "idle"
+        self._current_turn_id: str = ""
+        self._turn_start_time: float = 0.0
+        self._turn_user_timestamps: list[str] = []
+        self.turn_timestamps: list[dict[str, Any]] = turn_timestamps or []
+
     # --- Broadcasting helpers ---
 
     async def _broadcast_status(self, status: str, **extra: Any) -> None:
         """推送 agent_status 事件。"""
+        self._agent_status = status
         data: dict[str, Any] = {"type": "agent_status", "status": status}
         data.update(extra)
         await self.broadcast_fn(self.session_id, data)
@@ -215,8 +232,10 @@ class AgentBridge:
                     # 追踪飞行中状态
                     self._track_event(event)
 
-                    data = serialize_stream_event(event)
-                    await self.broadcast_fn(self.session_id, data)
+                    # turn_done 由下面增强版本广播，跳过通用序列化
+                    if event.type != "turn_done":
+                        data = serialize_stream_event(event)
+                        await self.broadcast_fn(self.session_id, data)
 
                     # 注入 agent_status 事件
                     if event.type == "tool_exec_start":
@@ -225,6 +244,27 @@ class AgentBridge:
                     elif event.type == "tool_exec_end":
                         await self._broadcast_status("thinking")
                     elif event.type == "turn_done":
+                        # 计算耗时并广播增强的 turn_done
+                        turn_is_complete = self._input_queue.empty()
+                        duration = round(time.monotonic() - self._turn_start_time) if self._turn_start_time else 0
+                        ts = _local_iso_now()
+                        model = getattr(self.agent.client, "model", "") or ""
+                        turn_done_data: dict[str, Any] = {
+                            "type": "turn_done",
+                            "timestamp": ts,
+                            "turn_id": self._current_turn_id,
+                            "duration_seconds": duration,
+                            "model": model,
+                        }
+                        if turn_is_complete:
+                            # 记录 turn_timestamps
+                            self.turn_timestamps.append({
+                                "user_timestamps": list(self._turn_user_timestamps),
+                                "agent_timestamp": ts,
+                                "duration_seconds": duration,
+                                "model": model,
+                            })
+                        await self.broadcast_fn(self.session_id, turn_done_data)
                         await self._broadcast_status("idle")
 
                     # 注入 token_usage 事件
@@ -262,9 +302,22 @@ class AgentBridge:
         """Feed a user message into the Agent."""
         event = InputEvent(type="user_message", text=text, data=data or {})
         hidden = (data or {}).get("hidden", False)
+
         if not hidden:
+            # Turn 归组：idle 时新建 turn，busy 时复用
+            if self._agent_status == "idle":
+                self._current_turn_id = uuid4().hex[:12]
+                self._turn_start_time = time.monotonic()
+                self._turn_user_timestamps = []
+
+            ts = _local_iso_now()
+            self._turn_user_timestamps.append(ts)
+
             # Broadcast user message to all connected clients
-            user_event = {"type": "user_message", "text": text, "data": data or {}}
+            user_event: dict[str, Any] = {
+                "type": "user_message", "text": text, "data": data or {},
+                "timestamp": ts, "turn_id": self._current_turn_id,
+            }
             asyncio.ensure_future(self.broadcast_fn(self.session_id, user_event))
             # 用户发消息后推送 thinking 状态（hidden 消息不推送）
             asyncio.ensure_future(self._broadcast_status("thinking"))

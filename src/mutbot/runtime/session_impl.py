@@ -425,11 +425,16 @@ class SessionManager:
         rt = self.get_agent_runtime(session.id)
         if rt and rt.agent and rt.agent.messages:
             data["messages"] = [serialize_message(m) for m in rt.agent.messages]
+            # 保存 turn_timestamps
+            if rt.bridge is not None:
+                data["turn_timestamps"] = rt.bridge.turn_timestamps
         else:
             # 没有 runtime 时保留磁盘上已有的 messages（避免覆写丢失）
             existing = storage.load_session_metadata(session.id)
             if existing and "messages" in existing:
                 data["messages"] = existing["messages"]
+            if existing and "turn_timestamps" in existing:
+                data["turn_timestamps"] = existing["turn_timestamps"]
         storage.save_session_metadata(data)
 
     def _load_agent_messages(self, session_id: str) -> list[Message]:
@@ -610,10 +615,15 @@ class SessionManager:
         def _persist_fn():
             sm._persist(session)
 
+        # 加载已有的 turn_timestamps
+        saved_data = storage.load_session_metadata(session_id)
+        saved_turn_ts = saved_data.get("turn_timestamps", []) if saved_data else []
+
         bridge = AgentBridge(
             session_id, agent, loop, broadcast_fn,
             session=session,
             persist_fn=_persist_fn,
+            turn_timestamps=saved_turn_ts,
         )
 
         # --- Session 级日志 FileHandler ---

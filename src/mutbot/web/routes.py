@@ -311,12 +311,22 @@ async def handle_session_messages(params: dict, ctx: RpcContext) -> dict:
     data = storage.load_session_metadata(session_id)
     if not data or "messages" not in data:
         return {"session_id": session_id, "messages": []}
+
+    # Agent 显示信息
+    display_name = getattr(type(session), "display_name", "") or type(session).__name__
+    agent_display: dict = {"name": display_name}
+    avatar = session.config.get("avatar") if hasattr(session, "config") else None
+    if avatar:
+        agent_display["avatar"] = avatar
+
     return {
         "session_id": session_id,
         "messages": data["messages"],
         "total_tokens": data.get("total_tokens", 0),
         "context_used": data.get("context_used", 0),
         "context_window": data.get("context_window", 0),
+        "turn_timestamps": data.get("turn_timestamps", []),
+        "agent_display": agent_display,
     }
 
 

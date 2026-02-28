@@ -663,42 +663,189 @@ body,
   color: var(--text);
 }
 
-.message {
-  max-width: 85%;
-  border-radius: 4px;
-  line-height: 1.6;
-  margin: 6px 16px;
+/* ---- Message row: two-column layout with avatar ---- */
+
+.message-row {
+  display: flex;
+  align-items: flex-start;
+  margin: 2px 16px;
+  gap: 8px;
 }
 
-.message:first-child {
+.message-row:first-child {
   margin-top: 16px;
 }
 
-.message.user {
-  margin-left: auto;
+/* 连续同角色消息间距更小 */
+.message-row.continuation {
+  margin-top: 1px;
+}
+
+/* 非连续消息（角色切换）加大间距 */
+.message-row:not(.continuation) {
+  margin-top: 10px;
+}
+
+.avatar-col {
+  flex-shrink: 0;
+  width: 32px;
+}
+
+.content-col {
+  min-width: 0;
+  max-width: 85%;
+}
+
+.message-row.user {
+  flex-direction: row;
+  justify-content: flex-end;
+}
+
+.message-row.user .content-col {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+}
+
+.message-sender {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-dim);
+  margin-bottom: 2px;
+  margin-left: 2px;
+}
+
+/* ---- Bubble wrap: flex-wrap for responsive meta ---- */
+
+.bubble-wrap {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 6px;
+}
+
+.message-row.assistant .bubble-wrap {
+  justify-content: flex-start;
+}
+
+.message-row.user .bubble-wrap {
+  justify-content: flex-end;
+}
+
+/* ---- Message bubble (replaces old .message) ---- */
+
+.message-bubble {
+  border-radius: 4px;
+  line-height: 1.6;
+  position: relative;
+}
+
+.message-bubble.user.text {
   background: var(--bg-msg-user);
   padding: 10px 14px;
 }
 
-.message.assistant.text {
+.message-bubble.assistant.text {
   background: var(--bg-msg-assistant);
   border: 1px solid var(--border);
   padding: 10px 14px;
 }
 
-.message.assistant.tool-group {
-  max-width: 90%;
+.message-bubble.assistant.tool-group {
+  width: 100%;
   padding: 0;
   background: transparent;
   border: none;
 }
 
-.message.assistant.error {
+.message-bubble.assistant.error {
   background: rgba(241, 76, 76, 0.1);
   border: 1px solid var(--error);
   color: var(--error);
   padding: 10px 14px;
 }
+
+/* ---- Bubble arrows ---- */
+
+.message-bubble.assistant.text::before {
+  content: "";
+  position: absolute;
+  top: 12px;
+  left: -6px;
+  width: 0;
+  height: 0;
+  border-top: 5px solid transparent;
+  border-bottom: 5px solid transparent;
+  border-right: 6px solid var(--border);
+}
+
+.message-bubble.assistant.text::after {
+  content: "";
+  position: absolute;
+  top: 12px;
+  left: -4px;
+  width: 0;
+  height: 0;
+  border-top: 5px solid transparent;
+  border-bottom: 5px solid transparent;
+  border-right: 6px solid var(--bg-msg-assistant);
+}
+
+.message-bubble.user.text::after {
+  content: "";
+  position: absolute;
+  top: 12px;
+  right: -6px;
+  width: 0;
+  height: 0;
+  border-top: 5px solid transparent;
+  border-bottom: 5px solid transparent;
+  border-left: 6px solid var(--bg-msg-user);
+}
+
+/* ---- Message meta (timestamp / duration) ---- */
+
+.message-meta {
+  font-size: 11px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  line-height: 1.6;
+  user-select: none;
+  flex-shrink: 0;
+}
+
+/* User meta 在左侧（bubble-wrap 内靠右气泡的左边） */
+.message-row.user .message-meta {
+  order: -1;  /* 排在气泡前面 */
+}
+
+/* ---- Avatar ---- */
+
+.avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.avatar-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.avatar-initials {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px solid;
+  background: transparent;
+  font-weight: 600;
+  font-family: inherit;
+}
+
+/* ---- Legacy .message rules (keep for tool-label etc.) ---- */
 
 .tool-label {
   font-size: 10px;
