@@ -498,8 +498,13 @@ class AgentBridge:
 
         self._agent_task = self.loop.create_task(_run())
 
-    def send_message(self, text: str, data: dict | None = None) -> None:
-        """Feed a user message into the Agent."""
+    def send_message(self, text: str, data: dict | None = None, *, skip_user_broadcast: bool = False) -> None:
+        """Feed a user message into the Agent.
+
+        Args:
+            skip_user_broadcast: 为 True 时跳过 user_message 广播（调用方已预先广播）。
+                                 仍执行持久化、turn 管理和入队。
+        """
         event = InputEvent(type="user_message", text=text, data=data or {})
         hidden = (data or {}).get("hidden", False)
 
@@ -542,12 +547,13 @@ class AgentBridge:
             })
 
             # Broadcast user message to all connected clients
-            user_event: dict[str, Any] = {
-                "type": "user_message", "text": text, "data": data or {},
-                "timestamp": ts, "turn_id": self._current_turn_id,
-                "model": model, "sender": "User", "id": user_msg_id,
-            }
-            asyncio.ensure_future(self.broadcast_fn(self.session_id, user_event))
+            if not skip_user_broadcast:
+                user_event: dict[str, Any] = {
+                    "type": "user_message", "text": text, "data": data or {},
+                    "timestamp": ts, "turn_id": self._current_turn_id,
+                    "model": model, "sender": "User", "id": user_msg_id,
+                }
+                asyncio.ensure_future(self.broadcast_fn(self.session_id, user_event))
             # 用户发消息后推送 thinking 状态（hidden 消息不推送）
             asyncio.ensure_future(self._broadcast_status("thinking"))
         # 入队放在 ensure_future 之后，确保广播先于 agent 处理（FIFO 调度）

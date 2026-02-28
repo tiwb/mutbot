@@ -822,6 +822,18 @@ async def websocket_session(websocket: WebSocket, session_id: str):
                 if text:
                     # 延迟启动：非活跃 session 在用户发消息时激活
                     if bridge is None:
+                        # 立即广播 user_message，不等 bridge 初始化
+                        from mutbot.web.agent_bridge import _gen_msg_id, _local_iso_now
+                        pre_msg_id = _gen_msg_id()
+                        pre_ts = _local_iso_now()
+                        await connection_manager.broadcast(session_id, {
+                            "type": "user_message",
+                            "id": pre_msg_id,
+                            "text": text,
+                            "timestamp": pre_ts,
+                            "sender": "User",
+                        })
+
                         was_inactive = session.status in ("", "stopped")
                         try:
                             bridge = sm.start(session_id, loop, connection_manager.broadcast)
@@ -836,7 +848,9 @@ async def websocket_session(websocket: WebSocket, session_id: str):
                                 session.workspace_id,
                                 make_event("session_updated", _session_dict(session)),
                             )
-                    bridge.send_message(text, data)
+                        bridge.send_message(text, data, skip_user_broadcast=True)
+                    else:
+                        bridge.send_message(text, data)
             elif msg_type == "cancel":
                 if bridge:
                     await bridge.cancel()

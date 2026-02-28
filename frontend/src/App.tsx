@@ -25,6 +25,7 @@ import { WorkspaceRpc } from "./lib/workspace-rpc";
 import { AppRpc } from "./lib/app-rpc";
 import { getSessionIcon } from "./components/SessionIcons";
 import IconPicker from "./components/IconPicker";
+import WelcomePage from "./components/WelcomePage";
 import WorkspaceSelector from "./components/WorkspaceSelector";
 import type { Workspace, Session } from "./lib/types";
 
@@ -33,6 +34,15 @@ import type { Workspace, Session } from "./lib/types";
 /** Find the active tabset, or fall back to the first tabset in the model. */
 function getTargetTabset(model: Model): TabSetNode | undefined {
   return model.getActiveTabset() ?? model.getFirstTabSet();
+}
+
+/** Check if the model contains any tab nodes. */
+function modelHasTabs(model: Model): boolean {
+  let found = false;
+  model.visitNodes((node) => {
+    if (!found && node.getType() === "tab") found = true;
+  });
+  return found;
 }
 
 /** Resolve the sessionId for a tab node, with terminalId fallback. */
@@ -64,6 +74,10 @@ export default function App() {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- setEditingTab is internal API
   const layoutRef = useRef<any>(null);
   const [, forceUpdate] = useState(0);
+
+  // 是否有打开的 tab（用于欢迎页和自动打开逻辑）
+  const [hasOpenTabs, setHasOpenTabs] = useState(false);
+  const hasOpenTabsRef = useRef(false);
 
   // Tab context menu state
   const [tabContextMenu, setTabContextMenu] = useState<{
@@ -363,6 +377,24 @@ export default function App() {
   );
 
   // ------------------------------------------------------------------
+  // Welcome page: create session directly (bypasses menu system)
+  // ------------------------------------------------------------------
+
+  const handleCreateSession = useCallback(
+    async (sessionType: string) => {
+      if (!rpcRef.current || !workspace) return;
+      try {
+        const session: Session = await rpcRef.current.call("session.create", {
+          workspace_id: workspace.id,
+          type: sessionType,
+        });
+        addTabForSession(session);
+      } catch { /* silent */ }
+    },
+    [workspace, addTabForSession],
+  );
+
+  // ------------------------------------------------------------------
   // Session selection from list
   // ------------------------------------------------------------------
 
@@ -535,6 +567,13 @@ export default function App() {
 
   const handleModelChange = useCallback(
     (model: Model) => {
+      // 更新 hasOpenTabs 状态
+      const hasTabs = modelHasTabs(model);
+      if (hasTabs !== hasOpenTabsRef.current) {
+        hasOpenTabsRef.current = hasTabs;
+        setHasOpenTabs(hasTabs);
+      }
+
       if (!workspace) return;
       // Debounce layout saves to avoid flooding the server during drag resize
       if (layoutSaveTimer.current) clearTimeout(layoutSaveTimer.current);
@@ -924,6 +963,7 @@ export default function App() {
             onReorderSessions={handleReorderSessions}
             onChangeIcon={(sessionId, position) => setIconPicker({ sessionId, position })}
             onHeaderAction={handleHeaderAction}
+            onMenuResult={handleMenuResult}
           />
         </div>
         {!sidebarCollapsed && (
@@ -941,6 +981,9 @@ export default function App() {
               onAction={handleAction}
               realtimeResize={true}
             />
+          )}
+          {!hasOpenTabs && (
+            <WelcomePage rpc={rpc} onCreateSession={handleCreateSession} />
           )}
         </div>
       </div>

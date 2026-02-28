@@ -61,6 +61,8 @@ def _item_to_dict(item: MenuItem) -> dict:
         d["client_action"] = item.client_action
     if item.data:
         d["data"] = item.data
+    if item.submenu_category:
+        d["submenu_category"] = item.submenu_category
     return d
 
 
@@ -143,6 +145,7 @@ class MenuRegistry:
 
                 shortcut = _get_attr_default(menu_cls, "display_shortcut") or ""
                 client_act = _get_attr_default(menu_cls, "client_action") or ""
+                submenu_cat = _get_attr_default(menu_cls, "display_submenu_category") or ""
 
                 items.append(MenuItem(
                     id=_menu_id(menu_cls),
@@ -153,6 +156,7 @@ class MenuRegistry:
                     visible=True,
                     shortcut=shortcut,
                     client_action=client_act,
+                    submenu_category=submenu_cat,
                 ))
 
         items.sort(key=lambda it: it.order)

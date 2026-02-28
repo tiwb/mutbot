@@ -33,6 +33,7 @@ interface Props {
   onReorderSessions?: (sessionIds: string[]) => void;
   onChangeIcon?: (sessionId: string, position: { x: number; y: number }) => void;
   onHeaderAction?: (action: string, data: Record<string, unknown>) => void;
+  onMenuResult?: (result: MenuExecResult) => void;
 }
 
 const STORAGE_KEY = "mutbot-sidebar-collapsed";
@@ -47,6 +48,7 @@ export default function SessionListPanel({
   onReorderSessions,
   onChangeIcon,
   onHeaderAction,
+  onMenuResult,
 }: Props) {
   const [collapsed, setCollapsed] = useState(() => {
     try {
@@ -59,6 +61,11 @@ export default function SessionListPanel({
   const [contextMenu, setContextMenu] = useState<{
     position: { x: number; y: number };
     sessionId: string;
+  } | null>(null);
+
+  // 空白区域右键菜单状态
+  const [blankContextMenu, setBlankContextMenu] = useState<{
+    position: { x: number; y: number };
   } | null>(null);
 
   // Inline rename state
@@ -111,6 +118,19 @@ export default function SessionListPanel({
 
   const closeContextMenu = useCallback(() => {
     setContextMenu(null);
+  }, []);
+
+  // 空白区域右键菜单
+  const handleBlankContextMenu = useCallback((e: React.MouseEvent) => {
+    // 仅在点击列表空白区域时触发（非 session item）
+    const target = e.target as HTMLElement;
+    if (target.closest(".session-item") || target.closest(".session-icon-item")) return;
+    e.preventDefault();
+    setBlankContextMenu({ position: { x: e.clientX, y: e.clientY } });
+  }, []);
+
+  const closeBlankContextMenu = useCallback(() => {
+    setBlankContextMenu(null);
   }, []);
 
   const startRename = useCallback((sessionId: string) => {
@@ -307,6 +327,15 @@ export default function SessionListPanel({
             onClientAction={handleClientAction}
           />
         )}
+        {blankContextMenu && (
+          <RpcMenu
+            rpc={rpc}
+            category="SessionList/Blank"
+            position={blankContextMenu.position}
+            onClose={closeBlankContextMenu}
+            onResult={onMenuResult}
+          />
+        )}
       </div>
     );
   }
@@ -340,7 +369,7 @@ export default function SessionListPanel({
           onClientAction={onHeaderAction}
         />
       </div>
-      <div className="session-list">
+      <div className="session-list" onContextMenu={handleBlankContextMenu}>
         <ul>
           {sorted.map((s) => {
             const statusDisplay = getStatusDisplay(s.status);
@@ -407,6 +436,15 @@ export default function SessionListPanel({
           onClose={closeContextMenu}
           onResult={handleMenuResult}
           onClientAction={handleClientAction}
+        />
+      )}
+      {blankContextMenu && (
+        <RpcMenu
+          rpc={rpc}
+          category="SessionList/Blank"
+          position={blankContextMenu.position}
+          onClose={closeBlankContextMenu}
+          onResult={onMenuResult}
         />
       )}
     </div>

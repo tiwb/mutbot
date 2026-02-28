@@ -34,6 +34,8 @@ class MenuItem:
     client_action: str = ""
     # 额外数据（前端可选使用）
     data: dict = field(default_factory=dict)
+    # 非空时表示这是一个子菜单触发项，值为子菜单的 category
+    submenu_category: str = ""
 
 
 @dataclass
@@ -71,6 +73,8 @@ class Menu(mutobj.Declaration):
     enabled: bool = True
     visible: bool = True
     client_action: str = ""
+    # 非空时，此菜单项作为子菜单父项，子菜单内容为该 category
+    display_submenu_category: str = ""
 
     def execute(self, params: dict, context: RpcContext) -> MenuResult:
         """执行菜单动作，由子类实现"""

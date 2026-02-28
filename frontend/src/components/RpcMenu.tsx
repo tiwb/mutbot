@@ -5,6 +5,8 @@
  * 1. 下拉模式（trigger）：点击触发按钮展开下拉菜单
  * 2. 上下文菜单模式（position + onClose）：在指定位置显示右键菜单
  *
+ * 支持子菜单：后端菜单项包含 submenu_category 时，hover 自动展开子菜单。
+ *
  * 用法（下拉模式）：
  *   <RpcMenu
  *     rpc={workspaceRpc}
@@ -41,6 +43,7 @@ interface RpcMenuItem {
   shortcut?: string;
   client_action?: string;
   data?: Record<string, unknown>;
+  submenu_category?: string;
 }
 
 /** menu.execute 返回的结果 */
@@ -72,6 +75,78 @@ function getGroup(order: string): string {
   return idx >= 0 ? order.slice(0, idx) : order;
 }
 
+/** 子菜单面板组件 */
+function SubMenu({
+  rpc,
+  category,
+  parentRect,
+  onExecute,
+}: {
+  rpc: RpcClient;
+  category: string;
+  parentRect: DOMRect;
+  onExecute: (item: RpcMenuItem) => void;
+}) {
+  const [items, setItems] = useState<RpcMenuItem[]>([]);
+  const [loading, setLoading] = useState(true);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    rpc.call<RpcMenuItem[]>("menu.query", { category, context: {} }).then((result) => {
+      if (!cancelled) {
+        setItems(result.filter((it) => it.visible));
+        setLoading(false);
+      }
+    }).catch(() => {
+      if (!cancelled) { setItems([]); setLoading(false); }
+    });
+    return () => { cancelled = true; };
+  }, [rpc, category]);
+
+  // 定位：父项右侧，溢出时调整
+  useEffect(() => {
+    if (!ref.current) return;
+    const el = ref.current;
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    let x = parentRect.right;
+    let y = parentRect.top;
+    const rect = el.getBoundingClientRect();
+    if (x + rect.width > vw) x = parentRect.left - rect.width;
+    if (y + rect.height > vh) y = vh - rect.height - 4;
+    if (x < 0) x = 4;
+    if (y < 0) y = 4;
+    el.style.left = `${x}px`;
+    el.style.top = `${y}px`;
+  }, [parentRect, items]);
+
+  return createPortal(
+    <div ref={ref} className="rpc-menu rpc-submenu" style={{ top: parentRect.top, left: parentRect.right }}>
+      {loading ? (
+        <div className="rpc-menu-loading">Loading...</div>
+      ) : items.length === 0 ? (
+        <div className="rpc-menu-empty">No items</div>
+      ) : (
+        items.map((item) => (
+          <button
+            key={item.id}
+            className={`rpc-menu-item ${!item.enabled ? "disabled" : ""}`}
+            disabled={!item.enabled}
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={() => onExecute(item)}
+          >
+            <span className="rpc-menu-icon">{item.icon ? renderLucideIcon(item.icon, 16, "#cccccc") : null}</span>
+            <span className="rpc-menu-label">{item.name}</span>
+            {item.shortcut && <span className="rpc-menu-shortcut">{item.shortcut}</span>}
+          </button>
+        ))
+      )}
+    </div>,
+    document.body,
+  );
+}
+
 export default function RpcMenu(props: RpcMenuProps) {
   const { rpc, category, context, onResult, onClientAction } = props;
   const isContextMenu = "position" in props && !!props.position;
@@ -85,8 +160,17 @@ export default function RpcMenu(props: RpcMenuProps) {
     isContextMenu ? { top: props.position!.y, left: props.position!.x } : { top: 0, left: 0 },
   );
 
+  // 子菜单状态
+  const [hoveredSubmenu, setHoveredSubmenu] = useState<{
+    category: string;
+    rect: DOMRect;
+  } | null>(null);
+  const submenuTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
   const close = useCallback(() => {
     setOpen(false);
+    setHoveredSubmenu(null);
+    if (submenuTimerRef.current) clearTimeout(submenuTimerRef.current);
     if (isContextMenu && props.onClose) {
       props.onClose();
     }
@@ -142,6 +226,11 @@ export default function RpcMenu(props: RpcMenuProps) {
     const handler = (e: PointerEvent) => {
       const target = e.target as Node;
       if (btnRef.current?.contains(target) || menuRef.current?.contains(target)) return;
+      // 不关闭如果点击在子菜单内
+      const submenuEls = document.querySelectorAll(".rpc-submenu");
+      for (const el of submenuEls) {
+        if (el.contains(target)) return;
+      }
       close();
     };
     document.addEventListener("pointerdown", handler);
@@ -197,6 +286,41 @@ export default function RpcMenu(props: RpcMenuProps) {
     [rpc, context, onResult, onClientAction, close],
   );
 
+  // 子菜单 hover 处理
+  const handleItemMouseEnter = useCallback(
+    (item: RpcMenuItem, e: React.MouseEvent) => {
+      if (submenuTimerRef.current) clearTimeout(submenuTimerRef.current);
+      if (item.submenu_category) {
+        const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+        submenuTimerRef.current = setTimeout(() => {
+          setHoveredSubmenu({ category: item.submenu_category!, rect });
+        }, 150);
+      } else {
+        setHoveredSubmenu(null);
+      }
+    },
+    [],
+  );
+
+  const handleItemMouseLeave = useCallback(() => {
+    if (submenuTimerRef.current) clearTimeout(submenuTimerRef.current);
+    // 延迟关闭，给用户移动到子菜单的时间
+    submenuTimerRef.current = setTimeout(() => {
+      setHoveredSubmenu(null);
+    }, 300);
+  }, []);
+
+  const handleSubmenuMouseEnter = useCallback(() => {
+    // 鼠标进入子菜单，取消关闭计时
+    if (submenuTimerRef.current) clearTimeout(submenuTimerRef.current);
+  }, []);
+
+  const handleSubmenuMouseLeave = useCallback(() => {
+    submenuTimerRef.current = setTimeout(() => {
+      setHoveredSubmenu(null);
+    }, 200);
+  }, []);
+
   // 插入分组分隔线
   const renderItems = () => {
     if (loading) {
@@ -218,29 +342,50 @@ export default function RpcMenu(props: RpcMenuProps) {
       }
       lastGroup = group;
 
+      const hasSubmenu = !!item.submenu_category;
+
       elements.push(
         <button
           key={item.id}
-          className={`rpc-menu-item ${!item.enabled ? "disabled" : ""}`}
+          className={`rpc-menu-item ${!item.enabled ? "disabled" : ""} ${hasSubmenu && hoveredSubmenu?.category === item.submenu_category ? "submenu-open" : ""}`}
           disabled={!item.enabled}
           onPointerDown={(e) => e.stopPropagation()}
-          onClick={() => handleExecute(item)}
+          onClick={() => { if (!hasSubmenu) handleExecute(item); }}
+          onMouseEnter={(e) => handleItemMouseEnter(item, e)}
+          onMouseLeave={handleItemMouseLeave}
         >
           <span className="rpc-menu-icon">{item.icon ? renderLucideIcon(item.icon, 16, "#cccccc") : null}</span>
           <span className="rpc-menu-label">{item.name}</span>
           {item.shortcut && <span className="rpc-menu-shortcut">{item.shortcut}</span>}
+          {hasSubmenu && <span className="rpc-menu-submenu-arrow">{"\u25b8"}</span>}
         </button>,
       );
     }
     return elements;
   };
 
+  const menuContent = (
+    <>
+      {renderItems()}
+      {hoveredSubmenu && rpc && (
+        <div onMouseEnter={handleSubmenuMouseEnter} onMouseLeave={handleSubmenuMouseLeave}>
+          <SubMenu
+            rpc={rpc}
+            category={hoveredSubmenu.category}
+            parentRect={hoveredSubmenu.rect}
+            onExecute={handleExecute}
+          />
+        </div>
+      )}
+    </>
+  );
+
   // 上下文菜单模式
   if (isContextMenu) {
     if (!open) return null;
     return createPortal(
       <div ref={menuRef} className="rpc-menu" style={{ top: menuPos.top, left: menuPos.left }}>
-        {renderItems()}
+        {menuContent}
       </div>,
       document.body,
     );
@@ -255,7 +400,7 @@ export default function RpcMenu(props: RpcMenuProps) {
       {open &&
         createPortal(
           <div ref={menuRef} className="rpc-menu" style={{ top: menuPos.top, left: menuPos.left }}>
-            {renderItems()}
+            {menuContent}
           </div>,
           document.body,
         )}

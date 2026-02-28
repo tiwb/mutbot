@@ -24,7 +24,7 @@ export default function ToolCallCard({ data }: Props) {
     >
       <div className="tool-card-header" onClick={() => setExpanded((v) => !v)}>
         <span className="tool-card-status">
-          {isRunning ? "\u21bb" : data.isError ? "\u2717" : "\u2713"}
+          {isRunning ? "\u25cf" : data.isError ? "\u2717" : "\u2713"}
         </span>
         <span className="tool-card-name">{data.toolName}</span>
         {!expanded && (

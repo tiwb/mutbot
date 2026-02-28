@@ -313,6 +313,19 @@ class CloseWorkspaceMenu(Menu):
 
 
 # ---------------------------------------------------------------------------
+# 内置菜单：Session 列表空白区域右键菜单 (SessionList/Blank)
+# ---------------------------------------------------------------------------
+
+class NewSessionBlankMenu(Menu):
+    """Session 列表空白区域右键菜单 — 新建 Session（子菜单）"""
+    display_name = "New Session"
+    display_icon = "plus"
+    display_category = "SessionList/Blank"
+    display_order = "0new:0"
+    display_submenu_category = "SessionPanel/Add"
+
+
+# ---------------------------------------------------------------------------
 # 内置菜单：Workspace 选择器右键 (WorkspaceSelector/Context)
 # ---------------------------------------------------------------------------
 

@@ -1146,7 +1146,7 @@ body,
 }
 
 .tool-card.running {
-  border-color: var(--accent-yellow);
+  border-color: var(--accent-green);
 }
 
 .tool-card.success {
@@ -1177,8 +1177,8 @@ body,
 }
 
 .tool-card.running .tool-card-status {
-  color: var(--accent-yellow);
-  animation: spin 1s linear infinite;
+  color: var(--accent-green);
+  animation: blink 1.2s ease-in-out infinite;
 }
 
 .tool-card.success .tool-card-status {
@@ -1189,9 +1189,9 @@ body,
   color: var(--error);
 }
 
-@keyframes spin {
-  from { transform: rotate(0deg); }
-  to { transform: rotate(360deg); }
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
 }
 
 .tool-card-name {
@@ -1971,6 +1971,18 @@ body,
   flex-shrink: 0;
 }
 
+.rpc-menu-submenu-arrow {
+  color: var(--text-dim);
+  font-size: 10px;
+  margin-left: auto;
+  padding-left: 8px;
+  flex-shrink: 0;
+}
+
+.rpc-menu-item.submenu-open {
+  background: var(--menu-hover);
+}
+
 .rpc-menu-separator {
   height: 1px;
   background: var(--menu-border);
@@ -2586,6 +2598,60 @@ body,
 .dir-picker-btn-secondary:hover {
   border-color: var(--text-dim);
   color: var(--text);
+}
+
+/* ===================================================================
+   Welcome Page (empty tabs state)
+   =================================================================== */
+
+.welcome-page {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 32px;
+  pointer-events: none;
+}
+
+.welcome-watermark {
+  font-size: 72px;
+  font-weight: 700;
+  color: rgba(255, 255, 255, 0.06);
+  user-select: none;
+  letter-spacing: 2px;
+}
+
+.welcome-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  pointer-events: auto;
+}
+
+.welcome-action-link {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  font-size: 13px;
+  padding: 6px 12px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: color 0.15s, background 0.15s;
+}
+
+.welcome-action-link:hover {
+  color: var(--text);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.welcome-action-desc {
+  color: var(--text-dim);
+  opacity: 0.7;
 }
 
 /* ===================================================================
