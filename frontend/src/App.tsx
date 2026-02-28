@@ -284,8 +284,10 @@ export default function App() {
           // 静默处理
         }
       }),
-      wsRpc.on("config_changed", () => {
-        showToast("Configuration updated. New sessions will use the latest settings.");
+      wsRpc.on("config_changed", (data) => {
+        if (data.reason === "file_changed") {
+          showToast("Configuration updated. New sessions will use the latest settings.");
+        }
       }),
     ];
 

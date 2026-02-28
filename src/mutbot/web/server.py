@@ -188,7 +188,7 @@ async def _watch_config_changes() -> None:
             if session_manager is not None:
                 session_manager._config = None
             await workspace_connection_manager.broadcast_all(
-                make_event("config_changed", {})
+                make_event("config_changed", {"reason": "file_changed"})
             )
 
 

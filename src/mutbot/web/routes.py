@@ -962,6 +962,12 @@ async def websocket_workspace(websocket: WebSocket, workspace_id: str):
     await workspace_connection_manager.connect(workspace_id, websocket)
     logger.info("Workspace WS connected: workspace=%s", workspace_id)
 
+    # 新连接推送 config_changed，让前端刷新模型列表等配置状态
+    try:
+        await websocket.send_json(make_event("config_changed", {"reason": "connect"}))
+    except Exception:
+        pass
+
     async def broadcast(data: dict) -> None:
         await workspace_connection_manager.broadcast(workspace_id, data)
 

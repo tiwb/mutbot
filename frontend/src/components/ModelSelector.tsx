@@ -26,7 +26,7 @@ export default function ModelSelector({ sessionId, currentModel, rpc }: Props) {
   const ref = useRef<HTMLDivElement>(null);
 
   // 加载可用模型列表
-  useEffect(() => {
+  const fetchModels = useCallback(() => {
     rpc.call<{ models: ModelInfo[]; default_model: string }>("config.models")
       .then((result) => {
         setModels(result.models);
@@ -34,6 +34,14 @@ export default function ModelSelector({ sessionId, currentModel, rpc }: Props) {
       })
       .catch(() => {});
   }, [rpc]);
+
+  // 挂载时加载
+  useEffect(() => { fetchModels(); }, [fetchModels]);
+
+  // 配置变更或重连时刷新
+  useEffect(() => {
+    return rpc.on("config_changed", fetchModels);
+  }, [rpc, fetchModels]);
 
   // 点击外部关闭
   useEffect(() => {
