@@ -10,13 +10,14 @@ from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
 from mutagent.agent import Agent
+from mutagent.context import AgentContext
+from mutagent.messages import Message, TextBlock
 from mutagent.tools import ToolSet
 
 from mutbot.session import AgentSession
 
 if TYPE_CHECKING:
     from mutagent.config import Config
-    from mutagent.messages import Message
 
 
 class GuideSession(AgentSession):
@@ -78,10 +79,12 @@ class GuideSession(AgentSession):
         tool_set.add(session_tools)
 
         agent = Agent(
-            client=client,
-            tool_set=tool_set,
-            system_prompt=self.system_prompt,
-            messages=messages if messages is not None else [],
+            llm=client,
+            tools=tool_set,
+            context=AgentContext(
+                prompts=[Message(role="system", blocks=[TextBlock(text=self.system_prompt)], label="base")],
+                messages=messages if messages is not None else [],
+            ),
         )
         tool_set.agent = agent
         return agent

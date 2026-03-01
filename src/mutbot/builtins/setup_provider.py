@@ -14,7 +14,7 @@ import re
 from collections import defaultdict
 from typing import AsyncIterator
 
-from mutagent.messages import Message, Response, StreamEvent
+from mutagent.messages import Message, Response, StreamEvent, TextBlock
 from mutagent.provider import LLMProvider
 from mutbot.runtime.config import MUTBOT_USER_DIR
 
@@ -117,13 +117,13 @@ class SetupProvider(LLMProvider):
         model: str,
         messages: list[Message],
         tools: list,
-        system_prompt: str = "",
+        prompts: list[Message] | None = None,
         stream: bool = True,
     ) -> AsyncIterator[StreamEvent]:
         # 已完成配置 → 代理到真实 provider
         if self._real_provider:
             async for event in self._real_provider.send(
-                self._real_model, messages, tools, system_prompt, stream
+                self._real_model, messages, tools, prompts, stream
             ):
                 yield event
             return
@@ -131,9 +131,13 @@ class SetupProvider(LLMProvider):
         # Setup 阶段 → 状态机
         last_user_text = ""
         for msg in reversed(messages):
-            if msg.role == "user" and msg.content:
-                last_user_text = msg.content.strip()
-                break
+            if msg.role == "user":
+                for block in msg.blocks:
+                    if isinstance(block, TextBlock) and block.text:
+                        last_user_text = block.text.strip()
+                        break
+                if last_user_text:
+                    break
 
         async for event in self._dispatch(last_user_text):
             yield event
@@ -146,7 +150,7 @@ class SetupProvider(LLMProvider):
         """生成一条完整的文本响应（text_delta + response_done）。"""
         yield StreamEvent(type="text_delta", text=text)
         yield StreamEvent(type="response_done", response=Response(
-            message=Message(role="assistant", content=text),
+            message=Message(role="assistant", blocks=[TextBlock(text=text)]),
             stop_reason="end_turn",
         ))
 
@@ -354,7 +358,7 @@ class SetupProvider(LLMProvider):
             full_text = code_text + timeout_text
 
         yield StreamEvent(type="response_done", response=Response(
-            message=Message(role="assistant", content=full_text),
+            message=Message(role="assistant", blocks=[TextBlock(text=full_text)]),
             stop_reason="end_turn",
         ))
 

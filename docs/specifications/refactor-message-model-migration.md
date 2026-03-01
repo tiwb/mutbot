@@ -1,6 +1,6 @@
 # mutbot 迁移指南：mutagent Message 模型重构
 
-**状态**：📝 设计中
+**状态**：✅ 已完成
 **日期**：2026-03-01
 **类型**：重构
 
@@ -429,6 +429,125 @@ Phase 2: mutbot 核心层（依赖 Phase 1 的序列化）
 Phase 3: 测试 + 前端
   test_session_persistence.py → test_setup_provider.py → 前端字段调整 + Message→ChatMessage 展开
 ```
+
+---
+
+## 实施步骤清单
+
+### Phase 1: 基础层 [✅ 已完成]
+
+无运行时依赖，可独立改动和验证。
+
+- [x] **Task 1.1**: 重写 serializers.py
+  - [x] 移除 `serialize_tool_call()` 和 `serialize_tool_result()`
+  - [x] 新增 `serialize_block(block: ContentBlock) -> dict` — 按 block.type 分发（TextBlock/ToolUseBlock/ImageBlock/DocumentBlock/ThinkingBlock/TurnStartBlock/TurnEndBlock）
+  - [x] 重写 `serialize_message(msg: Message) -> dict` — blocks 遍历 + 元数据（id, role, timestamp, model, sender, duration, input_tokens, output_tokens）
+  - [x] 新增 `deserialize_block(data: dict) -> ContentBlock` — 按 type 分发反序列化
+  - [x] 新增 `deserialize_message(data: dict) -> Message` — 从 JSON 恢复 Message（持久化恢复用）
+  - [x] `serialize_stream_event()` — tool_exec_end 使用 `event.tool_call` 替代 `event.tool_result`；新增 `response_start` 事件序列化；`response_done` 序列化 duration/tokens
+  - 状态：✅ 已完成
+
+- [x] **Task 1.2**: 迁移 setup_provider.py
+  - [x] `send()` 签名：`system_prompt: str = ""` → `prompts: list[Message] | None = None`
+  - [x] `msg.content` → 遍历 `msg.blocks` 取首个 TextBlock.text
+  - [x] `Message(role="assistant", content=text)` → `Message(role="assistant", blocks=[TextBlock(text=text)])`
+  - [x] `Response(message=Message(...))` 同步适配 blocks 构造
+  - 状态：✅ 已完成
+
+- [x] **Task 1.3**: 迁移 copilot/provider.py
+  - [x] `send()` 签名：`system_prompt: str = ""` → `prompts: list[Message] | None = None`
+  - [x] prompts 处理：遍历 prompts（reversed），提取 TextBlock.text，插入为 `{role: "system", content: ...}` 到 openai_messages 头部（参考 mutagent OpenAIProvider.send() lines 56-61）
+  - 状态：✅ 已完成
+
+- [x] **Task 1.4**: 迁移 guide.py
+  - [x] Agent 构造：`Agent(client=, tool_set=, system_prompt=, messages=)` → `Agent(llm=, tools=, context=AgentContext(prompts=[...], messages=[...]))`
+  - [x] 导入 `AgentContext`, `TextBlock`
+  - 状态：✅ 已完成
+
+### Phase 2: 核心层 [✅ 已完成]
+
+依赖 Phase 1 的序列化。消除双重存储的核心变更。
+
+- [x] **Task 2.1**: 重设计 session_impl.py 持久化
+  - [x] 删除 `_rebuild_llm_messages()` 全部 80+ 行
+  - [x] Agent 构造：`Agent(llm=client, tools=tool_set, context=AgentContext(prompts=[...], messages=[...]))`
+  - [x] 持久化：`_persist()` 序列化 `agent.context.messages`（使用 serialize_message）
+  - [x] 恢复：`_load_agent_messages()` 反序列化 JSON → Message 列表（使用 deserialize_message），不再依赖 chat_messages
+  - [x] `agent.client` → `agent.llm`（含热切换）
+  - [x] `agent.messages` → `agent.context.messages`
+  - [x] 导入替换：ToolCall/ToolResult → AgentContext/TextBlock 等
+  - 状态：✅ 已完成
+
+- [x] **Task 2.2**: 重设计 agent_bridge.py — 纯事件转发
+  - [x] 导入替换：移除 InputEvent/ToolCall/ToolResult，新增 TextBlock/TurnStartBlock/AgentContext 等
+  - [x] 删除飞行中状态字段：`_pending_text`, `_pending_tool_calls`, `_completed_results`, `_response_committed`, `_response_first_delta`, `_response_start_ts`, `_response_start_mono`, `_tool_start_times`
+  - [x] 删除 `_track_event()` 方法
+  - [x] 删除 `_commit_partial_state()` 方法
+  - [x] 删除 `_chat_messages` 相关方法（`_append_chat_message`, `_find_chat_message`, `_find_last_chat_message`）
+  - [x] 删除元数据工具方法（`_gen_msg_id`, `_local_iso_now` 等）
+  - [x] 简化 `_handle_*` 事件处理 → 纯 serialize + broadcast（不构建 chat_message dict，不计算元数据）
+  - [x] 新增 `response_start` 事件处理 — 直接序列化转发
+  - [x] `send_message()` — InputEvent 入队改为构建完整 Message（含 id/timestamp/sender + TurnStartBlock）入队
+  - [x] `self.agent.client` → `self.agent.llm`
+  - [x] `self.agent.messages` → `self.agent.context.messages`
+  - [x] 持久化触发：从序列化 chat_messages 改为触发 session_impl 序列化 `agent.context.messages`
+  - 状态：✅ 已完成
+
+- [x] **Task 2.3**: 适配 session.py
+  - [x] 检查 TYPE_CHECKING 导入，按需更新
+  - [x] 消除 `chat_messages` 相关属性/方法（如有）
+  - 状态：✅ 已完成
+
+### Phase 3: 测试 + 前端 [✅ 已完成]
+
+- [x] **Task 3.1**: 迁移 test_session_persistence.py
+  - [x] `_make_messages()` — ToolCall/ToolResult 构造改为 blocks + ToolUseBlock
+  - [x] `agent.messages` → `agent.context.messages`
+  - [x] 持久化验证逻辑适配新序列化格式（serialize_message / deserialize_message round-trip）
+  - 状态：✅ 已完成
+
+- [x] **Task 3.2**: 迁移 test_setup_provider.py
+  - [x] `Message(role="user", content=text)` → `Message(role="user", blocks=[TextBlock(text=text)])`
+  - [x] `provider.send()` 调用适配新签名
+  - [x] Response 内 Message 验证适配 blocks 格式
+  - 状态：✅ 已完成
+
+- [x] **Task 3.3**: 前端流式事件协议适配
+  - [x] AgentPanel.tsx — 新增 `response_start` 事件处理（data.id, data.model, data.timestamp → 创建消息卡片）
+  - [x] AgentPanel.tsx — `text_delta` 不再提取 id/model/timestamp（改从 response_start 获取）
+  - [x] AgentPanel.tsx — `tool_exec_start`: `data.tool_call.arguments` → `data.tool_call.input`
+  - [x] AgentPanel.tsx — `tool_exec_end`: `data.tool_result` → `data.tool_call`（字段映射：id/result/is_error/duration）
+  - [x] AgentPanel.tsx — `response_done`: 序列化 duration/input_tokens/output_tokens 元数据更新
+  - [x] ToolCallCard.tsx — `ToolGroupData` 接口字段调整（arguments→input, startTime/endTime→duration 等）
+  - 状态：✅ 已完成
+
+- [x] **Task 3.4**: 前端会话恢复协议适配
+  - [x] `restoreChatMessages()` — 从 `Message[]` blocks 格式展开为 flat `ChatMessage[]`
+  - [x] 处理各类 block 组合：TextBlock → text ChatMessage, ToolUseBlock → tool_group ChatMessage, TurnStartBlock/TurnEndBlock → turn_start/turn_done ChatMessage
+  - [x] Message 元数据（id, timestamp, model, sender, duration）映射到 ChatMessage 对应字段
+  - 状态：✅ 已完成
+
+### Phase 4: 验证 [✅ 已完成]
+
+- [x] **Task 4.1**: 后端测试通过
+  - [x] `pytest tests/test_session_persistence.py` 通过
+  - [x] `pytest tests/test_setup_provider.py` 通过
+  - [x] 其他受影响测试通过（含 test_setup_integration.py 修复）
+  - 状态：✅ 已完成
+
+- [x] **Task 4.2**: 前端构建 + 端到端验证
+  - [x] `npm run build` 通过（TypeScript 编译）
+  - [ ] 端到端：新会话对话 → 流式事件正常 → 刷新恢复消息
+  - 状态：🔄 端到端需手动验证
+
+---
+
+## 测试验证
+
+- **后端**：389 tests passed（pytest tests/），包含 test_session_persistence、test_setup_provider、test_setup_integration 等全部通过
+- **前端**：`npm run build` 通过，TypeScript 编译无错误
+- **额外修复**：test_setup_integration.py 的 `test_hidden_message_enters_queue` 需适配 Message 对象（原检查 InputEvent 属性）
+- **端到端**：待手动验证（启动服务后对话 + 刷新恢复）
 
 ---
 

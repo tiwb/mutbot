@@ -16,15 +16,14 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from mutbot.session import AgentSession, Session
+from mutbot.session import AgentSession
 from mutbot.runtime.session_impl import (
     SessionManager,
     AgentSessionRuntime,
     _session_from_dict,
 )
 from mutbot.runtime import storage
-from mutbot.web.serializers import serialize_message
-from mutagent.messages import Message, ToolCall, ToolResult
+from mutagent.messages import Message, TextBlock, ToolUseBlock
 
 
 # ---------------------------------------------------------------------------
@@ -45,20 +44,28 @@ def sm(storage_dir: Path) -> SessionManager:
 
 
 def _make_messages() -> list[Message]:
-    """构造包含 text + tool_call + tool_result 的典型 messages。"""
+    """构造包含 text + tool_use 的典型 messages。"""
     return [
-        Message(role="user", content="hello"),
+        Message(role="user", blocks=[TextBlock(text="hello")]),
         Message(
             role="assistant",
-            content="Let me check.",
-            tool_calls=[ToolCall(id="tc1", name="read_file", arguments={"path": "a.py"})],
+            blocks=[
+                TextBlock(text="Let me check."),
+                ToolUseBlock(id="tc1", name="read_file", input={"path": "a.py"},
+                             status="done", result="file content"),
+            ],
         ),
-        Message(
-            role="user",
-            tool_results=[ToolResult(tool_call_id="tc1", content="file content")],
-        ),
-        Message(role="assistant", content="Here is the result."),
+        Message(role="assistant", blocks=[TextBlock(text="Here is the result.")]),
     ]
+
+
+def _mock_agent(messages: list[Message]) -> MagicMock:
+    """创建模拟 agent，context.messages 指向给定列表。"""
+    agent = MagicMock()
+    context = MagicMock()
+    context.messages = messages
+    agent.context = context
+    return agent
 
 
 def _read_session_json(storage_dir: Path, session_id: str) -> dict:
@@ -117,18 +124,16 @@ class TestPersistBasic:
         session = sm.create("ws1", session_type="mutbot.session.AgentSession")
         messages = _make_messages()
 
-        # 注入 runtime（模拟 agent 已启动）
-        agent = MagicMock()
-        agent.messages = messages
+        agent = _mock_agent(messages)
         sm._runtimes[session.id] = AgentSessionRuntime(agent=agent)
 
         sm._persist(session)
 
         data = _read_session_json(storage_dir, session.id)
         assert "messages" in data
-        assert len(data["messages"]) == 4
+        assert len(data["messages"]) == 3
         assert data["messages"][0]["role"] == "user"
-        assert data["messages"][0]["content"] == "hello"
+        assert data["messages"][0]["blocks"][0]["text"] == "hello"
 
     def test_persist_without_runtime_preserves_existing_messages(
         self, sm: SessionManager, storage_dir: Path,
@@ -137,9 +142,7 @@ class TestPersistBasic:
         session = sm.create("ws1", session_type="mutbot.session.AgentSession")
         messages = _make_messages()
 
-        # 第一次 persist：有 runtime，写入 messages
-        agent = MagicMock()
-        agent.messages = messages
+        agent = _mock_agent(messages)
         sm._runtimes[session.id] = AgentSessionRuntime(agent=agent)
         sm._persist(session)
 
@@ -152,7 +155,7 @@ class TestPersistBasic:
 
         data = _read_session_json(storage_dir, session.id)
         assert data["title"] == "Updated Title"
-        assert len(data["messages"]) == 4, "messages 不应丢失"
+        assert len(data["messages"]) == 3, "messages 不应丢失"
 
     def test_persist_without_runtime_no_prior_messages(
         self, sm: SessionManager, storage_dir: Path,
@@ -185,12 +188,11 @@ class TestMessageRoundTrip:
     def test_text_message_roundtrip(self, sm: SessionManager, storage_dir: Path):
         session = sm.create("ws1", session_type="mutbot.session.AgentSession")
         messages = [
-            Message(role="user", content="Hello"),
-            Message(role="assistant", content="Hi there!"),
+            Message(role="user", blocks=[TextBlock(text="Hello")]),
+            Message(role="assistant", blocks=[TextBlock(text="Hi there!")]),
         ]
 
-        agent = MagicMock()
-        agent.messages = messages
+        agent = _mock_agent(messages)
         sm._runtimes[session.id] = AgentSessionRuntime(agent=agent)
         sm._persist(session)
         sm._runtimes.pop(session.id)
@@ -198,59 +200,63 @@ class TestMessageRoundTrip:
         loaded = sm._load_agent_messages(session.id)
         assert len(loaded) == 2
         assert loaded[0].role == "user"
-        assert loaded[0].content == "Hello"
+        assert isinstance(loaded[0].blocks[0], TextBlock)
+        assert loaded[0].blocks[0].text == "Hello"
         assert loaded[1].role == "assistant"
-        assert loaded[1].content == "Hi there!"
+        assert isinstance(loaded[1].blocks[0], TextBlock)
+        assert loaded[1].blocks[0].text == "Hi there!"
 
-    def test_tool_call_roundtrip(self, sm: SessionManager, storage_dir: Path):
+    def test_tool_use_roundtrip(self, sm: SessionManager, storage_dir: Path):
         session = sm.create("ws1", session_type="mutbot.session.AgentSession")
         messages = [
             Message(
                 role="assistant",
-                content="I'll search.",
-                tool_calls=[ToolCall(id="tc1", name="search", arguments={"q": "test"})],
-            ),
-            Message(
-                role="user",
-                tool_results=[ToolResult(tool_call_id="tc1", content="found it", is_error=False)],
+                blocks=[
+                    TextBlock(text="I'll search."),
+                    ToolUseBlock(id="tc1", name="search", input={"q": "test"},
+                                 status="done", result="found it", is_error=False),
+                ],
             ),
         ]
 
-        agent = MagicMock()
-        agent.messages = messages
+        agent = _mock_agent(messages)
         sm._runtimes[session.id] = AgentSessionRuntime(agent=agent)
         sm._persist(session)
         sm._runtimes.pop(session.id)
 
         loaded = sm._load_agent_messages(session.id)
-        assert len(loaded) == 2
-        assert loaded[0].tool_calls[0].name == "search"
-        assert loaded[0].tool_calls[0].arguments == {"q": "test"}
-        assert loaded[1].tool_results[0].tool_call_id == "tc1"
-        assert loaded[1].tool_results[0].content == "found it"
-        assert loaded[1].tool_results[0].is_error is False
+        assert len(loaded) == 1
+        text_block = loaded[0].blocks[0]
+        tool_block = loaded[0].blocks[1]
+        assert isinstance(text_block, TextBlock)
+        assert text_block.text == "I'll search."
+        assert isinstance(tool_block, ToolUseBlock)
+        assert tool_block.name == "search"
+        assert tool_block.input == {"q": "test"}
+        assert tool_block.result == "found it"
+        assert tool_block.is_error is False
 
-    def test_error_tool_result_roundtrip(self, sm: SessionManager, storage_dir: Path):
+    def test_error_tool_use_roundtrip(self, sm: SessionManager, storage_dir: Path):
         session = sm.create("ws1", session_type="mutbot.session.AgentSession")
         messages = [
             Message(
                 role="assistant",
-                tool_calls=[ToolCall(id="tc1", name="run", arguments={})],
-            ),
-            Message(
-                role="user",
-                tool_results=[ToolResult(tool_call_id="tc1", content="Error!", is_error=True)],
+                blocks=[
+                    ToolUseBlock(id="tc1", name="run", input={},
+                                 status="done", result="Error!", is_error=True),
+                ],
             ),
         ]
 
-        agent = MagicMock()
-        agent.messages = messages
+        agent = _mock_agent(messages)
         sm._runtimes[session.id] = AgentSessionRuntime(agent=agent)
         sm._persist(session)
         sm._runtimes.pop(session.id)
 
         loaded = sm._load_agent_messages(session.id)
-        assert loaded[1].tool_results[0].is_error is True
+        tool_block = loaded[0].blocks[0]
+        assert isinstance(tool_block, ToolUseBlock)
+        assert tool_block.is_error is True
 
 
 # ---------------------------------------------------------------------------
@@ -262,13 +268,11 @@ class TestServerRestartCycle:
 
     def test_restart_preserves_messages(self, storage_dir: Path):
         """重启周期：create → persist with messages → new SM load → persist again"""
-        # 第一个 server 周期：创建 session 并保存 messages
         sm1 = SessionManager()
         session1 = sm1.create("ws1", session_type="mutbot.session.AgentSession")
         session_id = session1.id
 
-        agent = MagicMock()
-        agent.messages = _make_messages()
+        agent = _mock_agent(_make_messages())
         sm1._runtimes[session_id] = AgentSessionRuntime(agent=agent)
         sm1._persist(session1)
 
@@ -283,7 +287,7 @@ class TestServerRestartCycle:
 
         data = _read_session_json(storage_dir, session_id)
         assert data["title"] == "New Title"
-        assert len(data["messages"]) == 4, "重启后 messages 不应丢失"
+        assert len(data["messages"]) == 3, "重启后 messages 不应丢失"
 
     def test_multiple_restarts_preserve_messages(self, storage_dir: Path):
         """多次重启仍保留 messages"""
@@ -291,8 +295,7 @@ class TestServerRestartCycle:
         session = sm1.create("ws1", session_type="mutbot.session.AgentSession")
         sid = session.id
 
-        agent = MagicMock()
-        agent.messages = _make_messages()
+        agent = _mock_agent(_make_messages())
         sm1._runtimes[sid] = AgentSessionRuntime(agent=agent)
         sm1._persist(session)
 
@@ -307,7 +310,7 @@ class TestServerRestartCycle:
 
         data = _read_session_json(storage_dir, sid)
         assert data["title"] == "Restart 2"
-        assert len(data["messages"]) == 4
+        assert len(data["messages"]) == 3
 
     def test_restart_preserves_total_tokens(self, storage_dir: Path):
         """重启后 total_tokens 正确恢复"""
@@ -338,9 +341,7 @@ class TestStopPreservesMessages:
         """stop() 在清除 runtime 前应先 persist messages"""
         session = sm.create("ws1", session_type="mutbot.session.AgentSession")
 
-        # 注入 runtime
-        agent = MagicMock()
-        agent.messages = _make_messages()
+        agent = _mock_agent(_make_messages())
         bridge = MagicMock()
 
         async def _noop_stop():
@@ -357,7 +358,7 @@ class TestStopPreservesMessages:
         # Messages 应保留在磁盘上
         data = _read_session_json(storage_dir, session.id)
         assert data["status"] == "ended"
-        assert len(data["messages"]) == 4
+        assert len(data["messages"]) == 3
 
     @pytest.mark.asyncio
     async def test_stop_without_runtime_preserves_existing_messages(
@@ -367,8 +368,7 @@ class TestStopPreservesMessages:
         session = sm.create("ws1", session_type="mutbot.session.AgentSession")
 
         # 先写入 messages
-        agent = MagicMock()
-        agent.messages = _make_messages()
+        agent = _mock_agent(_make_messages())
         sm._runtimes[session.id] = AgentSessionRuntime(agent=agent)
         sm._persist(session)
         sm._runtimes.pop(session.id)
@@ -378,8 +378,4 @@ class TestStopPreservesMessages:
 
         data = _read_session_json(storage_dir, session.id)
         assert data["status"] == "ended"
-        assert len(data["messages"]) == 4, "stop 不应覆盖已有 messages"
-
-
-# 需要 asyncio 支持
-import asyncio
+        assert len(data["messages"]) == 3, "stop 不应覆盖已有 messages"

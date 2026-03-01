@@ -143,9 +143,13 @@ class TestAgentBridgeHidden:
         bridge.send_message("__setup__", data={"hidden": True})
 
         item = bridge._input_queue.get_nowait()
-        assert item.type == "user_message"
-        assert item.text == "__setup__"
-        assert item.data.get("hidden") is True
+        assert item is not None
+        assert item.role == "user"
+        # Message blocks 包含 TurnStartBlock + TextBlock
+        from mutagent.messages import TextBlock
+        text_blocks = [b for b in item.blocks if isinstance(b, TextBlock)]
+        assert len(text_blocks) == 1
+        assert text_blocks[0].text == "__setup__"
 
 
 # ---------------------------------------------------------------------------

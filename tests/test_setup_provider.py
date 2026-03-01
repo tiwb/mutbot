@@ -15,7 +15,7 @@ import json
 
 import pytest
 
-from mutagent.messages import Message, Response, StreamEvent
+from mutagent.messages import Message, Response, StreamEvent, TextBlock
 from mutbot.builtins.setup_provider import (
     SetupProvider,
     _model_family,
@@ -38,7 +38,7 @@ async def _collect_events(gen) -> list[StreamEvent]:
 
 async def _send(provider: SetupProvider, text: str) -> list[StreamEvent]:
     """向 provider 发送一条用户消息，收集响应事件。"""
-    messages = [Message(role="user", content=text)]
+    messages = [Message(role="user", blocks=[TextBlock(text=text)])]
     return await _collect_events(
         provider.send("setup-wizard", messages, [])
     )
@@ -420,10 +420,10 @@ class TestSendProxy:
 
         class AsyncProvider:
             async def send(self, model, messages, tools,
-                           system_prompt="", stream=True):
+                           prompts=None, stream=True):
                 yield StreamEvent(type="text_delta", text="async-hello")
                 yield StreamEvent(type="response_done", response=Response(
-                    message=Message(role="assistant", content="async-hello"),
+                    message=Message(role="assistant", blocks=[TextBlock(text="async-hello")]),
                     stop_reason="end_turn",
                 ))
 
@@ -431,7 +431,7 @@ class TestSendProxy:
         p._real_model = "test-model"
 
         events = await _collect_events(
-            p.send("m", [Message(role="user", content="hi")], [])
+            p.send("m", [Message(role="user", blocks=[TextBlock(text="hi")])], [])
         )
         assert len(events) == 2
         assert events[0].text == "async-hello"

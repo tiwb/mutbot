@@ -395,7 +395,7 @@ async def handle_session_get(params: dict, ctx: RpcContext) -> dict:
 
 @workspace_rpc.method("session.messages")
 async def handle_session_messages(params: dict, ctx: RpcContext) -> dict:
-    """获取 Session 的持久化 chat_messages（用于前端历史恢复）"""
+    """获取 Session 的持久化消息（序列化 Message[] blocks 格式，用于前端历史恢复）"""
     sm = ctx.managers.get("session_manager")
     if not sm:
         return {"error": "session_manager not available"}
@@ -411,21 +411,21 @@ async def handle_session_messages(params: dict, ctx: RpcContext) -> dict:
     if avatar:
         agent_display["avatar"] = avatar
 
-    # 优先从内存中的 session 对象获取 chat_messages
-    from mutbot.session import AgentSession
-    chat_messages: list = []
-    if isinstance(session, AgentSession) and session.chat_messages:
-        chat_messages = session.chat_messages
+    # 从 agent.context.messages 获取，回退到磁盘
+    from mutbot.web.serializers import serialize_message
+    messages: list = []
+    rt = sm.get_agent_runtime(session_id)
+    if rt and rt.agent and rt.agent.context.messages:
+        messages = [serialize_message(m) for m in rt.agent.context.messages]
     else:
-        # 回退到磁盘
         from mutbot.runtime import storage
         data = storage.load_session_metadata(session_id)
         if data:
-            chat_messages = data.get("chat_messages", [])
+            messages = data.get("messages", [])
 
     return {
         "session_id": session_id,
-        "chat_messages": chat_messages,
+        "messages": messages,
         "total_tokens": getattr(session, "total_tokens", 0),
         "context_used": getattr(session, "context_used", 0),
         "context_window": getattr(session, "context_window", 0),

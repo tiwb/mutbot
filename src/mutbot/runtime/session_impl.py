@@ -18,7 +18,8 @@ import mutobj
 from mutagent.agent import Agent
 from mutagent.client import LLMClient
 from mutagent.config import Config
-from mutagent.messages import Message, ToolCall, ToolResult
+from mutagent.context import AgentContext
+from mutagent.messages import Message, TextBlock
 from mutagent.tools import ToolSet
 
 from mutbot.session import (
@@ -29,7 +30,7 @@ from mutbot.session import (
 )
 from mutbot.runtime import storage
 from mutbot.web.agent_bridge import AgentBridge
-from mutbot.web.serializers import serialize_message
+from mutbot.web.serializers import serialize_message, deserialize_message
 
 logger = logging.getLogger(__name__)
 
@@ -71,8 +72,6 @@ def serialize_session(self: Session) -> dict:
             d["context_used"] = self.context_used
         if self.context_window:
             d["context_window"] = self.context_window
-        if self.chat_messages:
-            d["chat_messages"] = self.chat_messages
     # DocumentSession 特有字段
     if isinstance(self, DocumentSession):
         if self.file_path:
@@ -159,111 +158,7 @@ def _remove_session_log_handler(handler: logging.Handler | None) -> None:
     handler.close()
 
 
-def _deserialize_message(d: dict) -> Message:
-    """Reconstruct a Message from a serialized dict."""
-    tool_calls = [
-        ToolCall(id=tc["id"], name=tc["name"], arguments=tc.get("arguments", {}))
-        for tc in d.get("tool_calls", [])
-    ]
-    tool_results = [
-        ToolResult(
-            tool_call_id=tr["tool_call_id"],
-            content=tr.get("content", ""),
-            is_error=tr.get("is_error", False),
-        )
-        for tr in d.get("tool_results", [])
-    ]
-    return Message(
-        role=d["role"],
-        content=d.get("content", ""),
-        tool_calls=tool_calls,
-        tool_results=tool_results,
-    )
 
-
-def _rebuild_llm_messages(chat_messages: list[dict]) -> list[Message]:
-    """从 chat_messages 重建 LLM Messages 列表。
-
-    映射规则（见设计文档 §2.2.2）：
-    - text(user) → Message(role="user", content=...)
-    - text(assistant) + 后续 tool_group → Message(role="assistant", content=..., tool_calls=[...])
-    - tool_group(带 result) 收集到 ToolResult 列表 → Message(role="user", tool_results=[...])
-    - turn_start / turn_done / error → 跳过
-    """
-    messages: list[Message] = []
-    i = 0
-    while i < len(chat_messages):
-        cm = chat_messages[i]
-        cm_type = cm.get("type")
-        cm_role = cm.get("role")
-
-        if cm_type == "text" and cm_role == "user":
-            messages.append(Message(role="user", content=cm.get("content", "")))
-            i += 1
-
-        elif cm_type == "text" and cm_role == "assistant":
-            content = cm.get("content", "")
-            # 收集后续连续的 tool_group 作为 tool_calls
-            tool_calls: list[ToolCall] = []
-            tool_results: list[ToolResult] = []
-            j = i + 1
-            while j < len(chat_messages):
-                next_cm = chat_messages[j]
-                if next_cm.get("type") != "tool_group":
-                    break
-                tool_calls.append(ToolCall(
-                    id=next_cm.get("tool_call_id", ""),
-                    name=next_cm.get("tool_name", ""),
-                    arguments=next_cm.get("arguments", {}),
-                ))
-                if "result" in next_cm:
-                    tool_results.append(ToolResult(
-                        tool_call_id=next_cm.get("tool_call_id", ""),
-                        content=next_cm.get("result", ""),
-                        is_error=next_cm.get("is_error", False),
-                    ))
-                j += 1
-
-            messages.append(Message(
-                role="assistant", content=content, tool_calls=tool_calls,
-            ))
-            if tool_results:
-                messages.append(Message(role="user", tool_results=tool_results))
-            i = j
-
-        elif cm_type == "tool_group":
-            # 孤立的 tool_group（没有前导 assistant text）
-            # 创建空 content 的 assistant message
-            tool_calls_standalone: list[ToolCall] = []
-            tool_results_standalone: list[ToolResult] = []
-            j = i
-            while j < len(chat_messages) and chat_messages[j].get("type") == "tool_group":
-                tg = chat_messages[j]
-                tool_calls_standalone.append(ToolCall(
-                    id=tg.get("tool_call_id", ""),
-                    name=tg.get("tool_name", ""),
-                    arguments=tg.get("arguments", {}),
-                ))
-                if "result" in tg:
-                    tool_results_standalone.append(ToolResult(
-                        tool_call_id=tg.get("tool_call_id", ""),
-                        content=tg.get("result", ""),
-                        is_error=tg.get("is_error", False),
-                    ))
-                j += 1
-
-            messages.append(Message(
-                role="assistant", content="", tool_calls=tool_calls_standalone,
-            ))
-            if tool_results_standalone:
-                messages.append(Message(role="user", tool_results=tool_results_standalone))
-            i = j
-
-        else:
-            # turn_start, turn_done, error → 跳过
-            i += 1
-
-    return messages
 
 
 def _session_from_dict(data: dict) -> Session:
@@ -298,8 +193,6 @@ def _session_from_dict(data: dict) -> Session:
             kwargs["context_used"] = data["context_used"]
         if "context_window" in data:
             kwargs["context_window"] = data["context_window"]
-        if "chat_messages" in data:
-            kwargs["chat_messages"] = data["chat_messages"]
     # DocumentSession 特有字段
     if issubclass(cls, DocumentSession):
         if "file_path" in data:
@@ -426,10 +319,12 @@ def build_default_agent(
         )
 
     agent = Agent(
-        client=client,
-        tool_set=tool_set,
-        system_prompt=system_prompt,
-        messages=messages if messages is not None else [],
+        llm=client,
+        tools=tool_set,
+        context=AgentContext(
+            prompts=[Message(role="system", blocks=[TextBlock(text=system_prompt)], label="base")],
+            messages=messages if messages is not None else [],
+        ),
     )
     tool_set.agent = agent
     return agent
@@ -493,37 +388,27 @@ class SessionManager:
             logger.info("Loaded %d session(s) from disk", len(self._sessions))
 
     def _persist(self, session: Session) -> None:
-        """Save session metadata + chat_messages to disk."""
+        """Save session metadata + messages to disk."""
         data = session.serialize()
-        # 如果有 agent runtime，一并保存 LLM messages（用于 agent 恢复）
+        # 序列化 agent.context.messages 作为唯一消息存储
         rt = self.get_agent_runtime(session.id)
-        if rt and rt.agent and rt.agent.messages:
-            data["messages"] = [serialize_message(m) for m in rt.agent.messages]
+        if rt and rt.agent and rt.agent.context.messages:
+            data["messages"] = [serialize_message(m) for m in rt.agent.context.messages]
         else:
             # 没有 runtime 时保留磁盘上已有的 messages（避免覆写丢失）
             existing = storage.load_session_metadata(session.id)
             if existing and "messages" in existing:
                 data["messages"] = existing["messages"]
-        # chat_messages 已在 session.serialize() 中包含（AgentSession 字段）
         storage.save_session_metadata(data)
 
     def _load_agent_messages(self, session_id: str) -> list[Message]:
-        """Load saved messages from session JSON on disk.
-
-        优先从 chat_messages 重建 LLM Messages，回退到旧的 messages 格式。
-        """
+        """Load saved messages from session JSON on disk."""
         data = storage.load_session_metadata(session_id)
         if not data:
             return []
 
-        # 优先从 chat_messages 重建
-        chat_msgs = data.get("chat_messages")
-        if chat_msgs:
-            return _rebuild_llm_messages(chat_msgs)
-
-        # 回退到旧的 messages 格式
         if "messages" in data:
-            return [_deserialize_message(m) for m in data["messages"]]
+            return [deserialize_message(m) for m in data["messages"]]
 
         return []
 
@@ -557,7 +442,7 @@ class SessionManager:
         config = self._get_config()
         try:
             new_client = create_llm_client(config, session.model, self.log_dir)
-            rt.agent.client = new_client
+            rt.agent.llm = new_client
             session.context_window = new_client.context_window or 0
             logger.info(
                 "Session %s: LLMClient swapped to model=%s",

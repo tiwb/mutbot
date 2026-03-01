@@ -3,11 +3,9 @@ import { useState } from "react";
 export interface ToolGroupData {
   toolCallId: string;
   toolName: string;
-  arguments: Record<string, unknown>;
+  input: Record<string, unknown>;
   result?: string;
   isError?: boolean;
-  startTime: string;      // ISO 时间戳（后端生成）
-  endTime?: string;       // ISO 时间戳（后端生成）
 }
 
 interface Props {
@@ -29,7 +27,7 @@ export default function ToolCallCard({ data }: Props) {
         <span className="tool-card-name">{data.toolName}</span>
         {!expanded && (
           <span className="tool-card-args-preview">
-            {formatArgsPreview(data.arguments)}
+            {formatArgsPreview(data.input)}
           </span>
         )}
         <span className="tool-card-meta">
@@ -43,7 +41,7 @@ export default function ToolCallCard({ data }: Props) {
           <div className="tool-card-section">
             <div className="tool-card-label">Arguments</div>
             <pre className="tool-card-pre">
-              {JSON.stringify(data.arguments, null, 2)}
+              {JSON.stringify(data.input, null, 2)}
             </pre>
           </div>
           {data.result !== undefined && (

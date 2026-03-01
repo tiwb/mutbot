@@ -12,6 +12,7 @@ from typing import Any, AsyncIterator
 from mutagent.messages import (
     Message,
     StreamEvent,
+    TextBlock,
     ToolSchema,
 )
 from mutagent.provider import LLMProvider
@@ -60,13 +61,16 @@ class CopilotProvider(LLMProvider):
         model: str,
         messages: list[Message],
         tools: list[ToolSchema],
-        system_prompt: str = "",
+        prompts: list[Message] | None = None,
         stream: bool = True,
     ) -> AsyncIterator[StreamEvent]:
         """Send messages to Copilot API and yield streaming events."""
         openai_messages = _messages_to_openai(messages)
-        if system_prompt:
-            openai_messages.insert(0, {"role": "system", "content": system_prompt})
+        if prompts:
+            for msg in reversed(prompts):
+                for block in msg.blocks:
+                    if isinstance(block, TextBlock) and block.text:
+                        openai_messages.insert(0, {"role": "system", "content": block.text})
 
         payload: dict[str, Any] = {
             "model": model,
