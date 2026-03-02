@@ -26,7 +26,7 @@ export default function WelcomePage({ rpc, onCreateSession }: Props) {
         >
           {renderLucideIcon("message-square", 16, "currentColor")}
           <span>Agent</span>
-          <span className="welcome-action-desc">— 开始体验 AI 助手</span>
+          <span className="welcome-action-desc">— Start an AI agent session</span>
         </button>
         <button
           className="welcome-action-link"
@@ -34,7 +34,7 @@ export default function WelcomePage({ rpc, onCreateSession }: Props) {
         >
           {renderLucideIcon("terminal", 16, "currentColor")}
           <span>Terminal</span>
-          <span className="welcome-action-desc">— 在命令行下工作</span>
+          <span className="welcome-action-desc">— Open a command-line terminal</span>
         </button>
       </div>
     </div>

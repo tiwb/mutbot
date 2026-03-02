@@ -176,6 +176,8 @@ export default function AgentPanel({ sessionId, rpc, onSessionLink }: Props) {
           toolName: tc.name,
           input: tc.input,
         };
+        const rawTs = data.timestamp as number | undefined;
+        const timestamp = rawTs ? new Date(rawTs * 1000).toISOString() : undefined;
         setMessages((prev) => [
           ...prev,
           {
@@ -183,6 +185,7 @@ export default function AgentPanel({ sessionId, rpc, onSessionLink }: Props) {
             role: "assistant" as const,
             type: "tool_group" as const,
             data: toolData,
+            timestamp,
           },
         ]);
       }
@@ -420,7 +423,7 @@ export default function AgentPanel({ sessionId, rpc, onSessionLink }: Props) {
         {tokenUsage && <TokenUsageDisplay usage={tokenUsage} />}
         {DEBUG && <span style={{ marginLeft: "auto", opacity: 0.5, fontSize: "0.8em" }}>msgs: {messages.length}</span>}
       </div>
-      <MessageList messages={messages} rpc={rpc ?? null} agentDisplay={agentDisplay} onSessionLink={onSessionLink} scrollToBottomSignal={scrollSignal} />
+      <MessageList messages={messages} rpc={rpc ?? null} agentDisplay={agentDisplay} isStreaming={agentStatus !== "idle"} onSessionLink={onSessionLink} scrollToBottomSignal={scrollSignal} />
       <AgentStatusBar isBusy={agentStatus !== "idle"} />
       <ChatInput onSend={handleSend} onCancel={handleCancel} disabled={!connected} isBusy={agentStatus !== "idle"} />
     </div>

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { WorkspaceRpc } from "../lib/workspace-rpc";
 import Markdown from "./Markdown";
 import ToolCallCard, { type ToolGroupData } from "./ToolCallCard";
@@ -80,13 +80,14 @@ interface Props {
   messages: ChatMessage[];
   rpc: WorkspaceRpc | null;
   agentDisplay: AgentDisplay;
+  isStreaming?: boolean;
   onSessionLink?: (sessionId: string) => void;
   scrollToBottomSignal?: number;
 }
 
 const AT_BOTTOM_THRESHOLD = 150;
 
-export default function MessageList({ messages, rpc, agentDisplay, onSessionLink, scrollToBottomSignal }: Props) {
+export default function MessageList({ messages, rpc, agentDisplay, isStreaming, onSessionLink, scrollToBottomSignal }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const [atBottom, setAtBottom] = useState(true);
@@ -188,17 +189,29 @@ export default function MessageList({ messages, rpc, agentDisplay, onSessionLink
     if (el) el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
   }, []);
 
+  // 预过滤可见消息：所有可见性判断集中在此，渲染循环不再做跳过逻辑
+  const visibleMessages = useMemo(() => {
+    const result: ChatMessage[] = [];
+    for (let i = 0; i < messages.length; i++) {
+      const msg = messages[i]!;
+      if (msg.type === "turn_start") continue;
+      if (msg.type === "turn_done" && msg.durationSeconds < 60) continue;
+      // 空 assistant text：仅在最后一条且 streaming 时保留（显示 typing dots）
+      if (msg.type === "text" && msg.role === "assistant" && !msg.content) {
+        if (!(i === messages.length - 1 && isStreaming)) continue;
+      }
+      result.push(msg);
+    }
+    return result;
+  }, [messages, isStreaming]);
+
   return (
     <div className="message-list" onContextMenu={handleContextMenu}>
       <div className="message-list-scroller" ref={scrollRef} onScroll={handleScroll}>
         <div ref={listRef}>
-          {messages.map((msg, idx) => {
-            // turn_start: 不渲染
-            if (msg.type === "turn_start") return null;
-
-            // turn_done: durationSeconds >= 60 时显示为行内文字
+          {visibleMessages.map((msg, visIdx) => {
+            // turn_done: 特殊布局（无头像逻辑）
             if (msg.type === "turn_done") {
-              if (msg.durationSeconds < 60) return null;
               return (
                 <div key={msg.id} className="message-row assistant turn-done-row">
                   <div className="avatar-col" />
@@ -213,11 +226,11 @@ export default function MessageList({ messages, rpc, agentDisplay, onSessionLink
 
             const role = getMsgRole(msg)!;
 
-            // 连续同角色合并：仅首条显示头像和名称（跳过 turn_start/turn_done）
+            // 连续同角色合并：在可见消息列表中向前查找（跳过 turn_done）
             let showAvatar = true;
-            for (let j = idx - 1; j >= 0; j--) {
-              const prev = messages[j]!;
-              if (prev.type === "turn_start" || prev.type === "turn_done") continue;
+            for (let j = visIdx - 1; j >= 0; j--) {
+              const prev = visibleMessages[j]!;
+              if (prev.type === "turn_done") continue;
               showAvatar = getMsgRole(prev) !== role;
               break;
             }
@@ -225,6 +238,10 @@ export default function MessageList({ messages, rpc, agentDisplay, onSessionLink
             // Agent 名称：优先使用消息自身的 model 字段
             const msgModel = "model" in msg ? msg.model : undefined;
             const agentName = (role === "assistant" && msgModel) ? msgModel : agentDisplay.name;
+
+            // typing dots：可见列表中的最后一条 assistant text + streaming
+            const isLastVisible = visIdx === visibleMessages.length - 1;
+            const showTypingDots = isLastVisible && !!isStreaming && msg.type === "text" && msg.role === "assistant";
 
             return (
               <div key={msg.id} className={`message-row ${role}${showAvatar ? "" : " continuation"}`}>
@@ -236,7 +253,7 @@ export default function MessageList({ messages, rpc, agentDisplay, onSessionLink
                     <div className="content-col">
                       {showAvatar && <div className="message-sender">{agentName}</div>}
                       <div className="bubble-wrap">
-                        {renderBubble(msg, markdownMode, onSessionLink)}
+                        {renderBubble(msg, markdownMode, onSessionLink, showTypingDots)}
                         {renderMeta(msg)}
                       </div>
                     </div>
@@ -289,16 +306,24 @@ function renderBubble(
   msg: ChatMessage,
   markdownMode: MarkdownMode,
   onSessionLink?: (sessionId: string) => void,
+  showTypingDots?: boolean,
 ) {
   switch (msg.type) {
     case "text":
       return (
         <div className={`message-bubble ${msg.role} text`} data-msg-id={msg.id}>
           {msg.role === "assistant" ? (
-            markdownMode === "source" ? (
-              <CodeBlock code={msg.content} lang="markdown" />
+            showTypingDots && !msg.content ? (
+              <div className="typing-dots"><span /><span /><span /></div>
             ) : (
-              <Markdown content={msg.content} onSessionLink={onSessionLink} />
+              <>
+                {markdownMode === "source" ? (
+                  <CodeBlock code={msg.content} lang="markdown" />
+                ) : (
+                  <Markdown content={msg.content} onSessionLink={onSessionLink} />
+                )}
+                {showTypingDots && <div className="typing-dots"><span /><span /><span /></div>}
+              </>
             )
           ) : (
             <div className="message-content">

@@ -107,6 +107,9 @@ export default function App() {
     toastTimerRef.current = setTimeout(() => setToast(null), duration);
   }, []);
 
+  // Workspace RPC 连接状态
+  const [wsConnected, setWsConnected] = useState(false);
+
   // Workspace RPC 连接
   const rpcRef = useRef<WorkspaceRpc | null>(null);
   const [rpc, setRpc] = useState<WorkspaceRpc | null>(null);
@@ -141,6 +144,8 @@ export default function App() {
                 if (target.layout) {
                   try {
                     modelRef.current = createModel(target.layout);
+                    hasOpenTabsRef.current = modelHasTabs(modelRef.current);
+                    setHasOpenTabs(hasOpenTabsRef.current);
                     forceUpdate((n) => n + 1);
                   } catch {
                     // fallback to default layout
@@ -194,6 +199,8 @@ export default function App() {
         if (target.layout) {
           try {
             modelRef.current = createModel(target.layout);
+            hasOpenTabsRef.current = modelHasTabs(modelRef.current);
+            setHasOpenTabs(hasOpenTabsRef.current);
             forceUpdate((n) => n + 1);
           } catch {
             // fallback to default layout
@@ -214,8 +221,12 @@ export default function App() {
     if (!workspace) return;
     const wsRpc = new WorkspaceRpc(workspace.id, {
       onOpen: () => {
+        setWsConnected(true);
         // 连接建立后通过 RPC 获取 session 列表
         wsRpc.call<Session[]>("session.list", { workspace_id: workspace.id }).then(setSessions).catch(() => {});
+      },
+      onClose: () => {
+        setWsConnected(false);
       },
     });
     rpcRef.current = wsRpc;
@@ -998,6 +1009,7 @@ export default function App() {
             sessions={sessions}
             activeSessionId={activeSessionId}
             rpc={rpc}
+            connected={wsConnected}
             onSelect={handleSelectSession}
             onModeChange={handleSidebarModeChange}
             onDeleteSessions={handleDeleteSessions}

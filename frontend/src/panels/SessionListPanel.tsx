@@ -26,6 +26,7 @@ interface Props {
   sessions: Session[];
   activeSessionId: string | null;
   rpc: WorkspaceRpc | null;
+  connected?: boolean;
   onSelect: (id: string) => void;
   onModeChange?: (collapsed: boolean) => void;
   onDeleteSessions?: (ids: string[]) => void;
@@ -42,6 +43,7 @@ export default function SessionListPanel({
   sessions,
   activeSessionId,
   rpc,
+  connected,
   onSelect,
   onModeChange,
   onRenameSession,
@@ -283,6 +285,9 @@ export default function SessionListPanel({
               <rect x="2" y="11.5" width="12" height="1.5" rx="0.5" />
             </svg>
           </button>
+          {connected === false && (
+            <span className="sidebar-disconnected-dot" title="Disconnected" />
+          )}
         </div>
         <div className="session-list compact">
           {sorted.map((s) => (
@@ -354,6 +359,9 @@ export default function SessionListPanel({
           </svg>
         </button>
         <h1>Sessions</h1>
+        {connected === false && (
+          <span className="sidebar-disconnected-dot" title="Disconnected" />
+        )}
         <RpcMenu
           rpc={rpc}
           category="SessionList/Header"

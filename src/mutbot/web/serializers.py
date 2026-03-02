@@ -190,4 +190,7 @@ def serialize_stream_event(event: StreamEvent) -> dict[str, Any]:
     elif event.type == "error":
         d["error"] = event.error
 
+    if event.timestamp:
+        d["timestamp"] = event.timestamp
+
     return d
