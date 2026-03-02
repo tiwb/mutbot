@@ -89,7 +89,8 @@ export default function AgentPanel({ sessionId, rpc, onSessionLink }: Props) {
       ]);
     } else if (eventType === "user_message") {
       const text = data.text as string;
-      const timestamp = data.timestamp as string | undefined;
+      const rawTs = data.timestamp as number | undefined;
+      const timestamp = rawTs ? new Date(rawTs * 1000).toISOString() : undefined;
       const sender = data.sender as string | undefined;
       const msgId = data.id as string | undefined;
       const model = data.model as string | undefined;

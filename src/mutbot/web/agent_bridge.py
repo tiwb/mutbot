@@ -118,6 +118,11 @@ class AgentBridge:
             item = await self._input_queue.get()
             if item is None:
                 return
+            # 让出 event loop，确保 send_message() 中 ensure_future 调度的
+            # 广播（turn_start / user_message / thinking）先于 agent 处理完成。
+            # 否则 _run task 可能在 ensure_future 之前启动并处理消息，
+            # 导致 response_start 先于 user_message 到达前端。
+            await asyncio.sleep(0)
             yield item
 
     # --- Agent task lifecycle ---
@@ -184,14 +189,11 @@ class AgentBridge:
 
         self._agent_task = self.loop.create_task(_run())
 
-    def send_message(self, text: str, data: dict | None = None, *, skip_user_broadcast: bool = False) -> None:
+    def send_message(self, text: str, data: dict | None = None) -> None:
         """Feed a user message into the Agent.
 
         Constructs a full Message (with id/timestamp/sender + TurnStartBlock)
         and enqueues it for agent.run().
-
-        Args:
-            skip_user_broadcast: 为 True 时跳过 user_message 广播（调用方已预先广播）。
         """
         hidden = (data or {}).get("hidden", False)
         msg_id = "m_" + uuid4().hex[:10]
@@ -214,14 +216,13 @@ class AgentBridge:
             blocks.append(TextBlock(text=text))
 
             # Broadcast user message to all connected clients
-            if not skip_user_broadcast:
-                user_event: dict[str, Any] = {
-                    "type": "user_message", "text": text, "data": data or {},
-                    "id": msg_id, "timestamp": ts,
-                    "turn_id": self._current_turn_id,
-                    "sender": "User",
-                }
-                asyncio.ensure_future(self.broadcast_fn(self.session_id, user_event))
+            user_event: dict[str, Any] = {
+                "type": "user_message", "text": text, "data": data or {},
+                "id": msg_id, "timestamp": ts,
+                "turn_id": self._current_turn_id,
+                "sender": "User",
+            }
+            asyncio.ensure_future(self.broadcast_fn(self.session_id, user_event))
             asyncio.ensure_future(self._broadcast_status("thinking"))
         else:
             # Hidden message: 仍需 TurnStartBlock 触发 agent 处理
