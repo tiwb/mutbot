@@ -14,8 +14,14 @@ def main():
     parser.add_argument("--debug", action="store_true", help="Enable debug logging to console")
     args = parser.parse_args()
 
-    # Console handler — controlled by --debug flag
-    console_level = logging.DEBUG if args.debug else logging.INFO
+    # Console handler — priority: --debug > config > default WARNING
+    if args.debug:
+        console_level = logging.DEBUG
+    else:
+        from mutbot.runtime.config import load_mutbot_config
+        cfg = load_mutbot_config()
+        level_name = cfg.get("logging.console_level", "WARNING")
+        console_level = getattr(logging, level_name.upper(), logging.WARNING)
     logging.basicConfig(
         level=console_level,
         format="%(levelname)-8s %(name)s: %(message)s",
@@ -24,8 +30,9 @@ def main():
 
     import uvicorn
 
+    uvi_level = "debug" if console_level <= logging.DEBUG else "info" if console_level <= logging.INFO else "warning"
     config = uvicorn.Config(
-        "mutbot.web.server:app", host=args.host, port=args.port, log_level="info",
+        "mutbot.web.server:app", host=args.host, port=args.port, log_level=uvi_level,
     )
     server = uvicorn.Server(config)
 

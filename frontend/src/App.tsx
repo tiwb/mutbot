@@ -32,6 +32,15 @@ import type { Workspace, Session } from "./lib/types";
 
 // ---------- Helpers ----------
 
+/** Exit workspace: remote mode → full page reload to landing; local → clear hash. */
+function exitWorkspace() {
+  if (isRemote()) {
+    location.href = location.origin + "/";
+  } else {
+    location.hash = "";
+  }
+}
+
 /** Find the active tabset, or fall back to the first tabset in the model. */
 function getTargetTabset(model: Model): TabSetNode | undefined {
   return model.getActiveTabset() ?? model.getFirstTabSet();
@@ -207,8 +216,8 @@ export default function App() {
           }
         }
       } else {
-        // hash 指向不存在的 workspace，清空 hash
-        location.hash = "";
+        // hash 指向不存在的 workspace
+        exitWorkspace();
         setWorkspace(null);
       }
     };
@@ -424,7 +433,7 @@ export default function App() {
           }
         } catch { /* silent */ }
       } else if (action === "close_workspace") {
-        location.hash = "";
+        exitWorkspace();
       }
     },
     [workspace, addTabForSession],
