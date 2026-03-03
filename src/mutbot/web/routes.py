@@ -847,6 +847,19 @@ async def websocket_session(websocket: WebSocket, session_id: str):
             elif msg_type == "cancel":
                 if bridge:
                     await bridge.cancel()
+            elif msg_type == "ui_event":
+                # 前端 UI 事件 → 路由到对应的 UIContext
+                from mutbot.ui import deliver_event
+                from mutbot.ui.events import UIEvent
+                context_id = raw.get("context_id", "")
+                if context_id:
+                    event = UIEvent(
+                        type=raw.get("event_type", ""),
+                        data=raw.get("data", {}),
+                        source=raw.get("source"),
+                        context_id=context_id,
+                    )
+                    deliver_event(context_id, event)
             elif msg_type == "log":
                 # Frontend log forwarding
                 level = raw.get("level", "debug")

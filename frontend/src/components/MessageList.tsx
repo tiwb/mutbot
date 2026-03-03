@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { WorkspaceRpc } from "../lib/workspace-rpc";
 import Markdown from "./Markdown";
-import ToolCallCard, { type ToolGroupData } from "./ToolCallCard";
+import ToolCallCard, { type ToolGroupData, type UIEventPayload } from "./ToolCallCard";
 import RpcMenu from "./RpcMenu";
 import CodeBlock from "./CodeBlock";
 import Avatar from "./Avatar";
@@ -83,11 +83,12 @@ interface Props {
   isStreaming?: boolean;
   onSessionLink?: (sessionId: string) => void;
   scrollToBottomSignal?: number;
+  onUIEvent?: (toolCallId: string, event: UIEventPayload) => void;
 }
 
 const AT_BOTTOM_THRESHOLD = 150;
 
-export default function MessageList({ messages, rpc, agentDisplay, isStreaming, onSessionLink, scrollToBottomSignal }: Props) {
+export default function MessageList({ messages, rpc, agentDisplay, isStreaming, onSessionLink, scrollToBottomSignal, onUIEvent }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const [atBottom, setAtBottom] = useState(true);
@@ -253,7 +254,7 @@ export default function MessageList({ messages, rpc, agentDisplay, isStreaming, 
                     <div className="content-col">
                       {showAvatar && <div className="message-sender">{agentName}</div>}
                       <div className="bubble-wrap">
-                        {renderBubble(msg, markdownMode, onSessionLink, showTypingDots)}
+                        {renderBubble(msg, markdownMode, onSessionLink, showTypingDots, onUIEvent)}
                         {renderMeta(msg)}
                       </div>
                     </div>
@@ -262,7 +263,7 @@ export default function MessageList({ messages, rpc, agentDisplay, isStreaming, 
                   <>
                     <div className="content-col">
                       <div className="bubble-wrap">
-                        {renderBubble(msg, markdownMode, onSessionLink)}
+                        {renderBubble(msg, markdownMode, onSessionLink, undefined, onUIEvent)}
                         {renderMeta(msg)}
                       </div>
                     </div>
@@ -307,6 +308,7 @@ function renderBubble(
   markdownMode: MarkdownMode,
   onSessionLink?: (sessionId: string) => void,
   showTypingDots?: boolean,
+  onUIEvent?: (toolCallId: string, event: UIEventPayload) => void,
 ) {
   switch (msg.type) {
     case "text":
@@ -336,7 +338,7 @@ function renderBubble(
     case "tool_group":
       return (
         <div className="message-bubble assistant tool-group" data-msg-id={msg.id}>
-          <ToolCallCard data={msg.data} />
+          <ToolCallCard data={msg.data} onUIEvent={onUIEvent} />
         </div>
       );
 

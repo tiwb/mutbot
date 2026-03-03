@@ -7,7 +7,7 @@ import MessageList, { type ChatMessage, type AgentDisplay } from "../components/
 import ChatInput from "../components/ChatInput";
 import AgentStatusBar from "../components/AgentStatusBar";
 import ModelSelector from "../components/ModelSelector";
-import type { ToolGroupData } from "../components/ToolCallCard";
+import type { ToolGroupData, UIEventPayload } from "../components/ToolCallCard";
 
 const DEBUG = false;
 
@@ -215,6 +215,32 @@ export default function AgentPanel({ sessionId, rpc, onSessionLink }: Props) {
           );
         }
       }
+    } else if (eventType === "ui_view") {
+      // 后端 UIContext 推送视图 → 更新对应 ToolCallCard 的 uiView
+      const contextId = data.context_id as string;
+      const view = data.view as ToolGroupData["uiView"];
+      if (contextId && view) {
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.type === "tool_group" && m.data?.toolCallId === contextId
+              ? { ...m, data: { ...m.data, uiView: view } }
+              : m,
+          ),
+        );
+      }
+    } else if (eventType === "ui_close") {
+      // 后端 UIContext 关闭 → 清除 uiView，可选设置 uiFinalView
+      const contextId = data.context_id as string;
+      const finalView = data.final_view as ToolGroupData["uiFinalView"] | undefined;
+      if (contextId) {
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.type === "tool_group" && m.data?.toolCallId === contextId
+              ? { ...m, data: { ...m.data, uiView: null, uiFinalView: finalView ?? null } }
+              : m,
+          ),
+        );
+      }
     } else if (eventType === "turn_done") {
       pendingTextRef.current = "";
       const msgId = data.id as string;
@@ -406,6 +432,16 @@ export default function AgentPanel({ sessionId, rpc, onSessionLink }: Props) {
     wsRef.current?.send({ type: "cancel" });
   }, []);
 
+  const handleUIEvent = useCallback((toolCallId: string, event: UIEventPayload) => {
+    wsRef.current?.send({
+      type: "ui_event",
+      context_id: toolCallId,
+      event_type: event.type,
+      data: event.data,
+      source: event.source,
+    });
+  }, []);
+
   return (
     <div className="agent-panel">
       <div className="agent-header">
@@ -423,7 +459,7 @@ export default function AgentPanel({ sessionId, rpc, onSessionLink }: Props) {
         {tokenUsage && <TokenUsageDisplay usage={tokenUsage} />}
         {DEBUG && <span style={{ marginLeft: "auto", opacity: 0.5, fontSize: "0.8em" }}>msgs: {messages.length}</span>}
       </div>
-      <MessageList messages={messages} rpc={rpc ?? null} agentDisplay={agentDisplay} isStreaming={agentStatus !== "idle"} onSessionLink={onSessionLink} scrollToBottomSignal={scrollSignal} />
+      <MessageList messages={messages} rpc={rpc ?? null} agentDisplay={agentDisplay} isStreaming={agentStatus !== "idle"} onSessionLink={onSessionLink} scrollToBottomSignal={scrollSignal} onUIEvent={handleUIEvent} />
       <AgentStatusBar isBusy={agentStatus !== "idle"} />
       <ChatInput onSend={handleSend} onCancel={handleCancel} disabled={!connected} isBusy={agentStatus !== "idle"} />
     </div>

@@ -846,6 +846,7 @@ body,
   padding: 10px 14px;
 }
 
+
 /* ---- Bubble arrows ---- */
 
 .message-bubble.assistant.text::before {
@@ -1306,6 +1307,341 @@ body,
   background: rgba(0, 0, 0, 0.2);
   padding: 8px;
   border-radius: 4px;
+}
+
+/* ----------------------------------------------------------------
+   UI Components (Backend-Driven UI Framework)
+   ---------------------------------------------------------------- */
+
+.tool-card-ui {
+  padding: 12px;
+}
+
+.ui-view {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.ui-view-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 4px;
+}
+
+.ui-view-components {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.ui-view-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 4px;
+}
+
+/* UI Field */
+.ui-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.ui-label {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-dim);
+}
+
+/* Text Input */
+.ui-text-input {
+  background: var(--bg-input, rgba(0, 0, 0, 0.3));
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  padding: 6px 8px;
+  font-size: 13px;
+  font-family: inherit;
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.ui-text-input:focus {
+  border-color: var(--accent);
+}
+
+.ui-text-input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Secret Input (Show/Hide toggle) */
+.ui-secret-wrap {
+  display: flex;
+  gap: 0;
+}
+
+.ui-secret-wrap .ui-text-input {
+  flex: 1;
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+.ui-secret-toggle {
+  background: var(--bg-input, rgba(0, 0, 0, 0.3));
+  border: 1px solid var(--border);
+  border-left: none;
+  border-radius: 0 4px 4px 0;
+  color: var(--fg-muted, #888);
+  font-size: 0.8em;
+  padding: 0 10px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.ui-secret-toggle:hover {
+  color: var(--fg, #ccc);
+}
+
+/* Select Cards */
+.ui-select-cards {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.ui-select-cards.vertical {
+  flex-direction: column;
+}
+
+.ui-select-cards.vertical .ui-select-card {
+  text-align: left;
+}
+
+.ui-select-cards.scrollable {
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.ui-select-card {
+  background: var(--bg-input, rgba(0, 0, 0, 0.2));
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 16px;
+  color: var(--text);
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.15s;
+  flex: 1;
+  min-width: 0;
+  text-align: center;
+}
+
+.ui-select-card:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.ui-select-card.selected {
+  border-color: var(--accent);
+  background: rgba(var(--accent-rgb, 0, 122, 204), 0.15);
+  color: var(--accent);
+}
+
+.ui-select-card:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Button Group */
+.ui-button-group {
+  display: flex;
+  gap: 0;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.ui-btn-group-item {
+  flex: 1;
+  background: transparent;
+  border: none;
+  border-right: 1px solid var(--border);
+  padding: 6px 12px;
+  color: var(--text);
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.ui-btn-group-item:last-child {
+  border-right: none;
+}
+
+.ui-btn-group-item:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.ui-btn-group-item.selected {
+  background: rgba(var(--accent-rgb, 0, 122, 204), 0.15);
+  color: var(--accent);
+}
+
+/* Action Buttons */
+.ui-action-btn {
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 6px 16px;
+  color: var(--text);
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.ui-action-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.ui-action-btn.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.ui-action-btn.primary:hover:not(:disabled) {
+  filter: brightness(1.1);
+}
+
+.ui-action-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Toggle */
+.ui-toggle-field {
+  flex-direction: row;
+  align-items: center;
+}
+
+.ui-toggle-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text);
+}
+
+/* Hint */
+.ui-hint {
+  font-size: 13px;
+  color: var(--text-dim);
+  line-height: 1.5;
+}
+
+/* Badge */
+.ui-badge {
+  display: inline-block;
+  font-size: 12px;
+  font-weight: 500;
+  padding: 2px 8px;
+  border-radius: 10px;
+  border: 1px solid;
+}
+
+.ui-badge.info {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: rgba(var(--accent-rgb, 0, 122, 204), 0.1);
+}
+
+.ui-badge.success {
+  color: var(--accent-green);
+  border-color: var(--accent-green);
+  background: rgba(0, 200, 83, 0.1);
+}
+
+.ui-badge.warning {
+  color: var(--warning, #e2b93d);
+  border-color: var(--warning, #e2b93d);
+  background: rgba(226, 185, 61, 0.1);
+}
+
+.ui-badge.error {
+  color: var(--error);
+  border-color: var(--error);
+  background: rgba(255, 85, 85, 0.1);
+}
+
+/* Spinner */
+.ui-spinner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text-dim);
+}
+
+.ui-spinner-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: blink 1.2s ease-in-out infinite;
+}
+
+/* Copyable */
+.ui-copyable {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 4px;
+  padding: 8px 12px;
+}
+
+.ui-copyable code {
+  font-family: "SF Mono", "Cascadia Code", Consolas, monospace;
+  font-size: 16px;
+  font-weight: 600;
+  letter-spacing: 2px;
+  color: var(--text);
+  flex: 1;
+}
+
+.ui-copy-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 16px;
+  padding: 2px 4px;
+}
+
+.ui-copy-btn:hover {
+  color: var(--text);
+}
+
+/* Link */
+.ui-link {
+  color: var(--accent);
+  text-decoration: none;
+  font-size: 13px;
+}
+
+.ui-link:hover {
+  text-decoration: underline;
+}
+
+/* Unknown */
+.ui-unknown {
+  color: var(--warning, #e2b93d);
+  font-size: 12px;
+  font-style: italic;
 }
 
 /* ----------------------------------------------------------------

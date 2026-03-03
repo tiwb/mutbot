@@ -1,6 +1,6 @@
 # 可演化块系统与多媒体内容
 
-**状态**：⏸️ 暂缓
+**状态**：🚫 已弃用 — 被 [feature-interactive-ui-tools.md](feature-interactive-ui-tools.md)（后端驱动 UI 框架）涵盖
 **日期**：2026-02-25
 **类型**：功能设计
 **来源**：从 `feature-web.md` 阶段五拆分

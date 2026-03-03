@@ -627,6 +627,14 @@ class SessionManager:
             session_status_fn=_session_status_fn,
         )
 
+        # 将 broadcast 能力注入 ToolSet，供 UIToolkit 使用
+        object.__setattr__(agent.tools, '_broadcast_fn', broadcast_fn)
+        object.__setattr__(agent.tools, '_session_id', session_id)
+
+        # 将 session 引用注入 Agent，供绑定链使用
+        if not hasattr(agent, 'session'):
+            agent.session = session
+
         # --- Session 级日志 FileHandler ---
         session_log_handler = _create_session_log_handler(
             self.log_dir, session_prefix, session_id,
