@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useCallback, useState } from "react";
 
 export interface ViewSchema {
   title?: string;
@@ -25,6 +25,7 @@ export interface ToolGroupData {
   input: Record<string, unknown>;
   result?: string;
   isError?: boolean;
+  isCancelled?: boolean;
   /** Active UI view pushed by backend UIContext */
   uiView?: ViewSchema | null;
   /** Final UI view (read-only snapshot after close) */
@@ -44,16 +45,35 @@ export interface UIEventPayload {
 
 export default function ToolCallCard({ data, onUIEvent }: Props) {
   const [expanded, setExpanded] = useState(false);
+  const [modalArg, setModalArg] = useState<{ key: string; value: string } | null>(null);
   const isRunning = data.result === undefined;
+  const isCancelled = !!data.isCancelled;
   const hasUI = data.uiView || data.uiFinalView;
+  const hasArgs = Object.keys(data.input).length > 0;
+
+  const cardClass = isRunning
+    ? "running"
+    : isCancelled
+      ? "cancelled"
+      : data.isError
+        ? "error"
+        : "success";
+
+  const statusIcon = isRunning
+    ? "\u25cf"
+    : isCancelled
+      ? "\u2298"
+      : data.isError
+        ? "\u2717"
+        : "\u2713";
+
+  const handleModalClose = useCallback(() => setModalArg(null), []);
 
   return (
-    <div
-      className={`tool-card ${isRunning ? "running" : data.isError ? "error" : "success"}`}
-    >
+    <div className={`tool-card ${cardClass}`}>
       <div className="tool-card-header" onClick={() => setExpanded((v) => !v)}>
         <span className="tool-card-status">
-          {isRunning ? "\u25cf" : data.isError ? "\u2717" : "\u2713"}
+          {statusIcon}
         </span>
         <span className="tool-card-name">{data.toolName}</span>
         {!expanded && !hasUI && (
@@ -77,12 +97,16 @@ export default function ToolCallCard({ data, onUIEvent }: Props) {
         </div>
       ) : expanded ? (
         <div className="tool-card-body">
-          <div className="tool-card-section">
-            <div className="tool-card-label">Arguments</div>
-            <pre className="tool-card-pre">
-              {JSON.stringify(data.input, null, 2)}
-            </pre>
-          </div>
+          {hasArgs && (
+            <div className="tool-card-section">
+              <div className="tool-card-label">Arguments</div>
+              <div className="tool-card-args-list">
+                {Object.entries(data.input).map(([k, v]) => (
+                  <ArgRow key={k} name={k} value={v} onExpand={setModalArg} />
+                ))}
+              </div>
+            </div>
+          )}
           {data.result !== undefined && (
             <div className="tool-card-section">
               <div
@@ -95,13 +119,76 @@ export default function ToolCallCard({ data, onUIEvent }: Props) {
           )}
         </div>
       ) : null}
+      {modalArg && <ArgModal name={modalArg.key} value={modalArg.value} onClose={handleModalClose} />}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// ArgRow — 单个参数行
+// ---------------------------------------------------------------------------
+
+const ARG_TRUNCATE_LEN = 120;
+
+function formatValue(v: unknown): string {
+  if (typeof v === "string") return v;
+  return JSON.stringify(v, null, 2);
+}
+
+function ArgRow({ name, value, onExpand }: {
+  name: string;
+  value: unknown;
+  onExpand: (arg: { key: string; value: string }) => void;
+}) {
+  const formatted = formatValue(value);
+  const isLong = formatted.length > ARG_TRUNCATE_LEN;
+
+  return (
+    <div className="tool-arg-row">
+      <span className="tool-arg-key">{name}</span>
+      <span className="tool-arg-value">
+        {isLong ? formatted.slice(0, ARG_TRUNCATE_LEN) + "..." : formatted}
+      </span>
+      {isLong && (
+        <button
+          className="tool-arg-expand-btn"
+          title="View full value"
+          onClick={(e) => { e.stopPropagation(); onExpand({ key: name, value: formatted }); }}
+        >
+          {"\u2922"}
+        </button>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// ArgModal — 长参数值弹框
+// ---------------------------------------------------------------------------
+
+function ArgModal({ name, value, onClose }: { name: string; value: string; onClose: () => void }) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  return (
+    <div className="arg-modal-overlay" onClick={onClose}>
+      <div className="arg-modal" onClick={(e) => e.stopPropagation()}>
+        <div className="arg-modal-header">
+          <span className="arg-modal-title">{name}</span>
+          <button className="arg-modal-close" onClick={onClose}>{"\u2715"}</button>
+        </div>
+        <pre className="arg-modal-content">{value}</pre>
+      </div>
     </div>
   );
 }
 
 function formatArgsPreview(args: Record<string, unknown>): string {
   const entries = Object.entries(args);
-  if (entries.length === 0) return "()";
+  if (entries.length === 0) return "";
   const preview = entries
     .map(([k, v]) => {
       const val =

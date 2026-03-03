@@ -678,7 +678,7 @@ class SessionManager:
                     tm.kill(terminal_id)
         # Document sessions have no runtime resources to clean up
 
-        session.status = "ended"
+        session.status = "stopped"
         session.updated_at = datetime.now(timezone.utc).isoformat()
         # Persist final state (runtime still available so messages are included)
         self._persist(session)

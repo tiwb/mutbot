@@ -216,6 +216,25 @@ export default function App() {
     return () => window.removeEventListener("hashchange", onHashChange);
   }, [workspaces]);
 
+  // Ctrl+W / Cmd+W → 关闭当前活动 tab（无 tab 时放行给浏览器）
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "w" && (e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey) {
+        const model = modelRef.current;
+        if (!model) return;
+        const tabId = (model.getActiveTabset() as TabSetNode | undefined)
+          ?.getSelectedNode()?.getId();
+        if (tabId) {
+          e.preventDefault();
+          model.doAction(Actions.deleteTab(tabId));
+        }
+        // 无 tab → 不 preventDefault，浏览器默认关闭标签页
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
+
   // Initialize WorkspaceRpc when workspace is available
   useEffect(() => {
     if (!workspace) return;
@@ -956,7 +975,7 @@ export default function App() {
     [sessions, activeSessionId, workspace, rpc, handleSelectSession, handleUpdateTabConfig, handleTerminalExited],
   );
 
-  // 无工作区 → 显示工作区选择器（或远程降级页）
+  // 无工作区 → 显示工作区选择器（或远程降级页 / 连接中状态）
   if (!workspace) {
     // 远程模式连接失败 → 降级提示
     if (isRemote() && remoteConnected === false) {
@@ -980,6 +999,17 @@ export default function App() {
       );
     }
 
+    // Hash 指向 workspace 但尚未加载 → 全屏连接中状态
+    const pendingWsName = location.hash.replace(/^#\/?/, "");
+    if (pendingWsName) {
+      return (
+        <div className="ws-connecting-fullscreen">
+          <span className="ws-connecting-spinner" />
+          <span>Connecting to workspace...</span>
+        </div>
+      );
+    }
+
     return (
       <WorkspaceSelector
         workspaces={workspaces}
@@ -990,8 +1020,8 @@ export default function App() {
         }}
         onCreated={(ws) => {
           setWorkspaces((prev) => [...prev, ws]);
-          location.hash = ws.name;
           setWorkspace(ws);
+          requestAnimationFrame(() => { location.hash = ws.name; });
         }}
         onRemoved={(wsId) => {
           setWorkspaces((prev) => prev.filter((w) => w.id !== wsId));

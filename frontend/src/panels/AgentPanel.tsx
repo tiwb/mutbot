@@ -296,6 +296,19 @@ export default function AgentPanel({ sessionId, rpc, onSessionLink }: Props) {
     } else if (eventType === "agent_cancelled") {
       setAgentStatus("idle");
       pendingTextRef.current = "";
+      // 标记所有未完成的工具为已取消
+      if (toolCallMapRef.current.size > 0) {
+        const pending = new Map(toolCallMapRef.current);
+        toolCallMapRef.current.clear();
+        setMessages((prev) =>
+          prev.map((m) => {
+            if (m.type === "tool_group" && pending.has(m.data?.toolCallId)) {
+              return { ...m, data: { ...m.data!, result: "(cancelled)", isCancelled: true } };
+            }
+            return m;
+          }),
+        );
+      }
     } else if (eventType === "token_usage") {
       setTokenUsage({
         contextUsed: data.context_used as number,

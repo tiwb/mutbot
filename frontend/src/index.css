@@ -1218,6 +1218,10 @@ body,
   border-color: var(--error);
 }
 
+.tool-card.cancelled {
+  border-color: var(--text-dim);
+}
+
 .tool-card-header {
   display: flex;
   align-items: center;
@@ -1248,6 +1252,10 @@ body,
 
 .tool-card.error .tool-card-status {
   color: var(--error);
+}
+
+.tool-card.cancelled .tool-card-status {
+  color: var(--text-dim);
 }
 
 @keyframes blink {
@@ -1321,6 +1329,119 @@ body,
   background: rgba(0, 0, 0, 0.2);
   padding: 8px;
   border-radius: 4px;
+}
+
+/* Tool argument key-value list */
+.tool-card-args-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-family: "SF Mono", "Cascadia Code", Consolas, monospace;
+  font-size: 12px;
+}
+
+.tool-arg-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 3px 8px;
+  border-radius: 3px;
+}
+
+.tool-arg-row:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.tool-arg-key {
+  color: var(--text-dim);
+  flex-shrink: 0;
+  min-width: 80px;
+}
+
+.tool-arg-value {
+  color: var(--text);
+  overflow-x: auto;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
+
+.tool-arg-expand-btn {
+  flex-shrink: 0;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 12px;
+  padding: 0 4px;
+  line-height: 1.4;
+}
+
+.tool-arg-expand-btn:hover {
+  color: var(--text);
+  border-color: var(--text-dim);
+}
+
+/* Argument modal */
+.arg-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 9999;
+}
+
+.arg-modal {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  max-width: 80vw;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  min-width: 400px;
+}
+
+.arg-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.arg-modal-title {
+  font-family: "SF Mono", "Cascadia Code", Consolas, monospace;
+  font-size: 13px;
+  color: var(--text-dim);
+}
+
+.arg-modal-close {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  cursor: pointer;
+  font-size: 16px;
+  padding: 0 4px;
+}
+
+.arg-modal-close:hover {
+  color: var(--text);
+}
+
+.arg-modal-content {
+  padding: 16px;
+  margin: 0;
+  overflow: auto;
+  flex: 1;
+  font-family: "SF Mono", "Cascadia Code", Consolas, monospace;
+  font-size: 12px;
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 /* ----------------------------------------------------------------
@@ -2600,6 +2721,30 @@ body,
   font-size: 14px;
   color: var(--text-dim);
   margin-top: 4px;
+}
+
+.ws-connecting-fullscreen {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  height: 100vh;
+  width: 100vw;
+  color: var(--text-dim);
+  font-size: 14px;
+}
+
+.ws-connecting-spinner {
+  width: 16px;
+  height: 16px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent-green);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
 }
 
 .ws-selector-heading-row {
