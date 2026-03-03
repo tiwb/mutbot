@@ -1,10 +1,7 @@
-"""SetupProvider 单元测试
+"""NullProvider 与 Setup 辅助工具单元测试
 
 涵盖：
-- 状态机各状态转换
-- 模型发现（fetch 成功 / 失败 / chat_filter）
-- 模型选择（编号解析、all、a 展开、手动输入）
-- send() 代理（async provider）
+- NullProvider：fallback 行为
 - 配置构建与合并
 - 模型优先级排序
 """
@@ -15,9 +12,9 @@ import json
 
 import pytest
 
-from mutagent.messages import Message, Response, StreamEvent, TextBlock
-from mutbot.builtins.setup_provider import (
-    SetupProvider,
+from mutagent.messages import Message, Response, StreamEvent, TextBlock, ToolUseBlock
+from mutbot.builtins.guide import NullProvider
+from mutbot.builtins.setup_toolkit import (
     _model_family,
     _prioritize_models,
     _write_config,
@@ -36,7 +33,7 @@ async def _collect_events(gen) -> list[StreamEvent]:
     return events
 
 
-async def _send(provider: SetupProvider, text: str) -> list[StreamEvent]:
+async def _send(provider: NullProvider, text: str) -> list[StreamEvent]:
     """向 provider 发送一条用户消息，收集响应事件。"""
     messages = [Message(role="user", blocks=[TextBlock(text=text)])]
     return await _collect_events(
@@ -50,459 +47,36 @@ def _get_text(events: list[StreamEvent]) -> str:
 
 
 # ---------------------------------------------------------------------------
-# 状态机 — 基本转换
+# NullProvider — 引导 + Setup-llm tool_use
 # ---------------------------------------------------------------------------
 
-class TestStateMachine:
-    """测试 SetupProvider 状态机的各状态转换。"""
+class TestNullProviderFallback:
+    """测试 NullProvider 返回引导文本 + Setup-llm tool_use。"""
 
     @pytest.mark.asyncio
-    async def test_welcome_to_await_choice(self):
-        """WELCOME → AWAIT_CHOICE，显示欢迎消息和选项。"""
-        p = SetupProvider()
-        events = await _send(p, "__setup__")
-        assert p._state == "AWAIT_CHOICE"
+    async def test_returns_guide_text(self):
+        """返回引导文本。"""
+        p = NullProvider()
+        events = await _send(p, "hello")
+
         text = _get_text(events)
-        assert "GitHub Copilot" in text
-        assert "Anthropic" in text
-        assert "OpenAI" in text
+        assert "设置" in text or "配置" in text or "MutBot" in text
 
     @pytest.mark.asyncio
-    async def test_choice_anthropic(self):
-        """选择 2 → AWAIT_KEY（anthropic）。"""
-        p = SetupProvider()
-        p._state = "AWAIT_CHOICE"
-        events = await _send(p, "2")
-        assert p._state == "AWAIT_KEY"
-        assert p._context["provider_type"] == "anthropic"
-        assert "API key" in _get_text(events)
+    async def test_returns_setup_tool_use(self):
+        """response 包含 Setup-llm ToolUseBlock。"""
+        p = NullProvider()
+        events = await _send(p, "hello")
 
-    @pytest.mark.asyncio
-    async def test_choice_openai(self):
-        """选择 3 → AWAIT_KEY（openai）。"""
-        p = SetupProvider()
-        p._state = "AWAIT_CHOICE"
-        events = await _send(p, "3")
-        assert p._state == "AWAIT_KEY"
-        assert p._context["provider_type"] == "openai"
-
-    @pytest.mark.asyncio
-    async def test_choice_custom_anthropic(self):
-        """选择 4 → AWAIT_CUSTOM_URL（anthropic 协议）。"""
-        p = SetupProvider()
-        p._state = "AWAIT_CHOICE"
-        events = await _send(p, "4")
-        assert p._state == "AWAIT_CUSTOM_URL"
-        assert p._context["protocol"] == "anthropic"
-
-    @pytest.mark.asyncio
-    async def test_choice_custom_openai(self):
-        """选择 5 → AWAIT_CUSTOM_URL（openai 协议）。"""
-        p = SetupProvider()
-        p._state = "AWAIT_CHOICE"
-        events = await _send(p, "5")
-        assert p._state == "AWAIT_CUSTOM_URL"
-        assert p._context["protocol"] == "openai"
-
-    @pytest.mark.asyncio
-    async def test_choice_invalid_stays(self):
-        """无效选项保持在 AWAIT_CHOICE。"""
-        p = SetupProvider()
-        p._state = "AWAIT_CHOICE"
-        events = await _send(p, "99")
-        assert p._state == "AWAIT_CHOICE"
-        assert "1-5" in _get_text(events)
-
-    @pytest.mark.asyncio
-    async def test_cancel_from_await_key(self):
-        """AWAIT_KEY 输入 cancel → 回到 AWAIT_CHOICE。"""
-        p = SetupProvider()
-        p._state = "AWAIT_KEY"
-        p._context["provider_type"] = "anthropic"
-        events = await _send(p, "cancel")
-        assert p._state == "AWAIT_CHOICE"
-        assert p._context == {}
-
-    @pytest.mark.asyncio
-    async def test_cancel_from_custom_url(self):
-        """AWAIT_CUSTOM_URL 输入 cancel → 回到 AWAIT_CHOICE。"""
-        p = SetupProvider()
-        p._state = "AWAIT_CUSTOM_URL"
-        p._context["protocol"] = "openai"
-        events = await _send(p, "cancel")
-        assert p._state == "AWAIT_CHOICE"
-
-    @pytest.mark.asyncio
-    async def test_cancel_from_custom_key(self):
-        """AWAIT_CUSTOM_KEY 输入 cancel → 回到 AWAIT_CHOICE。"""
-        p = SetupProvider()
-        p._state = "AWAIT_CUSTOM_KEY"
-        p._context = {"base_url": "http://x", "protocol": "openai"}
-        events = await _send(p, "cancel")
-        assert p._state == "AWAIT_CHOICE"
-
-    @pytest.mark.asyncio
-    async def test_cancel_from_model_selection(self):
-        """AWAIT_MODEL 输入 cancel → 回到 AWAIT_CHOICE。"""
-        p = SetupProvider()
-        p._state = "AWAIT_MODEL"
-        p._context = {"available_models": ["a"]}
-        events = await _send(p, "cancel")
-        assert p._state == "AWAIT_CHOICE"
-
-    @pytest.mark.asyncio
-    async def test_copilot_polling_interrupted(self):
-        """COPILOT_POLLING 状态被取消后重新进入 → AWAIT_CHOICE。"""
-        p = SetupProvider()
-        p._state = "COPILOT_POLLING"
-        events = await _send(p, "anything")
-        assert p._state == "AWAIT_CHOICE"
-        assert "interrupted" in _get_text(events).lower()
-
-
-# ---------------------------------------------------------------------------
-# API Key 流程
-# ---------------------------------------------------------------------------
-
-class TestApiKeyFlow:
-    """测试 Standard Anthropic / OpenAI API Key 流程。"""
-
-    @pytest.mark.asyncio
-    async def test_anthropic_key_goes_to_model_selection(self):
-        """Anthropic key 输入后直接进入 AWAIT_MODEL（硬编码模型列表）。"""
-        p = SetupProvider()
-        p._state = "AWAIT_KEY"
-        p._context["provider_type"] = "anthropic"
-        events = await _send(p, "sk-ant-test-key")
-
-        assert p._state == "AWAIT_MODEL"
-        assert p._context["auth_token"] == "sk-ant-test-key"
-        models = p._context["available_models"]
-        assert "claude-sonnet-4" in models
-        assert "claude-haiku-4.5" in models
-        assert "claude-opus-4" in models
-        # 响应包含模型列表
-        text = _get_text(events)
-        assert "claude-sonnet-4" in text
-
-    @pytest.mark.asyncio
-    async def test_openai_key_fetch_success(self, monkeypatch):
-        """OpenAI key → fetch 成功 → AWAIT_MODEL 展示 fetched 模型。"""
-        p = SetupProvider()
-        p._state = "AWAIT_KEY"
-        p._context["provider_type"] = "openai"
-
-        async def mock_fetch(base_url, api_key, *, chat_filter=False):
-            return ["gpt-4.1", "gpt-4.1-mini", "o3-mini"]
-
-        monkeypatch.setattr(p, "_fetch_models_async", mock_fetch)
-        events = await _send(p, "sk-test-key")
-
-        assert p._state == "AWAIT_MODEL"
-        assert p._context["available_models"] == ["gpt-4.1", "gpt-4.1-mini", "o3-mini"]
-
-    @pytest.mark.asyncio
-    async def test_openai_key_fetch_fails_fallback(self, monkeypatch):
-        """OpenAI key → fetch 失败 → fallback 硬编码模型 → AWAIT_MODEL。"""
-        p = SetupProvider()
-        p._state = "AWAIT_KEY"
-        p._context["provider_type"] = "openai"
-
-        async def mock_fetch(base_url, api_key, *, chat_filter=False):
-            return []
-
-        monkeypatch.setattr(p, "_fetch_models_async", mock_fetch)
-        events = await _send(p, "sk-test-key")
-
-        assert p._state == "AWAIT_MODEL"
-        assert "gpt-4.1" in p._context["available_models"]
-        # 应提示 fallback
-        assert "Could not fetch" in _get_text(events)
-
-
-# ---------------------------------------------------------------------------
-# Custom API 流程
-# ---------------------------------------------------------------------------
-
-class TestCustomApiFlow:
-    """测试 Custom API 流程（URL → Key → Model）。"""
-
-    @pytest.mark.asyncio
-    async def test_url_accepted(self):
-        """有效 URL → AWAIT_CUSTOM_KEY。"""
-        p = SetupProvider()
-        p._state = "AWAIT_CUSTOM_URL"
-        p._context["protocol"] = "openai"
-        events = await _send(p, "https://api.example.com/v1")
-        assert p._state == "AWAIT_CUSTOM_KEY"
-        assert p._context["base_url"] == "https://api.example.com/v1"
-
-    @pytest.mark.asyncio
-    async def test_invalid_url_rejected(self):
-        """无效 URL → 停留在 AWAIT_CUSTOM_URL。"""
-        p = SetupProvider()
-        p._state = "AWAIT_CUSTOM_URL"
-        p._context["protocol"] = "openai"
-        events = await _send(p, "not-a-url")
-        assert p._state == "AWAIT_CUSTOM_URL"
-
-    @pytest.mark.asyncio
-    async def test_key_with_models_found(self, monkeypatch):
-        """Custom key → fetch 成功 → AWAIT_MODEL。"""
-        p = SetupProvider()
-        p._state = "AWAIT_CUSTOM_KEY"
-        p._context = {"base_url": "https://api.example.com", "protocol": "openai"}
-
-        async def mock_fetch(base_url, api_key, *, chat_filter=False):
-            return ["model-a", "model-b"]
-
-        monkeypatch.setattr(p, "_fetch_models_async", mock_fetch)
-        events = await _send(p, "my-api-key")
-
-        assert p._state == "AWAIT_MODEL"
-        assert p._context["available_models"] == ["model-a", "model-b"]
-
-    @pytest.mark.asyncio
-    async def test_key_with_no_models(self, monkeypatch):
-        """Custom key → fetch 失败 → AWAIT_MANUAL_MODEL。"""
-        p = SetupProvider()
-        p._state = "AWAIT_CUSTOM_KEY"
-        p._context = {"base_url": "https://api.example.com", "protocol": "openai"}
-
-        async def mock_fetch(base_url, api_key, *, chat_filter=False):
-            return []
-
-        monkeypatch.setattr(p, "_fetch_models_async", mock_fetch)
-        events = await _send(p, "my-api-key")
-
-        assert p._state == "AWAIT_MANUAL_MODEL"
-        assert "manually" in _get_text(events).lower() or "manual" in _get_text(events).lower()
-
-
-# ---------------------------------------------------------------------------
-# 模型选择
-# ---------------------------------------------------------------------------
-
-class TestModelSelection:
-    """测试 AWAIT_MODEL 状态下的模型选择逻辑。"""
-
-    def _setup_provider(self) -> SetupProvider:
-        p = SetupProvider()
-        p._state = "AWAIT_MODEL"
-        p._context = {
-            "provider_type": "anthropic",
-            "auth_token": "sk-test",
-            "available_models": [
-                "claude-sonnet-4", "claude-haiku-4.5", "claude-opus-4",
-            ],
-        }
-        return p
-
-    @pytest.mark.asyncio
-    async def test_select_by_number(self, monkeypatch):
-        """输入编号选择模型。"""
-        p = self._setup_provider()
-        monkeypatch.setattr(p, "_activate", _mock_activate)
-        events = await _send(p, "1,3")
-        assert p._context["selected_models"] == ["claude-sonnet-4", "claude-opus-4"]
-
-    @pytest.mark.asyncio
-    async def test_select_single(self, monkeypatch):
-        """输入单个编号。"""
-        p = self._setup_provider()
-        monkeypatch.setattr(p, "_activate", _mock_activate)
-        events = await _send(p, "2")
-        assert p._context["selected_models"] == ["claude-haiku-4.5"]
-
-    @pytest.mark.asyncio
-    async def test_select_all(self, monkeypatch):
-        """输入 all 选择全部。"""
-        p = self._setup_provider()
-        monkeypatch.setattr(p, "_activate", _mock_activate)
-        events = await _send(p, "all")
-        assert p._context["selected_models"] == [
-            "claude-sonnet-4", "claude-haiku-4.5", "claude-opus-4",
+        done_events = [e for e in events if e.type == "response_done"]
+        assert len(done_events) == 1
+        assert done_events[0].response.stop_reason == "tool_use"
+        tool_blocks = [
+            b for b in done_events[0].response.message.blocks
+            if isinstance(b, ToolUseBlock)
         ]
-
-    @pytest.mark.asyncio
-    async def test_select_by_name(self, monkeypatch):
-        """直接输入模型名。"""
-        p = self._setup_provider()
-        monkeypatch.setattr(p, "_activate", _mock_activate)
-        events = await _send(p, "custom-model-id")
-        assert p._context["selected_models"] == ["custom-model-id"]
-
-    @pytest.mark.asyncio
-    async def test_select_mixed(self, monkeypatch):
-        """混合编号和名称。"""
-        p = self._setup_provider()
-        monkeypatch.setattr(p, "_activate", _mock_activate)
-        events = await _send(p, "1, custom-model")
-        assert p._context["selected_models"] == ["claude-sonnet-4", "custom-model"]
-
-    @pytest.mark.asyncio
-    async def test_empty_selection_stays(self):
-        """空输入保持在 AWAIT_MODEL。"""
-        p = self._setup_provider()
-        events = await _send(p, "")
-        assert p._state == "AWAIT_MODEL"
-
-    @pytest.mark.asyncio
-    async def test_show_all_models(self):
-        """超过 10 个模型时，输入 a 展开全部。"""
-        p = SetupProvider()
-        p._state = "AWAIT_MODEL"
-        models = [f"model-{i}" for i in range(15)]
-        p._context = {
-            "provider_type": "openai",
-            "auth_token": "sk-test",
-            "available_models": models,
-        }
-        events = await _send(p, "a")
-        assert p._state == "AWAIT_MODEL"  # stays（展示全部后等选择）
-        assert p._context.get("show_all") is True
-        text = _get_text(events)
-        assert "model-14" in text  # 最后一个模型可见
-
-    @pytest.mark.asyncio
-    async def test_dedup_selection(self, monkeypatch):
-        """重复选择去重。"""
-        p = self._setup_provider()
-        monkeypatch.setattr(p, "_activate", _mock_activate)
-        events = await _send(p, "1,1,2")
-        assert p._context["selected_models"] == [
-            "claude-sonnet-4", "claude-haiku-4.5",
-        ]
-
-
-class TestManualModel:
-    """测试 AWAIT_MANUAL_MODEL 状态。"""
-
-    @pytest.mark.asyncio
-    async def test_manual_model_input(self, monkeypatch):
-        """输入模型 ID → activate。"""
-        p = SetupProvider()
-        p._state = "AWAIT_MANUAL_MODEL"
-        p._context = {
-            "base_url": "https://api.example.com",
-            "auth_token": "key",
-            "protocol": "openai",
-        }
-        monkeypatch.setattr(p, "_activate", _mock_activate)
-        events = await _send(p, "my-custom-model")
-        assert p._context["selected_models"] == ["my-custom-model"]
-
-    @pytest.mark.asyncio
-    async def test_empty_model_stays(self):
-        """空输入保持在 AWAIT_MANUAL_MODEL。"""
-        p = SetupProvider()
-        p._state = "AWAIT_MANUAL_MODEL"
-        p._context = {"base_url": "http://x", "auth_token": "k", "protocol": "openai"}
-        events = await _send(p, "")
-        assert p._state == "AWAIT_MANUAL_MODEL"
-
-
-async def _mock_activate(provider: str) -> str:
-    return "✅ Done"
-
-
-# ---------------------------------------------------------------------------
-# send() 代理
-# ---------------------------------------------------------------------------
-
-class TestSendProxy:
-    """测试配置完成后 send() 代理到真实 provider。"""
-
-    @pytest.mark.asyncio
-    async def test_proxy_async_provider(self):
-        """代理 async generator provider。"""
-        p = SetupProvider()
-
-        class AsyncProvider:
-            async def send(self, model, messages, tools,
-                           prompts=None, stream=True):
-                yield StreamEvent(type="text_delta", text="async-hello")
-                yield StreamEvent(type="response_done", response=Response(
-                    message=Message(role="assistant", blocks=[TextBlock(text="async-hello")]),
-                    stop_reason="end_turn",
-                ))
-
-        p._real_provider = AsyncProvider()
-        p._real_model = "test-model"
-
-        events = await _collect_events(
-            p.send("m", [Message(role="user", blocks=[TextBlock(text="hi")])], [])
-        )
-        assert len(events) == 2
-        assert events[0].text == "async-hello"
-
-
-# ---------------------------------------------------------------------------
-# 配置构建
-# ---------------------------------------------------------------------------
-
-class TestConfigBuild:
-    """测试 _build_provider_config 配置生成。"""
-
-    def test_copilot_config(self):
-        p = SetupProvider()
-        p._context = {
-            "github_token": "gho_test",
-            "selected_models": ["claude-sonnet-4", "gpt-4.1"],
-        }
-        config = p._build_provider_config("copilot")
-        assert config["default_model"] == "claude-sonnet-4"
-        prov = config["providers"]["copilot"]
-        assert prov["github_token"] == "gho_test"
-        assert prov["models"] == ["claude-sonnet-4", "gpt-4.1"]
-
-    def test_anthropic_config(self):
-        p = SetupProvider()
-        p._context = {
-            "auth_token": "sk-ant-test",
-            "selected_models": ["claude-sonnet-4"],
-        }
-        config = p._build_provider_config("anthropic")
-        prov = config["providers"]["anthropic"]
-        assert prov["auth_token"] == "sk-ant-test"
-        assert prov["base_url"] == "https://api.anthropic.com"
-        assert prov["models"] == ["claude-sonnet-4"]
-
-    def test_openai_config(self):
-        p = SetupProvider()
-        p._context = {
-            "auth_token": "sk-test",
-            "selected_models": ["gpt-4.1", "gpt-4.1-mini"],
-        }
-        config = p._build_provider_config("openai")
-        prov = config["providers"]["openai"]
-        assert prov["provider"] == "OpenAIProvider"
-        assert prov["models"] == ["gpt-4.1", "gpt-4.1-mini"]
-
-    def test_custom_anthropic_config(self):
-        p = SetupProvider()
-        p._context = {
-            "base_url": "https://api.example.com",
-            "auth_token": "key",
-            "protocol": "anthropic",
-            "selected_models": ["my-model"],
-        }
-        config = p._build_provider_config("custom")
-        prov = config["providers"]["custom"]
-        assert prov["provider"] == "AnthropicProvider"
-        assert prov["base_url"] == "https://api.example.com"
-
-    def test_custom_openai_config(self):
-        p = SetupProvider()
-        p._context = {
-            "base_url": "https://api.example.com/v1",
-            "auth_token": "key",
-            "protocol": "openai",
-            "selected_models": ["model-x"],
-        }
-        config = p._build_provider_config("custom")
-        prov = config["providers"]["custom"]
-        assert prov["provider"] == "OpenAIProvider"
+        assert len(tool_blocks) == 1
+        assert tool_blocks[0].name == "Setup-llm"
 
 
 # ---------------------------------------------------------------------------
@@ -514,9 +88,9 @@ class TestWriteConfig:
 
     def test_write_new_config(self, tmp_path, monkeypatch):
         """全新写入配置文件。"""
-        import mutbot.builtins.setup_provider as sp
-        monkeypatch.setattr(sp, "MUTBOT_CONFIG_PATH", tmp_path / "config.json")
-        monkeypatch.setattr(sp, "MUTBOT_USER_DIR", tmp_path)
+        import mutbot.builtins.setup_toolkit as st
+        monkeypatch.setattr(st, "MUTBOT_CONFIG_PATH", tmp_path / "config.json")
+        monkeypatch.setattr(st, "MUTBOT_USER_DIR", tmp_path)
 
         _write_config({
             "default_model": "test-model",
@@ -529,14 +103,14 @@ class TestWriteConfig:
 
     def test_merge_preserves_existing(self, tmp_path, monkeypatch):
         """合并写入时保留已有 providers，default_model 更新为新值。"""
-        import mutbot.builtins.setup_provider as sp
+        import mutbot.builtins.setup_toolkit as st
         config_path = tmp_path / "config.json"
         config_path.write_text(json.dumps({
             "default_model": "old-model",
             "providers": {"existing": {"provider": "Old", "models": ["old"]}},
         }))
-        monkeypatch.setattr(sp, "MUTBOT_CONFIG_PATH", config_path)
-        monkeypatch.setattr(sp, "MUTBOT_USER_DIR", tmp_path)
+        monkeypatch.setattr(st, "MUTBOT_CONFIG_PATH", config_path)
+        monkeypatch.setattr(st, "MUTBOT_USER_DIR", tmp_path)
 
         _write_config({
             "default_model": "new-model",

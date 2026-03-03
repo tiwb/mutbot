@@ -84,11 +84,12 @@ interface Props {
   onSessionLink?: (sessionId: string) => void;
   scrollToBottomSignal?: number;
   onUIEvent?: (toolCallId: string, event: UIEventPayload) => void;
+  onSetupLLM?: () => void;
 }
 
 const AT_BOTTOM_THRESHOLD = 150;
 
-export default function MessageList({ messages, rpc, agentDisplay, isStreaming, onSessionLink, scrollToBottomSignal, onUIEvent }: Props) {
+export default function MessageList({ messages, rpc, agentDisplay, isStreaming, onSessionLink, scrollToBottomSignal, onUIEvent, onSetupLLM }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const [atBottom, setAtBottom] = useState(true);
@@ -254,7 +255,7 @@ export default function MessageList({ messages, rpc, agentDisplay, isStreaming, 
                     <div className="content-col">
                       {showAvatar && <div className="message-sender">{agentName}</div>}
                       <div className="bubble-wrap">
-                        {renderBubble(msg, markdownMode, onSessionLink, showTypingDots, onUIEvent)}
+                        {renderBubble(msg, markdownMode, onSessionLink, showTypingDots, onUIEvent, onSetupLLM)}
                         {renderMeta(msg)}
                       </div>
                     </div>
@@ -263,7 +264,7 @@ export default function MessageList({ messages, rpc, agentDisplay, isStreaming, 
                   <>
                     <div className="content-col">
                       <div className="bubble-wrap">
-                        {renderBubble(msg, markdownMode, onSessionLink, undefined, onUIEvent)}
+                        {renderBubble(msg, markdownMode, onSessionLink, undefined, onUIEvent, onSetupLLM)}
                         {renderMeta(msg)}
                       </div>
                     </div>
@@ -309,6 +310,7 @@ function renderBubble(
   onSessionLink?: (sessionId: string) => void,
   showTypingDots?: boolean,
   onUIEvent?: (toolCallId: string, event: UIEventPayload) => void,
+  onSetupLLM?: () => void,
 ) {
   switch (msg.type) {
     case "text":
@@ -349,6 +351,11 @@ function renderBubble(
           <div className="message-content">
             <pre>{msg.content}</pre>
           </div>
+          {onSetupLLM && (
+            <button className="error-setup-btn" onClick={onSetupLLM}>
+              Setup LLM
+            </button>
+          )}
         </div>
       );
   }

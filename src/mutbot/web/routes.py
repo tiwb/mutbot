@@ -94,14 +94,27 @@ async def handle_app_workspace_create(params: dict, ctx: RpcContext) -> dict:
     name = params.get("name") or p.name
     ws = wm.create(name, str(p))
 
-    # Setup 模式：无 LLM 配置时自动创建向导 session
+    # 无 LLM 配置时，创建 Guide session 供 setup wizard 使用
     from mutbot.runtime.config import load_mutbot_config
     _cfg = load_mutbot_config()
     if not _cfg.get("providers"):
-        from mutbot.web.server import _ensure_setup_session
         sm = ctx.managers.get("session_manager")
         if sm:
-            _ensure_setup_session(ws, sm, wm)
+            guide_type = "mutbot.builtins.guide.GuideSession"
+            existing = sm.list_by_workspace(ws.id)
+            guide = next(
+                (s for s in existing
+                 if s.type == guide_type and s.status != "stopped"),
+                None,
+            )
+            if guide is None:
+                guide = sm.create(ws.id, session_type=guide_type)
+                ws.sessions.append(guide.id)
+                wm.update(ws)
+            # 前端连接后自动打开 Guide tab
+            workspace_connection_manager.queue_event(
+                ws.id, "open_session", {"session_id": guide.id},
+            )
 
     return _workspace_dict(ws)
 
@@ -339,6 +352,85 @@ async def handle_session_create(params: dict, ctx: RpcContext) -> dict:
     data = _session_dict(session)
     await ctx.broadcast_event("session_created", data)
     return data
+
+
+@workspace_rpc.method("session.run_tool")
+async def handle_session_run_tool(params: dict, ctx: RpcContext) -> dict:
+    """在指定 session 中请求执行一个工具调用。
+
+    params:
+      - session_id (必填): 目标 session
+      - tool (必填): 工具名称（如 "Setup-llm"）
+      - input (可选): 工具参数
+    """
+    sm = ctx.managers.get("session_manager")
+    if not sm:
+        return {"error": "session_manager not available"}
+
+    session_id = params.get("session_id", "")
+    tool_name = params.get("tool", "")
+    tool_input = params.get("input", {})
+    if not session_id or not tool_name:
+        return {"error": "session_id and tool are required"}
+
+    bridge = sm.get_bridge(session_id)
+    if not bridge:
+        return {"error": "session not running"}
+
+    bridge.request_tool(tool_name, tool_input)
+    return {"ok": True}
+
+
+@workspace_rpc.method("session.run_setup")
+async def handle_run_setup(params: dict, ctx: RpcContext) -> dict:
+    """查找或创建 Guide Session 并触发 Setup-llm 工具。
+
+    自动查找工作区内活跃的 GuideSession；找不到则新建。
+    确保 bridge 已启动后调用 request_tool("Setup-llm")。
+
+    返回 { ok: true, session_id } 供前端打开/聚焦对应 tab。
+    """
+    sm = ctx.managers.get("session_manager")
+    wm = ctx.managers.get("workspace_manager")
+    if not sm or not wm:
+        return {"error": "managers not available"}
+
+    ws = wm.get(ctx.workspace_id)
+    if ws is None:
+        return {"error": "workspace not found"}
+
+    from mutbot.builtins.guide import GuideSession
+
+    # 查找活跃的 GuideSession（未停止的）
+    guide_session = None
+    for s in sm.list_by_workspace(ctx.workspace_id):
+        if isinstance(s, GuideSession) and s.status != "stopped":
+            guide_session = s
+            break
+
+    # 没有则创建
+    if guide_session is None:
+        guide_session = sm.create(
+            ctx.workspace_id,
+            session_type="mutbot.builtins.guide.GuideSession",
+        )
+        ws.sessions.append(guide_session.id)
+        wm.update(ws)
+        data = _session_dict(guide_session)
+        await ctx.broadcast_event("session_created", data)
+
+    # 确保 bridge 已启动
+    loop = asyncio.get_running_loop()
+    try:
+        bridge = sm.start(
+            guide_session.id, loop, connection_manager.broadcast,
+        )
+    except Exception as exc:
+        logger.exception("Failed to start bridge for setup session=%s", guide_session.id)
+        return {"error": str(exc)}
+
+    bridge.request_tool("Setup-llm")
+    return {"ok": True, "session_id": guide_session.id}
 
 
 @workspace_rpc.method("session.types")
@@ -847,6 +939,11 @@ async def websocket_session(websocket: WebSocket, session_id: str):
             elif msg_type == "cancel":
                 if bridge:
                     await bridge.cancel()
+            elif msg_type == "run_tool":
+                # 运行时注入工具调用（如菜单触发 Setup-llm）
+                tool_name = raw.get("tool", "")
+                if tool_name and bridge:
+                    bridge.request_tool(tool_name, raw.get("input", {}))
             elif msg_type == "ui_event":
                 # 前端 UI 事件 → 路由到对应的 UIContext
                 from mutbot.ui import deliver_event

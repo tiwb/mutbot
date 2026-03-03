@@ -13,7 +13,7 @@ import time
 from typing import Any, Callable, Awaitable, TYPE_CHECKING
 from uuid import uuid4
 
-from mutagent.messages import Message, TextBlock, TurnStartBlock
+from mutagent.messages import Message, StreamEvent, TextBlock, ToolUseBlock, TurnStartBlock
 
 from mutbot.runtime.session_logging import current_session_id
 from mutbot.web.serializers import serialize_stream_event
@@ -68,6 +68,9 @@ class AgentBridge:
         self._current_turn_id: str = ""
         self._turn_start_time: float = 0.0
 
+        # --- 注入式工具调用（在 agent 循环前执行）---
+        self._pending_tool_calls: list[tuple[str, dict]] = []
+
     # --- Broadcasting helpers ---
 
     async def _broadcast_status(self, status: str, **extra: Any) -> None:
@@ -112,12 +115,36 @@ class AgentBridge:
 
     # --- Input stream ---
 
+    def _ensure_setup_toolkit(self) -> None:
+        """确保 SetupToolkit 已注册到 agent 的 ToolSet。"""
+        from mutbot.builtins.setup_toolkit import SetupToolkit
+        if not self.agent.tools.query("Setup-llm"):
+            self.agent.tools.add(SetupToolkit())
+
+    def request_tool(self, name: str, tool_input: dict | None = None) -> None:
+        """运行时请求工具执行。不中断当前 agent task。
+
+        将工具调用排入 pending 队列，并推送触发消息唤醒 _input_stream。
+        工具在下一条消息处理前由 _input_stream 拦截执行。
+        """
+        self._ensure_setup_toolkit()
+        self._pending_tool_calls.append((name, tool_input or {}))
+        # 推送触发消息唤醒 _input_stream
+        trigger = Message(
+            role="user",
+            blocks=[TurnStartBlock(turn_id="trigger"), TextBlock(text="[配置更新]")],
+        )
+        self._input_queue.put_nowait(trigger)
+
     async def _input_stream(self):
         """Async generator: read Message objects from asyncio.Queue."""
         while True:
             item = await self._input_queue.get()
             if item is None:
                 return
+            # 有 pending 工具 → 先执行，再 yield 消息
+            if self._pending_tool_calls:
+                await self._execute_pending_tools()
             # 让出 event loop，确保 send_message() 中 ensure_future 调度的
             # 广播（turn_start / user_message / thinking）先于 agent 处理完成。
             # 否则 _run task 可能在 ensure_future 之前启动并处理消息，
@@ -131,6 +158,59 @@ class AgentBridge:
         """Launch the agent task in the event loop."""
         self._start_agent_task()
 
+    async def _execute_pending_tools(self) -> None:
+        """Execute injected tool calls, broadcasting events."""
+        for name, tool_input in self._pending_tool_calls:
+            turn_id = uuid4().hex[:12]
+            self._current_turn_id = turn_id
+            self._turn_start_time = time.monotonic()
+
+            block = ToolUseBlock(
+                id="inject_" + uuid4().hex[:10],
+                name=name,
+                input=tool_input,
+            )
+
+            # Broadcast turn start
+            await self.broadcast_fn(self.session_id, {
+                "type": "turn_start",
+                "turn_id": turn_id,
+            })
+
+            # Create assistant message with tool call
+            assistant_msg = Message(role="assistant", blocks=[block])
+            self.agent.context.messages.append(assistant_msg)
+
+            # Broadcast tool exec start
+            start_data = serialize_stream_event(
+                StreamEvent(type="tool_exec_start", tool_call=block)
+            )
+            await self.broadcast_fn(self.session_id, start_data)
+            await self._broadcast_status("tool_calling", tool_name=name)
+
+            # Execute tool
+            block.status = "running"
+            await self.agent.tools.dispatch(block)
+
+            # Broadcast tool exec end
+            end_data = serialize_stream_event(
+                StreamEvent(type="tool_exec_end", tool_call=block)
+            )
+            await self.broadcast_fn(self.session_id, end_data)
+
+            # Persist
+            self._persist_fn()
+
+            # Turn done
+            await self.broadcast_fn(self.session_id, {
+                "type": "turn_done",
+                "turn_id": turn_id,
+                "duration_seconds": round(time.monotonic() - self._turn_start_time),
+            })
+            await self._broadcast_status("idle")
+
+        self._pending_tool_calls.clear()
+
     def _start_agent_task(self) -> None:
         """Create and start a new agent task."""
         async def _run():
@@ -143,7 +223,9 @@ class AgentBridge:
                     # 纯 serialize + forward
                     data = serialize_stream_event(event)
 
-                    if event.type == "tool_exec_start":
+                    if event.type == "error":
+                        await self.broadcast_fn(self.session_id, data)
+                    elif event.type == "tool_exec_start":
                         await self.broadcast_fn(self.session_id, data)
                         tool_name = event.tool_call.name if event.tool_call else ""
                         await self._broadcast_status("tool_calling", tool_name=tool_name)
@@ -253,6 +335,7 @@ class AgentBridge:
             except asyncio.CancelledError:
                 pass
             # Restart agent task so it can accept new messages
+            self._pending_tool_calls.clear()
             self._start_agent_task()
 
     async def stop(self) -> None:

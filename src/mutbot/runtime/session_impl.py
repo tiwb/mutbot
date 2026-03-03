@@ -369,6 +369,11 @@ class SessionManager:
         rt = self._runtimes.get(session_id)
         return rt if isinstance(rt, AgentSessionRuntime) else None
 
+    def get_bridge(self, session_id: str) -> AgentBridge | None:
+        """获取 session 的 AgentBridge（如果 agent 正在运行）。"""
+        rt = self.get_agent_runtime(session_id)
+        return rt.bridge if rt else None
+
     # --- 持久化 ---
 
     def load_from_disk(self, session_ids: set[str] | None = None) -> None:
@@ -647,13 +652,6 @@ class SessionManager:
 
         bridge.start()
         logger.info("Session %s: agent started", session_id)
-
-        # 如果 config 中有 initial_message，自动作为隐藏消息发送（不显示在聊天界面）
-        initial_message = session.config.pop("initial_message", None)
-        if initial_message:
-            bridge.send_message(initial_message, data={"hidden": True})
-            self._persist(session)
-            logger.info("Session %s: sent initial_message (hidden, %d chars)", session_id, len(initial_message))
 
         return bridge
 

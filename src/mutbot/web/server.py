@@ -120,44 +120,6 @@ async def _shutdown_cleanup():
             await session_manager.stop(sid)
 
 
-def _ensure_setup_session(ws, sm, wm) -> None:
-    """确保 setup 模式下 workspace 有一个可用的 Guide session。
-
-    - 首次启动：创建 GuideSession，带 initial_message 触发欢迎
-    - 重启恢复：已有 GuideSession 时，重新注入 initial_message
-    - 通过 pending event 让前端连接后自动打开 Guide tab
-    """
-    from mutbot.web.routes import workspace_connection_manager
-
-    guide_type = "mutbot.builtins.guide.GuideSession"
-    existing = sm.list_by_workspace(ws.id)
-    guide = next(
-        (s for s in existing
-         if s.type == guide_type and s.status != "stopped"),
-        None,
-    )
-
-    if guide is None:
-        guide = sm.create(
-            ws.id,
-            session_type=guide_type,
-            config={"initial_message": "__setup__"},
-        )
-        ws.sessions.append(guide.id)
-        wm.update(ws)
-        logger.info("Setup mode: created Guide session %s", guide.id)
-    elif "initial_message" not in guide.config:
-        # 重启恢复：上次 initial_message 已消费，重新注入
-        guide.config["initial_message"] = "__setup__"
-        sm._persist(guide)
-        logger.info("Setup mode: re-injected initial_message for session %s", guide.id)
-
-    # 入队 open_session 事件，前端 WebSocket 连接后自动 flush
-    workspace_connection_manager.queue_event(
-        ws.id, "open_session", {"session_id": guide.id},
-    )
-
-
 async def _watch_config_changes() -> None:
     """Background task: poll ~/.mutbot/config.json mtime every 5s.
 

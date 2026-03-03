@@ -459,7 +459,7 @@ export default function AgentPanel({ sessionId, rpc, onSessionLink }: Props) {
         {tokenUsage && <TokenUsageDisplay usage={tokenUsage} />}
         {DEBUG && <span style={{ marginLeft: "auto", opacity: 0.5, fontSize: "0.8em" }}>msgs: {messages.length}</span>}
       </div>
-      <MessageList messages={messages} rpc={rpc ?? null} agentDisplay={agentDisplay} isStreaming={agentStatus !== "idle"} onSessionLink={onSessionLink} scrollToBottomSignal={scrollSignal} onUIEvent={handleUIEvent} />
+      <MessageList messages={messages} rpc={rpc ?? null} agentDisplay={agentDisplay} isStreaming={agentStatus !== "idle"} onSessionLink={onSessionLink} scrollToBottomSignal={scrollSignal} onUIEvent={handleUIEvent} onSetupLLM={() => { rpc?.call("session.run_setup", {}).catch(() => {}); }} />
       <AgentStatusBar isBusy={agentStatus !== "idle"} />
       <ChatInput onSend={handleSend} onCancel={handleCancel} disabled={!connected} isBusy={agentStatus !== "idle"} />
     </div>
