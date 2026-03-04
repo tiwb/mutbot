@@ -115,11 +115,11 @@ class AgentBridge:
 
     # --- Input stream ---
 
-    def _ensure_setup_toolkit(self) -> None:
-        """确保 SetupToolkit 已注册到 agent 的 ToolSet。"""
-        from mutbot.builtins.setup_toolkit import SetupToolkit
-        if not self.agent.tools.query("Setup-llm"):
-            self.agent.tools.add(SetupToolkit())
+    def _ensure_config_toolkit(self) -> None:
+        """确保 ConfigToolkit 已注册到 agent 的 ToolSet。"""
+        from mutbot.builtins.config_toolkit import ConfigToolkit
+        if not self.agent.tools.query("Config-llm"):
+            self.agent.tools.add(ConfigToolkit())
 
     def request_tool(self, name: str, tool_input: dict | None = None) -> None:
         """运行时请求工具执行。不中断当前 agent task。
@@ -127,7 +127,7 @@ class AgentBridge:
         将工具调用排入 pending 队列，并推送触发消息唤醒 _input_stream。
         工具在下一条消息处理前由 _input_stream 拦截执行。
         """
-        self._ensure_setup_toolkit()
+        self._ensure_config_toolkit()
         self._pending_tool_calls.append((name, tool_input or {}))
         # 推送触发消息唤醒 _input_stream
         trigger = Message(

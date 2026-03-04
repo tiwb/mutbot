@@ -418,21 +418,7 @@ export default function App() {
 
   const handleHeaderAction = useCallback(
     async (action: string, _data: Record<string, unknown>) => {
-      if (action === "run_setup_wizard") {
-        if (!rpcRef.current || !workspace) return;
-        try {
-          const result = await rpcRef.current.call<{ ok?: boolean; session_id?: string }>(
-            "session.run_setup", {},
-          );
-          if (result.session_id) {
-            // 查找或获取 session 并打开/聚焦 tab
-            const session: Session = await rpcRef.current.call("session.get", {
-              session_id: result.session_id,
-            });
-            addTabForSession(session);
-          }
-        } catch { /* silent */ }
-      } else if (action === "close_workspace") {
+      if (action === "close_workspace") {
         exitWorkspace();
       }
     },

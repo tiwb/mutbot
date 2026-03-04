@@ -302,26 +302,47 @@ def build_default_agent(
 ) -> Agent:
     """AgentSession 基类的默认 create_agent 实现。
 
-    组装 ModuleToolkit + LogToolkit + auto_discover 的标准 Agent。
+    手动组装基础工具集：WebToolkit + ConfigToolkit + UIToolkit。
+    无 LLM 配置时使用 NullProvider 触发配置向导。
     """
+    from mutagent.toolkits.web_toolkit import WebToolkit
+    from mutbot.builtins.config_toolkit import ConfigToolkit, NullProvider
+    from mutbot.ui.toolkit import UIToolkit
+    import mutagent.builtins.web_local  # noqa: F401  -- 注册 LocalFetchImpl
+
     setup_environment(config)
 
-    client = create_llm_client(config, session.model, log_dir, session_ts)
+    # 有 LLM 配置 → 使用真实 provider；无配置 → NullProvider 占位
+    if config.get("providers"):
+        client = create_llm_client(config, session.model, log_dir, session_ts)
+    else:
+        client = LLMClient(
+            provider=NullProvider(),
+            model="setup-wizard",
+        )
 
-    # Build tool set
-    tool_set = ToolSet(auto_discover=True)
+    # 手动组装基础工具集
+    tool_set = ToolSet()
+    tool_set.add(WebToolkit(config=config))
+    tool_set.add(ConfigToolkit())
+    tool_set.add(UIToolkit())
 
     system_prompt = session.system_prompt
     if not system_prompt:
         system_prompt = (
-            "You are a Python AI Agent. Use the available tools to help "
-            "the user with their tasks."
+            "You are MutBot assistant.\n"
+            "- Help users with their tasks using your knowledge and available tools\n"
+            "- Always respond in the user's language"
         )
+
+    # message_metadata 配置（默认启用）
+    message_metadata = config.get("message_metadata", True)
 
     agent = Agent(
         llm=client,
         tools=tool_set,
         context=AgentContext(
+            message_metadata=message_metadata,
             prompts=[Message(role="system", blocks=[TextBlock(text=system_prompt)], label="base")],
             messages=messages if messages is not None else [],
         ),

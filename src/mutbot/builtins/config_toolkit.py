@@ -1,7 +1,6 @@
-"""mutbot.builtins.setup_toolkit -- LLM 配置向导的 UIToolkit 实现。
+"""mutbot.builtins.config_toolkit -- 配置管理工具集。
 
-通过后端驱动 UI 引导用户完成 LLM provider 配置。
-支持添加/编辑/删除 provider，添加后立即保存。
+提供 LLM provider 配置向导（Config-llm）和通用配置修改（Config-update）。
 """
 
 from __future__ import annotations
@@ -11,8 +10,11 @@ import json
 import logging
 import re
 from collections import defaultdict
-from typing import Any
+from typing import Any, AsyncIterator
+from uuid import uuid4
 
+from mutagent.messages import Message, Response, StreamEvent, TextBlock, ToolUseBlock
+from mutagent.provider import LLMProvider
 from mutbot.runtime.config import MUTBOT_USER_DIR
 from mutbot.ui.toolkit import UIToolkitBase
 
@@ -28,6 +30,50 @@ _MAX_NUMBERED_MODELS = 10
 _CHAT_MODEL_PREFIXES = ("gpt-", "o1", "o3", "o4", "chatgpt-")
 _FEATURED_FAMILIES_PER_PREFIX = 2
 _VARIANT_SUFFIXES = ("-mini", "-nano", "-turbo", "-latest", "-preview", "-realtime")
+
+
+# ---------------------------------------------------------------------------
+# NullProvider — 无 LLM 配置时占位
+# ---------------------------------------------------------------------------
+
+class NullProvider(LLMProvider):
+    """占位 LLM Provider — 无 LLM 配置时满足 Agent 构造要求。
+
+    无论用户发什么消息，都返回引导文本 + Config-llm tool_use，
+    让 Agent 自动进入配置流程。
+    配置完成后由 ConfigToolkit._activate() 直接替换 agent.llm。
+    """
+
+    @classmethod
+    def from_config(cls, model_config: dict) -> NullProvider:
+        return cls()
+
+    async def send(
+        self,
+        model: str,
+        messages: list[Message],
+        tools: list,
+        prompts: list[Message] | None = None,
+        stream: bool = True,
+    ) -> AsyncIterator[StreamEvent]:
+        guide_text = (
+            "欢迎使用 MutBot！当前尚未配置 LLM 服务，"
+            "让我先帮你完成初始设置。"
+        )
+        yield StreamEvent(type="text_delta", text=guide_text)
+
+        tool_block = ToolUseBlock(
+            id="setup_" + uuid4().hex[:10],
+            name="Config-llm",
+            input={},
+        )
+        yield StreamEvent(type="response_done", response=Response(
+            message=Message(role="assistant", blocks=[
+                TextBlock(text=guide_text),
+                tool_block,
+            ]),
+            stop_reason="tool_use",
+        ))
 
 
 # ---------------------------------------------------------------------------
@@ -150,11 +196,13 @@ _PROVIDER_DEFS = {
 }
 
 
-class SetupToolkit(UIToolkitBase):
-    """LLM 配置向导工具集。
+class ConfigToolkit(UIToolkitBase):
+    """配置管理工具集 — LLM 配置向导 + 通用配置修改。
 
     通过 UIContext 在 ToolCallCard 内渲染交互式配置表单。
     """
+
+    _tool_methods = ["llm", "update"]
 
     async def llm(self) -> str:
         """LLM provider 配置管理。
@@ -211,6 +259,52 @@ class SetupToolkit(UIToolkitBase):
             self._save_default_model(default_model)
 
         return self._activate(self._load_config())
+
+    async def update(self, key: str, default_value: str = "", description: str = "") -> str:
+        """修改配置项。展示 UI 表单让用户确认后写入。
+
+        Args:
+            key: 配置路径（如 "WebToolkit.jina_api_key"）
+            default_value: 建议的默认值，用户可修改
+            description: 配置项说明，帮助用户理解
+        """
+        components: list[dict[str, Any]] = []
+        if description:
+            components.append({
+                "type": "hint", "id": "desc",
+                "text": description,
+            })
+        components.append({
+            "type": "text", "id": "value",
+            "label": key,
+            "value": default_value,
+            "placeholder": "Enter value...",
+        })
+
+        data = await self.ui.show({
+            "title": f"Configure: {key}",
+            "components": components,
+            "actions": [
+                {"type": "cancel", "label": "Cancel"},
+                {"type": "submit", "label": "Save", "primary": True},
+            ],
+        })
+
+        value = data.get("value", "").strip()
+        if not value:
+            return "Configuration cancelled — no value provided."
+
+        # 写入配置
+        config = self._load_config()
+        # 支持点分隔路径（如 "WebToolkit.jina_api_key"）
+        parts = key.split(".")
+        target = config
+        for part in parts[:-1]:
+            target = target.setdefault(part, {})
+        target[parts[-1]] = value
+        self._write_full_config(config)
+
+        return f"Configuration saved: {key} = {value}"
 
     # ------------------------------------------------------------------
     # Provider 列表页

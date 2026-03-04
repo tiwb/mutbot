@@ -13,8 +13,8 @@ import json
 import pytest
 
 from mutagent.messages import Message, Response, StreamEvent, TextBlock, ToolUseBlock
-from mutbot.builtins.guide import NullProvider
-from mutbot.builtins.setup_toolkit import (
+from mutbot.builtins.config_toolkit import (
+    NullProvider,
     _model_family,
     _prioritize_models,
     _write_config,
@@ -47,11 +47,11 @@ def _get_text(events: list[StreamEvent]) -> str:
 
 
 # ---------------------------------------------------------------------------
-# NullProvider — 引导 + Setup-llm tool_use
+# NullProvider — 引导 + Config-llm tool_use
 # ---------------------------------------------------------------------------
 
 class TestNullProviderFallback:
-    """测试 NullProvider 返回引导文本 + Setup-llm tool_use。"""
+    """测试 NullProvider 返回引导文本 + Config-llm tool_use。"""
 
     @pytest.mark.asyncio
     async def test_returns_guide_text(self):
@@ -64,7 +64,7 @@ class TestNullProviderFallback:
 
     @pytest.mark.asyncio
     async def test_returns_setup_tool_use(self):
-        """response 包含 Setup-llm ToolUseBlock。"""
+        """response 包含 Config-llm ToolUseBlock。"""
         p = NullProvider()
         events = await _send(p, "hello")
 
@@ -76,7 +76,7 @@ class TestNullProviderFallback:
             if isinstance(b, ToolUseBlock)
         ]
         assert len(tool_blocks) == 1
-        assert tool_blocks[0].name == "Setup-llm"
+        assert tool_blocks[0].name == "Config-llm"
 
 
 # ---------------------------------------------------------------------------
@@ -88,7 +88,7 @@ class TestWriteConfig:
 
     def test_write_new_config(self, tmp_path, monkeypatch):
         """全新写入配置文件。"""
-        import mutbot.builtins.setup_toolkit as st
+        import mutbot.builtins.config_toolkit as st
         monkeypatch.setattr(st, "MUTBOT_CONFIG_PATH", tmp_path / "config.json")
         monkeypatch.setattr(st, "MUTBOT_USER_DIR", tmp_path)
 
@@ -103,7 +103,7 @@ class TestWriteConfig:
 
     def test_merge_preserves_existing(self, tmp_path, monkeypatch):
         """合并写入时保留已有 providers，default_model 更新为新值。"""
-        import mutbot.builtins.setup_toolkit as st
+        import mutbot.builtins.config_toolkit as st
         config_path = tmp_path / "config.json"
         config_path.write_text(json.dumps({
             "default_model": "old-model",

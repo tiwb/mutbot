@@ -24,7 +24,7 @@ class UIToolkitBase(Toolkit):
 
     子类：
         - UIToolkit：通用 UI 工具，暴露 show() 给 LLM
-        - SetupToolkit 等：领域工具，内部调用 self.ui.show()
+        - ConfigToolkit 等：领域工具，内部调用 self.ui.show()
 
     绑定链：
         Toolkit.owner → ToolSet → Agent → Session
@@ -155,8 +155,10 @@ class UIToolkit(UIToolkitBase):
 
     def _customize_schema(self, method_name: str, schema: ToolSchema) -> ToolSchema:
         if method_name == "show":
-            schema = schema.model_copy(update={
-                "description": _UI_SHOW_DESCRIPTION,
-                "input_schema": _UI_SHOW_INPUT_SCHEMA,
-            })
+            from dataclasses import replace
+            schema = replace(
+                schema,
+                description=_UI_SHOW_DESCRIPTION,
+                input_schema=_UI_SHOW_INPUT_SCHEMA,
+            )
         return schema

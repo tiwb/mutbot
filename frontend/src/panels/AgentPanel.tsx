@@ -7,6 +7,7 @@ import MessageList, { type ChatMessage, type AgentDisplay } from "../components/
 import ChatInput from "../components/ChatInput";
 import AgentStatusBar from "../components/AgentStatusBar";
 import ModelSelector from "../components/ModelSelector";
+import RpcMenu from "../components/RpcMenu";
 import type { ToolGroupData, UIEventPayload } from "../components/ToolCallCard";
 
 const DEBUG = false;
@@ -469,10 +470,24 @@ export default function AgentPanel({ sessionId, rpc, onSessionLink }: Props) {
           </span>
         )}
         {rpc && <ModelSelector sessionId={sessionId} currentModel={currentModel} rpc={rpc} />}
+        <div style={{ flex: 1 }} />
         {tokenUsage && <TokenUsageDisplay usage={tokenUsage} />}
-        {DEBUG && <span style={{ marginLeft: "auto", opacity: 0.5, fontSize: "0.8em" }}>msgs: {messages.length}</span>}
+        {DEBUG && <span style={{ opacity: 0.5, fontSize: "0.8em" }}>msgs: {messages.length}</span>}
+        {rpc && (
+          <RpcMenu
+            rpc={rpc}
+            category="AgentPanel/Header"
+            context={{ session_id: sessionId }}
+            trigger={<button className="agent-menu-btn" title="Menu">⋮</button>}
+            onClientAction={(action) => {
+              if (action === "run_setup") {
+                rpc.call("session.run_setup", { session_id: sessionId }).catch(() => {});
+              }
+            }}
+          />
+        )}
       </div>
-      <MessageList messages={messages} rpc={rpc ?? null} agentDisplay={agentDisplay} isStreaming={agentStatus !== "idle"} onSessionLink={onSessionLink} scrollToBottomSignal={scrollSignal} onUIEvent={handleUIEvent} onSetupLLM={() => { rpc?.call("session.run_setup", {}).catch(() => {}); }} />
+      <MessageList messages={messages} rpc={rpc ?? null} agentDisplay={agentDisplay} isStreaming={agentStatus !== "idle"} onSessionLink={onSessionLink} scrollToBottomSignal={scrollSignal} onUIEvent={handleUIEvent} onSetupLLM={() => { rpc?.call("session.run_setup", { session_id: sessionId }).catch(() => {}); }} />
       <AgentStatusBar isBusy={agentStatus !== "idle"} />
       <ChatInput onSend={handleSend} onCancel={handleCancel} disabled={!connected} isBusy={agentStatus !== "idle"} />
     </div>

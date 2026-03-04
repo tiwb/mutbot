@@ -4,4 +4,5 @@
 """
 
 import mutbot.builtins.menus as menus  # noqa: F401
-import mutbot.builtins.guide as guide  # noqa: F401
+import mutbot.builtins.config_toolkit as config_toolkit  # noqa: F401
+import mutbot.builtins.web_jina_ext as web_jina_ext  # noqa: F401

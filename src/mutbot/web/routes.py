@@ -94,26 +94,26 @@ async def handle_app_workspace_create(params: dict, ctx: RpcContext) -> dict:
     name = params.get("name") or p.name
     ws = wm.create(name, str(p))
 
-    # 无 LLM 配置时，创建 Guide session 供 setup wizard 使用
+    # 无 LLM 配置时，创建默认 AgentSession 供配置向导使用
     from mutbot.runtime.config import load_mutbot_config
     _cfg = load_mutbot_config()
     if not _cfg.get("providers"):
         sm = ctx.managers.get("session_manager")
         if sm:
-            guide_type = "mutbot.builtins.guide.GuideSession"
+            agent_type = "mutbot.session.AgentSession"
             existing = sm.list_by_workspace(ws.id)
-            guide = next(
+            agent_session = next(
                 (s for s in existing
-                 if s.type == guide_type and s.status != "stopped"),
+                 if s.type == agent_type and s.status != "stopped"),
                 None,
             )
-            if guide is None:
-                guide = sm.create(ws.id, session_type=guide_type)
-                ws.sessions.append(guide.id)
+            if agent_session is None:
+                agent_session = sm.create(ws.id, session_type=agent_type)
+                ws.sessions.append(agent_session.id)
                 wm.update(ws)
-            # 前端连接后自动打开 Guide tab
+            # 前端连接后自动打开 tab
             workspace_connection_manager.queue_event(
-                ws.id, "open_session", {"session_id": guide.id},
+                ws.id, "open_session", {"session_id": agent_session.id},
             )
 
     return _workspace_dict(ws)
@@ -308,7 +308,7 @@ async def handle_session_create(params: dict, ctx: RpcContext) -> dict:
     session_type = params.get("type", "")
     config = params.get("config")
 
-    # 未指定类型时：空工作区默认 GuideSession，否则返回错误
+    # 未指定类型时：空工作区默认 AgentSession，否则返回错误
     from mutbot.session import (
         Session, TerminalSession, DocumentSession,
     )
@@ -316,7 +316,7 @@ async def handle_session_create(params: dict, ctx: RpcContext) -> dict:
         # 检查工作区是否为空（无 session）
         existing = sm.list_by_workspace(ws.id)
         if not existing:
-            session_type = "mutbot.builtins.guide.GuideSession"
+            session_type = "mutbot.session.AgentSession"
         else:
             return {"error": "session type is required"}
     try:
@@ -360,7 +360,7 @@ async def handle_session_run_tool(params: dict, ctx: RpcContext) -> dict:
 
     params:
       - session_id (必填): 目标 session
-      - tool (必填): 工具名称（如 "Setup-llm"）
+      - tool (必填): 工具名称（如 "Config-llm"）
       - input (可选): 工具参数
     """
     sm = ctx.managers.get("session_manager")
@@ -383,54 +383,37 @@ async def handle_session_run_tool(params: dict, ctx: RpcContext) -> dict:
 
 @workspace_rpc.method("session.run_setup")
 async def handle_run_setup(params: dict, ctx: RpcContext) -> dict:
-    """查找或创建 Guide Session 并触发 Setup-llm 工具。
+    """在指定 session 上触发 Config-llm 配置工具。
 
-    自动查找工作区内活跃的 GuideSession；找不到则新建。
-    确保 bridge 已启动后调用 request_tool("Setup-llm")。
+    params:
+      - session_id: 目标 session（必须）
 
-    返回 { ok: true, session_id } 供前端打开/聚焦对应 tab。
+    确保 bridge 已启动后调用 request_tool("Config-llm")。
     """
     sm = ctx.managers.get("session_manager")
-    wm = ctx.managers.get("workspace_manager")
-    if not sm or not wm:
-        return {"error": "managers not available"}
+    if not sm:
+        return {"error": "session manager not available"}
 
-    ws = wm.get(ctx.workspace_id)
-    if ws is None:
-        return {"error": "workspace not found"}
+    session_id = params.get("session_id", "")
+    if not session_id:
+        return {"error": "session_id is required"}
 
-    from mutbot.builtins.guide import GuideSession
-
-    # 查找活跃的 GuideSession（未停止的）
-    guide_session = None
-    for s in sm.list_by_workspace(ctx.workspace_id):
-        if isinstance(s, GuideSession) and s.status != "stopped":
-            guide_session = s
-            break
-
-    # 没有则创建
-    if guide_session is None:
-        guide_session = sm.create(
-            ctx.workspace_id,
-            session_type="mutbot.builtins.guide.GuideSession",
-        )
-        ws.sessions.append(guide_session.id)
-        wm.update(ws)
-        data = _session_dict(guide_session)
-        await ctx.broadcast_event("session_created", data)
+    session = sm.get(session_id)
+    if session is None:
+        return {"error": f"session {session_id} not found"}
 
     # 确保 bridge 已启动
     loop = asyncio.get_running_loop()
     try:
         bridge = sm.start(
-            guide_session.id, loop, connection_manager.broadcast,
+            session_id, loop, connection_manager.broadcast,
         )
     except Exception as exc:
-        logger.exception("Failed to start bridge for setup session=%s", guide_session.id)
+        logger.exception("Failed to start bridge for setup session=%s", session_id)
         return {"error": str(exc)}
 
-    bridge.request_tool("Setup-llm")
-    return {"ok": True, "session_id": guide_session.id}
+    bridge.request_tool("Config-llm")
+    return {"ok": True, "session_id": session_id}
 
 
 @workspace_rpc.method("session.types")
@@ -940,7 +923,7 @@ async def websocket_session(websocket: WebSocket, session_id: str):
                 if bridge:
                     await bridge.cancel()
             elif msg_type == "run_tool":
-                # 运行时注入工具调用（如菜单触发 Setup-llm）
+                # 运行时注入工具调用（如菜单触发 Config-llm）
                 tool_name = raw.get("tool", "")
                 if tool_name and bridge:
                     bridge.request_tool(tool_name, raw.get("input", {}))

@@ -22,7 +22,7 @@ export default function WelcomePage({ rpc, onCreateSession }: Props) {
       <div className="welcome-actions">
         <button
           className="welcome-action-link"
-          onClick={() => handleClick("mutbot.builtins.guide.GuideSession")}
+          onClick={() => handleClick("mutbot.session.AgentSession")}
         >
           {renderLucideIcon("message-square", 16, "currentColor")}
           <span>Agent</span>

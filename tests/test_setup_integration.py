@@ -190,17 +190,17 @@ class TestAgentBridgeRequestTool:
         """request_tool 将工具调用添加到 pending 列表。"""
         loop = asyncio.get_running_loop()
         bridge, _ = self._make_bridge(loop)
-        bridge.request_tool("Setup-llm")
+        bridge.request_tool("Config-llm")
 
         assert len(bridge._pending_tool_calls) == 1
-        assert bridge._pending_tool_calls[0] == ("Setup-llm", {})
+        assert bridge._pending_tool_calls[0] == ("Config-llm", {})
 
     @pytest.mark.asyncio
     async def test_request_pushes_trigger_message(self):
         """request_tool 推送触发消息到 input queue。"""
         loop = asyncio.get_running_loop()
         bridge, _ = self._make_bridge(loop)
-        bridge.request_tool("Setup-llm")
+        bridge.request_tool("Config-llm")
 
         assert not bridge._input_queue.empty()
         msg = bridge._input_queue.get_nowait()
@@ -211,9 +211,9 @@ class TestAgentBridgeRequestTool:
         """request_tool 支持传入工具参数。"""
         loop = asyncio.get_running_loop()
         bridge, _ = self._make_bridge(loop)
-        bridge.request_tool("Setup-llm", {"key": "value"})
+        bridge.request_tool("Config-llm", {"key": "value"})
 
-        assert bridge._pending_tool_calls[0] == ("Setup-llm", {"key": "value"})
+        assert bridge._pending_tool_calls[0] == ("Config-llm", {"key": "value"})
 
 
 # ---------------------------------------------------------------------------
@@ -251,8 +251,8 @@ class TestAgentBridgeCancelClearsPending:
         bridge = self._make_bridge(loop)
 
         # 手动添加 pending 并创建一个 mock agent task
-        bridge._pending_tool_calls.append(("Setup-llm", {}))
-        bridge._pending_tool_calls.append(("Setup-llm", {"key": "val"}))
+        bridge._pending_tool_calls.append(("Config-llm", {}))
+        bridge._pending_tool_calls.append(("Config-llm", {"key": "val"}))
         assert len(bridge._pending_tool_calls) == 2
 
         # 模拟 agent task：创建一个不会完成的 task

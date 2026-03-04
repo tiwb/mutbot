@@ -294,15 +294,6 @@ class ToggleMarkdownModeMenu(Menu):
 # 内置菜单：Sessions 标题栏全局菜单 (SessionList/Header)
 # ---------------------------------------------------------------------------
 
-class SetupWizardMenu(Menu):
-    """全局菜单 — LLM Setup Wizard"""
-    display_name = "LLM Setup Wizard"
-    display_icon = "settings"
-    display_category = "SessionList/Header"
-    display_order = "0tools:0"
-    client_action = "run_setup_wizard"
-
-
 class CloseWorkspaceMenu(Menu):
     """全局菜单 — Close Workspace"""
     display_name = "Close Workspace"
@@ -310,6 +301,19 @@ class CloseWorkspaceMenu(Menu):
     display_category = "SessionList/Header"
     display_order = "1workspace:0"
     client_action = "close_workspace"
+
+
+# ---------------------------------------------------------------------------
+# 内置菜单：AgentPanel 标题栏菜单 (AgentPanel/Header)
+# ---------------------------------------------------------------------------
+
+class ConfigLLMMenu(Menu):
+    """AgentPanel 菜单 — LLM 配置"""
+    display_name = "LLM Setup"
+    display_icon = "settings"
+    display_category = "AgentPanel/Header"
+    display_order = "0config:0"
+    client_action = "run_setup"
 
 
 # ---------------------------------------------------------------------------
