@@ -14,7 +14,7 @@ from collections import defaultdict
 from typing import Any
 
 from mutbot.runtime.config import MUTBOT_USER_DIR
-from mutbot.ui.toolkit import UIToolkit
+from mutbot.ui.toolkit import UIToolkitBase
 
 logger = logging.getLogger(__name__)
 
@@ -150,7 +150,7 @@ _PROVIDER_DEFS = {
 }
 
 
-class SetupToolkit(UIToolkit):
+class SetupToolkit(UIToolkitBase):
     """LLM 配置向导工具集。
 
     通过 UIContext 在 ToolCallCard 内渲染交互式配置表单。
