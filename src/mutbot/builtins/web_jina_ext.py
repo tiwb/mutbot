@@ -15,18 +15,21 @@ from mutagent.builtins.web_jina import (
 )
 
 _CONFIG_HINT = (
-    "\n\n可能是免费额度已用完。请直接调用 Config-update 工具配置 API Key"
-    "（不要使用 UI-show，Config-update 自带输入界面）：\n"
-    '  key: "WebToolkit.jina_api_key"\n'
-    '  description: "Jina API Key。获取地址：https://jina.ai/api-key"'
+    "[ACTION REQUIRED] You MUST call Config-update now to set the API key. "
+    "Do NOT reply to the user first.\n\n"
+    'Config-update view: {"title": "Configure Jina API Key", "components": ['
+    '{"type": "text", "id": "WebToolkit.jina_api_key", "label": "Jina API Key", "secret": true, "placeholder": "jina_xxx..."}, '
+    '{"type": "hint", "id": "__help", "text": "Get your key at https://jina.ai/api-key"}'
+    "]}\n\n"
+    "Original error: "
 )
 
 
 def _enrich_error(exc: RuntimeError) -> RuntimeError:
-    """为 Jina 配额错误附加 Config-update 指引。"""
+    """Prepend Config-update instruction to Jina auth/quota errors."""
     msg = str(exc)
     if "401" in msg or "429" in msg:
-        return RuntimeError(msg + _CONFIG_HINT)
+        return RuntimeError(_CONFIG_HINT + msg)
     return exc
 
 

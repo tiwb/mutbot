@@ -222,46 +222,65 @@ class ConfigToolkit(UIToolkitBase):
 
         return self._activate()
 
-    async def update(self, key: str, default_value: str = "", description: str = "") -> str:
-        """修改配置项。展示 UI 表单让用户确认后写入。
+    async def update(self, view: dict) -> dict:
+        """Update configuration via a UI form.
+
+        View format is the same as UI-show (title, components, actions), with these rules:
+        - Component id = config key (e.g. "WebToolkit.jina_api_key")
+        - Components with id starting with __ are display-only, not saved to config
+        - Value backfill: if you provide a value, it is used as-is; if omitted,
+          the current config value is shown to the user automatically
+        - Returns {"updated": ["key1", ...], "cancelled": true/false} — never includes
+          the actual values the user entered
 
         Args:
-            key: 配置路径（如 "WebToolkit.jina_api_key"）
-            default_value: 建议的默认值，用户可修改
-            description: 配置项说明，帮助用户理解
+            view: Declarative View whose component ids are config keys.
         """
-        components: list[dict[str, Any]] = []
-        if description:
-            components.append({
-                "type": "hint", "id": "desc",
-                "text": description,
-            })
-        components.append({
-            "type": "text", "id": "value",
-            "label": key,
-            "value": default_value,
-            "placeholder": "Enter value...",
-        })
+        # 防御：LLM 可能传 JSON 字符串而非 dict
+        if isinstance(view, str):
+            import json
+            view = json.loads(view)
 
-        data = await self.ui.show({
-            "title": f"Configure: {key}",
-            "components": components,
-            "actions": [
-                {"type": "cancel", "label": "Cancel"},
-                {"type": "submit", "label": "Save", "primary": True},
-            ],
-        })
+        config = self._config
+        components = view.get("components", [])
+
+        # 值回填：Bot 未提供 value 的配置组件，从 config 读取已有值
+        for comp in components:
+            cid = comp.get("id", "")
+            if cid.startswith("__"):
+                continue
+            if "value" not in comp:
+                existing = config.get(cid, default=None)
+                if existing is not None:
+                    comp["value"] = existing
+
+        # 默认 actions
+        if "actions" not in view:
+            view["actions"] = [
+                {"type": "cancel", "label": "取消"},
+                {"type": "submit", "label": "保存", "primary": True},
+            ]
+
+        data = await self.ui.show(view)
 
         if data is None:
-            return "Configuration cancelled."
-        value = data.get("value", "").strip()
-        if not value:
-            return "Configuration cancelled — no value provided."
+            return {"updated": [], "cancelled": True}
 
-        # 写入配置（通过共享 Config 实例，自动持久化 + 触发 on_change）
-        self._config.set(key, value)
+        # 写入 config，收集成功更新的 key
+        updated: list[str] = []
+        for comp in components:
+            cid = comp.get("id", "")
+            if cid.startswith("__"):
+                continue
+            value = data.get(cid)
+            # 空字符串跳过
+            if isinstance(value, str) and not value.strip():
+                continue
+            if value is not None:
+                config.set(cid, value)
+                updated.append(cid)
 
-        return f"Configuration saved: {key} = {value}"
+        return {"updated": updated, "cancelled": False}
 
     # ------------------------------------------------------------------
     # Provider 列表页
