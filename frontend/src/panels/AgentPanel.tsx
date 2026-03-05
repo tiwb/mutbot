@@ -304,7 +304,7 @@ export default function AgentPanel({ sessionId, rpc, onSessionLink }: Props) {
         setMessages((prev) =>
           prev.map((m) => {
             if (m.type === "tool_group" && pending.has(m.data?.toolCallId)) {
-              return { ...m, data: { ...m.data!, result: "(cancelled)", isCancelled: true } };
+              return { ...m, data: { ...m.data!, result: "(cancelled)", isCancelled: true, uiView: null } };
             }
             return m;
           }),

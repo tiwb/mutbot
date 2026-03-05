@@ -50,14 +50,14 @@ class UIContext(mutagent.Declaration):
         """
         ...
 
-    async def show(self, view: dict) -> dict:
-        """便捷方法：set_view + wait_event(type="submit")。返回表单数据。
+    async def show(self, view: dict) -> dict | None:
+        """便捷方法：set_view + wait_event(submit / cancel)。
 
         Args:
             view: View Schema JSON。
 
         Returns:
-            提交的表单数据（所有组件当前值）。
+            提交的表单数据（所有组件当前值），取消时返回 None。
         """
         ...
 

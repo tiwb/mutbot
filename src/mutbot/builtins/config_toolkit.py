@@ -191,6 +191,7 @@ class ConfigToolkit(UIToolkitBase):
         # 主循环：Provider 列表页
         while True:
             action, data = await self._show_provider_list()
+            selected_pkey = data.get("selected_provider", "")
             if action == "done":
                 new_default = data.get("default_model", "")
                 if new_default:
@@ -202,13 +203,8 @@ class ConfigToolkit(UIToolkitBase):
                     key, pconf, models = result
                     self._save_provider(key, pconf)
             elif action == "edit":
-                pkey = data.get("selected_provider", "")
-                if pkey:
-                    await self._edit_provider(pkey)
-            elif action == "delete":
-                pkey = data.get("selected_provider", "")
-                if pkey:
-                    await self._delete_provider(pkey)
+                if selected_pkey:
+                    await self._edit_provider(selected_pkey)
 
         # 验证还有 provider
         providers = config.get("providers", default={}) or {}
@@ -256,6 +252,8 @@ class ConfigToolkit(UIToolkitBase):
             ],
         })
 
+        if data is None:
+            return "Configuration cancelled."
         value = data.get("value", "").strip()
         if not value:
             return "Configuration cancelled — no value provided."
@@ -272,8 +270,8 @@ class ConfigToolkit(UIToolkitBase):
     async def _show_provider_list(self) -> tuple[str, dict[str, Any]]:
         """显示已配置 provider 列表页。
 
-        返回 (action, formData)。action: "edit" | "delete" | "add" | "done"。
-        布局：Providers → Default Model → 按钮组(Edit/Delete/Add/Done)
+        返回 (action, formData)。action: "edit" | "add" | "done"。
+        点击 Provider 直接进入编辑页面（auto_submit）。
         """
         config = self._config
         providers = config.get("providers", default={}) or {}
@@ -283,7 +281,7 @@ class ConfigToolkit(UIToolkitBase):
         actions: list[dict[str, Any]] = []
 
         if providers:
-            # Provider 单选列表
+            # Provider 列表 — 点击直接编辑
             provider_options = []
             for pkey, pconf in providers.items():
                 models = pconf.get("models", [])
@@ -294,17 +292,15 @@ class ConfigToolkit(UIToolkitBase):
                     "value": pkey,
                     "label": f"{pkey}  —  {models_str}",
                 })
-            first_key = list(providers.keys())[0]
             components.append({
                 "type": "select", "id": "selected_provider",
-                "label": "Providers",
+                "label": "Providers (click to edit)",
                 "layout": "vertical",
-                "scrollable": True,
+                "auto_submit": True,
                 "options": provider_options,
-                "value": first_key,
             })
 
-            # Default model 选择 — 竖向可滚动
+            # Default model 选择
             all_models: list[dict[str, str]] = []
             for pkey, pconf in providers.items():
                 for mid in pconf.get("models", []):
@@ -316,18 +312,14 @@ class ConfigToolkit(UIToolkitBase):
                 components.append({
                     "type": "select", "id": "default_model",
                     "label": "Default Model",
-                    "layout": "vertical",
-                    "scrollable": True,
+                    "layout": "dropdown",
                     "options": all_models,
                     "value": default_model or all_models[0]["value"],
                 })
 
-            # 按钮组：Edit / Delete / Add / Done
             actions = [
-                {"type": "edit", "label": "Edit"},
-                {"type": "delete", "label": "Delete"},
                 {"type": "add", "label": "Add"},
-                {"type": "submit", "label": "Done", "primary": True},
+                {"type": "done", "label": "Done", "primary": True},
             ]
         else:
             # 无 provider 时只显示 Add
@@ -341,12 +333,19 @@ class ConfigToolkit(UIToolkitBase):
             "actions": actions,
         })
 
-        # 捕获所有事件类型：submit (Done) 和 action (Edit/Delete/Add)
+        # 捕获所有事件类型
         event = await self.ui.wait_event()
+        if event.type == "submit":
+            # auto_submit 触发 → 编辑选中的 provider
+            selected = event.data.get("selected_provider", "")
+            if selected and selected in providers:
+                return ("edit", {"selected_provider": selected, **event.data})
+            return ("done", event.data)
         if event.type == "action":
             action_name = event.data.get("action", "")
+            if action_name == "done":
+                return ("done", event.data)
             return (action_name, event.data)
-        # submit → done
         return ("done", event.data)
 
     # ------------------------------------------------------------------
@@ -375,17 +374,28 @@ class ConfigToolkit(UIToolkitBase):
     # ------------------------------------------------------------------
 
     async def _edit_provider(self, pkey: str) -> None:
-        """编辑已有 provider 的模型列表（不重新验证凭据）。"""
+        """编辑已有 provider：单页面同时展示 API Key 和 Models。
+
+        包含 Delete 操作，删除成功后直接返回。
+        """
         config = self._config
         pconf = (config.get(f"providers.{pkey}") or {}).copy()
         if not pconf:
             return
 
-        current_models = pconf.get("models", [])
         provider_path = pconf.get("provider", "")
-        available_models = list(current_models)
+        is_copilot = "copilot" in provider_path.lower() or pkey == "copilot"
+        current_models = list(pconf.get("models", []))
 
-        if "copilot" in provider_path.lower() or pkey == "copilot":
+        # 初始获取可用模型
+        available_models = list(current_models)
+        fetch_error = ""
+        loading = False
+        # refresh 时暂存的变量
+        effective_key = ""
+        base_url = pconf.get("base_url", "")
+
+        if is_copilot:
             token = pconf.get("github_token", "")
             if token:
                 fetched = await self._fetch_copilot_models(token)
@@ -396,7 +406,6 @@ class ConfigToolkit(UIToolkitBase):
                             available_models.append(m)
                             seen.add(m)
         else:
-            base_url = pconf.get("base_url", "")
             api_key = pconf.get("auth_token", "")
             if base_url and api_key:
                 chat_filter = "openai" in provider_path.lower()
@@ -408,17 +417,155 @@ class ConfigToolkit(UIToolkitBase):
                             available_models.append(m)
                             seen.add(m)
 
-        selected = await self._select_provider_models(available_models, preselected=current_models)
-        if selected:
-            pconf["models"] = selected
+        while True:
+            components: list[dict[str, Any]] = []
+
+            # API Key 输入（Copilot 不显示）
+            if not is_copilot:
+                components.append({
+                    "type": "text", "id": "api_key",
+                    "label": "API Key (leave empty to keep current)",
+                    "placeholder": "Enter new API key...",
+                    "secret": True,
+                })
+
+            if loading:
+                # 正在刷新：用 spinner 替代模型列表
+                components.append({
+                    "type": "spinner", "id": "loading",
+                    "text": "Fetching models...",
+                })
+            else:
+                # 模型多选
+                # 构建 options：已选模型优先排列，确保不被截断
+                selected_set = set(current_models)
+                ordered = list(current_models)  # 已选的排前面
+                for m in available_models:
+                    if m not in selected_set:
+                        ordered.append(m)
+                options = [{"value": m, "label": m} for m in ordered]
+                if fetch_error:
+                    components.append({
+                        "type": "badge", "id": "fetch_err",
+                        "text": fetch_error, "variant": "warning",
+                    })
+                if options:
+                    components.append({
+                        "type": "select", "id": "models",
+                        "label": "Models",
+                        "layout": "vertical",
+                        "multiple": True,
+                        "scrollable": True,
+                        "options": options,
+                        "value": current_models,
+                    })
+                components.append({
+                    "type": "text", "id": "custom_models",
+                    "label": "Or enter additional model IDs (comma-separated)",
+                    "placeholder": "e.g. my-model-1, my-model-2",
+                })
+
+            actions: list[dict[str, Any]] = [
+                {"type": "cancel", "label": "Back"},
+                {"type": "delete", "label": "Delete"},
+            ]
+            if not is_copilot and not loading:
+                actions.append({"type": "refresh", "label": "Refresh Models"})
+            if not loading:
+                actions.append({"type": "submit", "label": "Save", "primary": True})
+
+            self.ui.set_view({
+                "title": f"Edit — {pkey}",
+                "components": components,
+                "actions": actions,
+            })
+
+            if loading:
+                # 视图已显示 spinner，现在执行实际 fetch
+                if is_copilot:
+                    fetched = await self._fetch_copilot_models(
+                        pconf.get("github_token", ""))
+                else:
+                    chat_filter = "openai" in provider_path.lower()
+                    fetched = await self._fetch_models(
+                        base_url, effective_key, chat_filter=chat_filter)
+
+                loading = False
+                if fetched:
+                    available_models = list(fetched)
+                    # 保留用户已选中的自定义模型
+                    seen = set(available_models)
+                    for m in current_models:
+                        if m not in seen:
+                            available_models.append(m)
+                            seen.add(m)
+                    fetch_error = ""
+                else:
+                    fetch_error = "Failed to fetch models. Check API key and URL."
+                continue  # 重绘表单
+
+            event = await self.ui.wait_event()
+
+            if event.type == "cancel":
+                return
+
+            if event.type == "action" and event.data.get("action") == "delete":
+                deleted = await self._delete_provider(pkey)
+                if deleted:
+                    return
+                continue  # 取消删除 → 回到编辑页
+
+            if event.type == "action" and event.data.get("action") == "refresh":
+                # 从表单中提取用户当前选择（含自定义模型）
+                form_selected = event.data.get("models", [])
+                if isinstance(form_selected, str):
+                    form_selected = [form_selected] if form_selected else []
+                custom = (event.data.get("custom_models") or "").strip()
+                if custom:
+                    for m in custom.split(","):
+                        m = m.strip()
+                        if m and m not in form_selected:
+                            form_selected.append(m)
+                current_models = form_selected if form_selected else list(current_models)
+
+                new_key = (event.data.get("api_key") or "").strip()
+                effective_key = new_key or pconf.get("auth_token", "")
+                base_url = pconf.get("base_url", "")
+
+                if not is_copilot and not effective_key:
+                    fetch_error = "No API key provided."
+                    continue
+
+                loading = True
+                continue  # 下一轮循环先显示 loading 再 fetch
+
+            # submit → Save
+            form = event.data
+            new_key = (form.get("api_key") or "").strip()
+            if new_key and not is_copilot:
+                pconf["auth_token"] = new_key
+
+            selected = form.get("models", [])
+            if isinstance(selected, str):
+                selected = [selected] if selected else []
+            custom = (form.get("custom_models") or "").strip()
+            if custom:
+                for m in custom.split(","):
+                    m = m.strip()
+                    if m and m not in selected:
+                        selected.append(m)
+
+            if selected:
+                pconf["models"] = selected
             config.set(f"providers.{pkey}", pconf)
+            return
 
     # ------------------------------------------------------------------
     # 删除 Provider
     # ------------------------------------------------------------------
 
-    async def _delete_provider(self, pkey: str) -> None:
-        """从配置中删除指定 provider（需确认）。"""
+    async def _delete_provider(self, pkey: str) -> bool:
+        """从配置中删除指定 provider（需确认）。返回是否已删除。"""
         self.ui.set_view({
             "title": f"Delete \"{pkey}\"?",
             "components": [
@@ -428,13 +575,13 @@ class ConfigToolkit(UIToolkitBase):
                 },
             ],
             "actions": [
-                {"type": "cancel", "label": "Cancel"},
+                {"type": "cancel", "label": "Back"},
                 {"type": "submit", "label": "Delete", "primary": True},
             ],
         })
         event = await self.ui.wait_event()
         if event.type != "submit":
-            return
+            return False
 
         existing = self._config.get("providers", default={}) or {}
         providers = dict(existing)
@@ -442,6 +589,7 @@ class ConfigToolkit(UIToolkitBase):
             del providers[pkey]
             self._config.set("providers", providers)
             logger.info("Deleted provider: %s", pkey)
+        return True
 
     # ------------------------------------------------------------------
     # Provider 选择
@@ -471,8 +619,9 @@ class ConfigToolkit(UIToolkitBase):
                 },
             ],
         })
+        if data is None:
+            return None
         return data.get("provider")
-
     # ------------------------------------------------------------------
     # Copilot OAuth
     # ------------------------------------------------------------------
@@ -567,7 +716,7 @@ class ConfigToolkit(UIToolkitBase):
         if not models:
             models = ["claude-sonnet-4", "gpt-4.1"]
 
-        selected = await self._select_provider_models(models)
+        selected = await self._select_provider_models(models, provider_name="copilot")
         if not selected:
             return None
 
@@ -622,6 +771,8 @@ class ConfigToolkit(UIToolkitBase):
             ],
         })
 
+        if data is None:
+            return None
         api_key = data.get("api_key", "").strip()
         if not api_key:
             return None
@@ -639,7 +790,7 @@ class ConfigToolkit(UIToolkitBase):
             if not models:
                 models = list(pdef.get("default_models", []))
 
-        selected = await self._select_provider_models(models)
+        selected = await self._select_provider_models(models, provider_name=provider_name)
         if not selected:
             return None
 
@@ -657,9 +808,10 @@ class ConfigToolkit(UIToolkitBase):
 
     async def _select_provider_models(
         self, models: list[str], *, preselected: list[str] | None = None,
+        provider_name: str | None = None,
     ) -> list[str] | None:
         """多选该 provider 的模型。返回选中模型列表或 None（取消）。"""
-        options = [{"value": m, "label": m} for m in models[:20]]
+        options = [{"value": m, "label": m} for m in models]
         default_selected = preselected if preselected else ([models[0]] if models else [])
 
         components: list[dict[str, Any]] = []
@@ -693,8 +845,9 @@ class ConfigToolkit(UIToolkitBase):
                 "placeholder": "e.g. claude-sonnet-4, gpt-4.1",
             })
 
+        title = f"Select Models — {provider_name}" if provider_name else "Select Models"
         data = await self.ui.show({
-            "title": "Select Models",
+            "title": title,
             "components": components,
             "actions": [
                 {"type": "cancel", "label": "Back"},
@@ -702,6 +855,8 @@ class ConfigToolkit(UIToolkitBase):
             ],
         })
 
+        if data is None:
+            return None
         selected = data.get("models", [])
         if isinstance(selected, str):
             selected = [selected] if selected else []

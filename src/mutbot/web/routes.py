@@ -924,12 +924,16 @@ async def websocket_session(websocket: WebSocket, session_id: str):
                             )
                     bridge.send_message(text, data)
             elif msg_type == "cancel":
-                if bridge:
+                b = bridge or sm.get_bridge(session_id)
+                if b:
+                    bridge = b
                     await bridge.cancel()
             elif msg_type == "run_tool":
                 # 运行时注入工具调用（如菜单触发 Config-llm）
                 tool_name = raw.get("tool", "")
-                if tool_name and bridge:
+                b = bridge or sm.get_bridge(session_id)
+                if tool_name and b:
+                    bridge = b
                     bridge.request_tool(tool_name, raw.get("input", {}))
             elif msg_type == "ui_event":
                 # 前端 UI 事件 → 路由到对应的 UIContext

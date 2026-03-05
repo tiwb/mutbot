@@ -104,9 +104,11 @@ async def wait_event(
 
 
 @mutagent.impl(UIContext.show)
-async def show(self: UIContext, view: dict) -> dict:
+async def show(self: UIContext, view: dict) -> dict | None:
     self.set_view(view)
-    event = await self.wait_event(type="submit")
+    event = await self.wait_event()
+    if event.type == "cancel":
+        return None
     return event.data
 
 

@@ -371,7 +371,7 @@ function UIComponent({ schema, mode, value, onChange, onAutoSubmit }: UIComponen
 
     case "select": {
       const options = (schema.options ?? []) as { value: string; label: string }[];
-      const layout = schema.layout === "vertical" ? "vertical" : "horizontal";
+      const layout = schema.layout === "vertical" ? "vertical" : schema.layout === "dropdown" ? "dropdown" : "horizontal";
       const isMultiple = !!schema.multiple;
       const scrollable = schema.scrollable ? " scrollable" : "";
 
@@ -399,6 +399,27 @@ function UIComponent({ schema, mode, value, onChange, onAutoSubmit }: UIComponen
                 </button>
               ))}
             </div>
+          </div>
+        );
+      }
+
+      if (layout === "dropdown") {
+        return (
+          <div className="ui-field">
+            {schema.label ? <label className="ui-label">{String(schema.label)}</label> : null}
+            <select
+              className="ui-select-dropdown"
+              value={(value as string) ?? ""}
+              onChange={(e) => {
+                onChange(e.target.value);
+                if (schema.auto_submit) onAutoSubmit?.(schema.id, e.target.value);
+              }}
+              disabled={disabled}
+            >
+              {options.map((opt) => (
+                <option key={opt.value} value={opt.value}>{opt.label}</option>
+              ))}
+            </select>
           </div>
         );
       }

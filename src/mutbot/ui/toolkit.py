@@ -151,7 +151,8 @@ class UIToolkit(UIToolkitBase):
 
     async def show(self, view: dict) -> dict:
         """展示交互式 UI 并等待用户提交。"""
-        return await self.ui.show(view)
+        result = await self.ui.show(view)
+        return result if result is not None else {}
 
     def _customize_schema(self, method_name: str, schema: ToolSchema) -> ToolSchema:
         if method_name == "show":

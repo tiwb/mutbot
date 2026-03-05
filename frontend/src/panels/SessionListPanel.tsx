@@ -387,7 +387,7 @@ export default function SessionListPanel({
               className={`session-item ${s.id === activeSessionId ? "active" : ""} ${selectedIds.size > 1 && selectedIds.has(s.id) ? "selected" : ""} ${dragOverId === s.id && dragId !== s.id ? "drag-over" : ""} ${dragId === s.id ? "dragging" : ""}`}
               onClick={(e) => { if (renamingId !== s.id) handleItemClick(e, s.id); }}
               onContextMenu={(e) => handleContextMenu(e, s.id)}
-              onDoubleClick={() => startRename(s.id)}
+
               draggable={renamingId !== s.id}
               onDragStart={(e) => handleDragStart(e, s.id)}
               onDragOver={(e) => handleDragOver(e, s.id)}

@@ -9,6 +9,7 @@ export function createDefaultLayout(): IJsonModel {
   return {
     global: {
       tabEnableClose: true,
+      tabEnableRename: false,
       tabSetEnableMaximize: true,
       splitterSize: 4,
     },

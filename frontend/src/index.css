@@ -1380,7 +1380,8 @@ body,
 
 .tool-arg-value {
   color: var(--text);
-  overflow-x: auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
   flex: 1;
   min-width: 0;
@@ -1415,7 +1416,7 @@ body,
 }
 
 .arg-modal {
-  background: var(--bg-card);
+  background: var(--bg-tool);
   border: 1px solid var(--border);
   border-radius: 8px;
   max-width: 80vw;
@@ -1570,10 +1571,12 @@ body,
 
 .ui-select-cards.vertical {
   flex-direction: column;
+  flex-wrap: nowrap;
 }
 
 .ui-select-cards.vertical .ui-select-card {
   text-align: left;
+  flex: none;
 }
 
 .ui-select-cards.scrollable {
@@ -1607,6 +1610,27 @@ body,
 }
 
 .ui-select-card:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.ui-select-dropdown {
+  background: var(--bg-input, rgba(0, 0, 0, 0.2));
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 12px;
+  color: var(--text);
+  font-size: 13px;
+  width: 100%;
+  cursor: pointer;
+  outline: none;
+}
+
+.ui-select-dropdown:focus {
+  border-color: var(--accent);
+}
+
+.ui-select-dropdown:disabled {
   opacity: 0.5;
   cursor: not-allowed;
 }

@@ -148,7 +148,7 @@ export default function MessageList({ messages, rpc, agentDisplay, isStreaming, 
     if (!contextMenu) return {};
     const msg = contextMenu.msgId ? findMessage(contextMenu.msgId) : null;
     return {
-      message_role: getMsgRole(msg!) ?? "",
+      message_role: (msg ? getMsgRole(msg) : null) ?? "",
       message_type: msg?.type ?? "",
       markdown_mode: markdownMode,
     };
