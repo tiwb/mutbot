@@ -41,11 +41,11 @@ class CopilotProvider(LLMProvider):
     account_type: str = "individual"
 
     @classmethod
-    def from_config(cls, config: dict) -> "CopilotProvider":
-        github_token = config.get("github_token")
+    def from_spec(cls, spec: dict) -> "CopilotProvider":
+        github_token = spec.get("github_token")
         if not github_token:
             raise ValueError(
-                "CopilotProvider requires 'github_token' in model config.\n"
+                "CopilotProvider requires 'github_token' in model spec.\n"
                 "Run the setup wizard or add github_token to your config."
             )
         auth = CopilotAuth.get_instance()
@@ -53,7 +53,7 @@ class CopilotProvider(LLMProvider):
         auth.ensure_authenticated()
         return cls(
             auth=auth,
-            account_type=config.get("account_type", "individual"),
+            account_type=spec.get("account_type", "individual"),
         )
 
     async def send(

@@ -1,17 +1,128 @@
-"""Tests for mutbot config system (runtime/config.py and setup_toolkit)."""
+"""Tests for mutbot config system (runtime/config.py)."""
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
 import mutagent.builtins  # noqa: F401  -- register @impl
 from mutagent.config import Config
-from mutbot.runtime.config import MUTBOT_CONFIG_FILES, load_mutbot_config
-from mutbot.builtins.config_toolkit import _write_config, MUTBOT_CONFIG_PATH
+from mutbot.runtime.config import MutbotConfig, load_mutbot_config
+
+
+# ---------------------------------------------------------------------------
+# MutbotConfig tests
+# ---------------------------------------------------------------------------
+
+class TestMutbotConfig:
+
+    def _make_config(self, tmp_path: Path, data: dict | None = None) -> MutbotConfig:
+        config_path = tmp_path / "config.json"
+        if data is not None:
+            config_path.write_text(json.dumps(data), encoding="utf-8")
+            mtime = config_path.stat().st_mtime
+        else:
+            mtime = 0.0
+        return MutbotConfig(
+            _data=data or {},
+            _listeners=[],
+            _config_path=config_path,
+            _last_write_mtime=mtime,
+        )
+
+    def test_isinstance_config(self, tmp_path):
+        config = self._make_config(tmp_path)
+        assert isinstance(config, Config)
+
+    def test_get_simple(self, tmp_path):
+        config = self._make_config(tmp_path, {"default_model": "claude-sonnet-4"})
+        assert config.get("default_model") == "claude-sonnet-4"
+
+    def test_get_dot_path(self, tmp_path):
+        config = self._make_config(tmp_path, {
+            "providers": {"anthropic": {"auth_token": "sk-test"}},
+        })
+        assert config.get("providers.anthropic.auth_token") == "sk-test"
+
+    def test_get_default(self, tmp_path):
+        config = self._make_config(tmp_path)
+        assert config.get("missing", default="fallback") == "fallback"
+
+    def test_set_persists_to_file(self, tmp_path):
+        config = self._make_config(tmp_path, {})
+        config.set("default_model", "gpt-4.1")
+        # 内存中已更新
+        assert config.get("default_model") == "gpt-4.1"
+        # 文件已写入
+        data = json.loads((tmp_path / "config.json").read_text(encoding="utf-8"))
+        assert data["default_model"] == "gpt-4.1"
+
+    def test_set_dot_path(self, tmp_path):
+        config = self._make_config(tmp_path, {})
+        config.set("providers.openai.auth_token", "sk-new")
+        assert config.get("providers.openai.auth_token") == "sk-new"
+
+    def test_set_triggers_on_change(self, tmp_path):
+        config = self._make_config(tmp_path, {})
+        events = []
+        config.on_change("providers.**", lambda e: events.append(e))
+        config.set("providers.anthropic", {"auth_token": "sk-test"})
+        assert len(events) == 1
+        assert events[0].key == "providers.anthropic"
+        assert events[0].config is config
+
+    def test_on_change_dispose(self, tmp_path):
+        config = self._make_config(tmp_path, {})
+        events = []
+        disposable = config.on_change("**", lambda e: events.append(e))
+        config.set("foo", "bar")
+        assert len(events) == 1
+        disposable.dispose()
+        config.set("foo", "baz")
+        assert len(events) == 1  # no new event
+
+    def test_reload_detects_changes(self, tmp_path):
+        config = self._make_config(tmp_path, {"default_model": "old"})
+        events = []
+        config.on_change("**", lambda e: events.append(e))
+        # 外部修改文件（重置 _last_write_mtime 模拟非自身写入）
+        config._last_write_mtime = 0.0
+        config_path = tmp_path / "config.json"
+        config_path.write_text(json.dumps({"default_model": "new"}), encoding="utf-8")
+        config.reload()
+        assert config.get("default_model") == "new"
+        assert len(events) == 1
+        assert events[0].key == "default_model"
+
+    def test_reload_skips_own_write(self, tmp_path):
+        config = self._make_config(tmp_path, {})
+        events = []
+        config.on_change("**", lambda e: events.append(e))
+        config.set("foo", "bar")
+        events.clear()
+        # reload 应跳过自己的写入
+        config.reload()
+        assert len(events) == 0
+
+    def test_update_all(self, tmp_path):
+        config = self._make_config(tmp_path, {"a": 1, "b": 2})
+        events = []
+        config.on_change("**", lambda e: events.append(e))
+        config.update_all({"a": 1, "b": 3, "c": 4}, source="wizard")
+        assert config.get("b") == 3
+        assert config.get("c") == 4
+        # a 没变，b 和 c 有变
+        changed_keys = {e.key for e in events}
+        assert "b" in changed_keys
+        assert "c" in changed_keys
+        assert "a" not in changed_keys
+
+    def test_env_expansion(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("TEST_TOKEN", "expanded-value")
+        config = self._make_config(tmp_path, {"token": "${TEST_TOKEN}"})
+        assert config.get("token") == "expanded-value"
 
 
 # ---------------------------------------------------------------------------
@@ -20,144 +131,22 @@ from mutbot.builtins.config_toolkit import _write_config, MUTBOT_CONFIG_PATH
 
 class TestLoadMutbotConfig:
 
-    def test_returns_config_instance(self, tmp_path, monkeypatch):
-        monkeypatch.chdir(tmp_path)
+    def test_returns_mutbot_config(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("mutbot.runtime.config.MUTBOT_USER_DIR", tmp_path)
         config = load_mutbot_config()
-        assert isinstance(config, Config)
+        assert isinstance(config, MutbotConfig)
 
-    def test_two_layer_merge_priority(self, tmp_path, monkeypatch):
-        """mutbot 两层配置合并：.mutbot/config.json > ~/.mutbot/config.json"""
-        monkeypatch.chdir(tmp_path)
-
-        # 模拟 ~/.mutbot/config.json（低优先级）
-        mutbot_dir = tmp_path / "fake_home" / ".mutbot"
-        mutbot_dir.mkdir(parents=True)
-        (mutbot_dir / "config.json").write_text(json.dumps({
-            "default_model": "user-model",
-            "providers": {"anthropic": {
-                "provider": "AnthropicProvider",
-                "auth_token": "user-key",
-                "models": ["claude-sonnet-4"],
-            }},
-        }), encoding="utf-8")
-
-        # 模拟 .mutbot/config.json（最高优先级）
-        project_dir = tmp_path / ".mutbot"
-        project_dir.mkdir()
-        (project_dir / "config.json").write_text(json.dumps({
-            "default_model": "project-model",
-            "providers": {"openai": {
-                "provider": "OpenAIProvider",
-                "auth_token": "proj-key",
-                "models": ["gpt-4.1"],
-            }},
-        }), encoding="utf-8")
-
-        # 使用显式路径列表（避免依赖 Path.home()）
-        config = Config.load([
-            str(mutbot_dir / "config.json"),
-            str(project_dir / "config.json"),
-        ])
-
-        # default_model: 最高优先级 wins
-        assert config.get("default_model") == "project-model"
-        # providers: 两层合并
-        providers = config.get("providers")
-        assert "anthropic" in providers
-        assert "openai" in providers
-
-
-# ---------------------------------------------------------------------------
-# _write_config() tests (providers format)
-# ---------------------------------------------------------------------------
-
-class TestWriteConfig:
-
-    def test_write_creates_new_config(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("mutbot.builtins.config_toolkit.MUTBOT_USER_DIR", tmp_path)
-        monkeypatch.setattr("mutbot.builtins.config_toolkit.MUTBOT_CONFIG_PATH", tmp_path / "config.json")
-
-        _write_config({
-            "default_model": "claude-sonnet-4",
-            "providers": {
-                "anthropic": {
-                    "provider": "AnthropicProvider",
-                    "auth_token": "sk-test",
-                    "models": ["claude-sonnet-4"],
-                }
-            },
-        })
-
-        data = json.loads((tmp_path / "config.json").read_text(encoding="utf-8"))
-        assert data["default_model"] == "claude-sonnet-4"
-        assert "anthropic" in data["providers"]
-        assert data["providers"]["anthropic"]["models"] == ["claude-sonnet-4"]
-
-    def test_write_merges_providers(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("mutbot.builtins.config_toolkit.MUTBOT_USER_DIR", tmp_path)
-        monkeypatch.setattr("mutbot.builtins.config_toolkit.MUTBOT_CONFIG_PATH", tmp_path / "config.json")
-
-        # 写入初始配置
+    def test_loads_existing_file(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("mutbot.runtime.config.MUTBOT_USER_DIR", tmp_path)
         (tmp_path / "config.json").write_text(json.dumps({
-            "default_model": "claude-sonnet-4",
-            "providers": {
-                "anthropic": {
-                    "provider": "AnthropicProvider",
-                    "models": ["claude-sonnet-4"],
-                }
-            },
+            "default_model": "test-model",
         }), encoding="utf-8")
-
-        # 追加新 provider
-        _write_config({
-            "default_model": "gpt-4.1",
-            "providers": {
-                "openai": {
-                    "provider": "OpenAIProvider",
-                    "models": ["gpt-4.1"],
-                }
-            },
-        })
-
-        data = json.loads((tmp_path / "config.json").read_text(encoding="utf-8"))
-        # default_model 更新为新值
-        assert data["default_model"] == "gpt-4.1"
-        # providers 合并
-        assert "anthropic" in data["providers"]
-        assert "openai" in data["providers"]
-
-    def test_write_same_provider_overwrites(self, tmp_path, monkeypatch):
-        """同名 provider 覆盖已有的。"""
-        monkeypatch.setattr("mutbot.builtins.config_toolkit.MUTBOT_USER_DIR", tmp_path)
-        monkeypatch.setattr("mutbot.builtins.config_toolkit.MUTBOT_CONFIG_PATH", tmp_path / "config.json")
-
-        (tmp_path / "config.json").write_text(json.dumps({
-            "providers": {
-                "openai": {
-                    "provider": "OpenAIProvider",
-                    "auth_token": "old-key",
-                    "models": ["gpt-4.1"],
-                }
-            },
-        }), encoding="utf-8")
-
-        _write_config({
-            "providers": {
-                "openai": {
-                    "provider": "OpenAIProvider",
-                    "auth_token": "new-key",
-                    "models": ["gpt-4.1", "gpt-4.1-mini"],
-                }
-            },
-        })
-
-        data = json.loads((tmp_path / "config.json").read_text(encoding="utf-8"))
-        assert data["providers"]["openai"]["auth_token"] == "new-key"
-        assert len(data["providers"]["openai"]["models"]) == 2
+        config = load_mutbot_config()
+        assert config.get("default_model") == "test-model"
 
 
 # ---------------------------------------------------------------------------
-# Provider auth_token validation tests
+# Provider validation tests
 # ---------------------------------------------------------------------------
 
 class TestProviderValidation:
@@ -165,11 +154,11 @@ class TestProviderValidation:
     def test_anthropic_requires_auth_token(self):
         from mutagent.builtins.anthropic_provider import AnthropicProvider
         with pytest.raises(ValueError, match="auth_token"):
-            AnthropicProvider.from_config({"model_id": "claude-3"})
+            AnthropicProvider.from_spec({"model_id": "claude-3"})
 
     def test_anthropic_accepts_auth_token(self):
         from mutagent.builtins.anthropic_provider import AnthropicProvider
-        provider = AnthropicProvider.from_config({
+        provider = AnthropicProvider.from_spec({
             "auth_token": "sk-test-key",
             "base_url": "https://api.anthropic.com",
         })
@@ -178,11 +167,11 @@ class TestProviderValidation:
     def test_openai_requires_auth_token(self):
         from mutagent.builtins.openai_provider import OpenAIProvider
         with pytest.raises(ValueError, match="auth_token"):
-            OpenAIProvider.from_config({"model_id": "gpt-4"})
+            OpenAIProvider.from_spec({"model_id": "gpt-4"})
 
     def test_openai_accepts_auth_token(self):
         from mutagent.builtins.openai_provider import OpenAIProvider
-        provider = OpenAIProvider.from_config({
+        provider = OpenAIProvider.from_spec({
             "auth_token": "sk-test-key",
             "base_url": "https://api.openai.com/v1",
         })

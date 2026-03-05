@@ -357,7 +357,7 @@ class TestStopPreservesMessages:
 
         # Messages 应保留在磁盘上
         data = _read_session_json(storage_dir, session.id)
-        assert data["status"] == "ended"
+        assert data["status"] == "stopped"
         assert len(data["messages"]) == 3
 
     @pytest.mark.asyncio
@@ -377,5 +377,5 @@ class TestStopPreservesMessages:
         await sm.stop(session.id)
 
         data = _read_session_json(storage_dir, session.id)
-        assert data["status"] == "ended"
+        assert data["status"] == "stopped"
         assert len(data["messages"]) == 3, "stop 不应覆盖已有 messages"

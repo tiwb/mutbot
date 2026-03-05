@@ -20,7 +20,7 @@ def main():
     else:
         from mutbot.runtime.config import load_mutbot_config
         cfg = load_mutbot_config()
-        level_name = cfg.get("logging.console_level", "WARNING")
+        level_name = cfg.get("logging.console_level", default="WARNING")
         console_level = getattr(logging, level_name.upper(), logging.WARNING)
     logging.basicConfig(
         level=console_level,

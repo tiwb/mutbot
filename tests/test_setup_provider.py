@@ -8,16 +8,13 @@
 
 from __future__ import annotations
 
-import json
-
 import pytest
 
-from mutagent.messages import Message, Response, StreamEvent, TextBlock, ToolUseBlock
+from mutagent.messages import Message, StreamEvent, TextBlock, ToolUseBlock
 from mutbot.builtins.config_toolkit import (
     NullProvider,
     _model_family,
     _prioritize_models,
-    _write_config,
 )
 
 
@@ -77,51 +74,6 @@ class TestNullProviderFallback:
         ]
         assert len(tool_blocks) == 1
         assert tool_blocks[0].name == "Config-llm"
-
-
-# ---------------------------------------------------------------------------
-# 配置保存与合并
-# ---------------------------------------------------------------------------
-
-class TestWriteConfig:
-    """测试 _write_config 配置文件写入与合并。"""
-
-    def test_write_new_config(self, tmp_path, monkeypatch):
-        """全新写入配置文件。"""
-        import mutbot.builtins.config_toolkit as st
-        monkeypatch.setattr(st, "MUTBOT_CONFIG_PATH", tmp_path / "config.json")
-        monkeypatch.setattr(st, "MUTBOT_USER_DIR", tmp_path)
-
-        _write_config({
-            "default_model": "test-model",
-            "providers": {"test": {"provider": "T", "models": ["test-model"]}},
-        })
-
-        saved = json.loads((tmp_path / "config.json").read_text())
-        assert saved["default_model"] == "test-model"
-        assert "test" in saved["providers"]
-
-    def test_merge_preserves_existing(self, tmp_path, monkeypatch):
-        """合并写入时保留已有 providers，default_model 更新为新值。"""
-        import mutbot.builtins.config_toolkit as st
-        config_path = tmp_path / "config.json"
-        config_path.write_text(json.dumps({
-            "default_model": "old-model",
-            "providers": {"existing": {"provider": "Old", "models": ["old"]}},
-        }))
-        monkeypatch.setattr(st, "MUTBOT_CONFIG_PATH", config_path)
-        monkeypatch.setattr(st, "MUTBOT_USER_DIR", tmp_path)
-
-        _write_config({
-            "default_model": "new-model",
-            "providers": {"new": {"provider": "New", "models": ["new"]}},
-        })
-
-        saved = json.loads(config_path.read_text())
-        # default_model 更新为新值
-        assert saved["default_model"] == "new-model"
-        assert "existing" in saved["providers"]
-        assert "new" in saved["providers"]
 
 
 # ---------------------------------------------------------------------------

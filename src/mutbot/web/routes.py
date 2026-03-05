@@ -598,10 +598,14 @@ async def handle_session_update(params: dict, ctx: RpcContext) -> dict:
 @workspace_rpc.method("config.models")
 async def handle_config_models(params: dict, ctx: RpcContext) -> dict:
     """返回所有已配置的模型列表"""
-    from mutbot.runtime.config import load_mutbot_config
-    config = load_mutbot_config()
-    models = config.get_all_models()
-    default_model = config.get("default_model", "")
+    from mutagent.provider import LLMProvider
+
+    sm = ctx.managers.get("session_manager")
+    if sm is None:
+        return {"models": [], "default_model": ""}
+    config = sm.config
+    models = LLMProvider.list_models(config)
+    default_model = config.get("default_model", default="")
     return {
         "models": [
             {"name": m["name"], "model_id": m["model_id"], "provider_name": m["provider_name"]}

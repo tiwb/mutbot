@@ -6,21 +6,18 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import re
 from collections import defaultdict
 from typing import Any, AsyncIterator
 from uuid import uuid4
 
+from mutagent.config import Config
 from mutagent.messages import Message, Response, StreamEvent, TextBlock, ToolUseBlock
 from mutagent.provider import LLMProvider
-from mutbot.runtime.config import MUTBOT_USER_DIR
 from mutbot.ui.toolkit import UIToolkitBase
 
 logger = logging.getLogger(__name__)
-
-MUTBOT_CONFIG_PATH = MUTBOT_USER_DIR / "config.json"
 
 # VS Code Copilot Chat 使用的 Client ID（与 auth.py 一致）
 GITHUB_CLIENT_ID = "Iv1.b507a08c87ecfe98"
@@ -45,7 +42,7 @@ class NullProvider(LLMProvider):
     """
 
     @classmethod
-    def from_config(cls, model_config: dict) -> NullProvider:
+    def from_spec(cls, spec: dict) -> NullProvider:
         return cls()
 
     async def send(
@@ -135,41 +132,6 @@ def _prioritize_models(models_with_ts: list[tuple[str, int]]) -> list[str]:
     return featured + rest
 
 
-# ---------------------------------------------------------------------------
-# Config I/O
-# ---------------------------------------------------------------------------
-
-def _write_config(new_data: dict) -> None:
-    """合并写入 ~/.mutbot/config.json。
-
-    - providers: 已有保留，同名覆盖
-    - default_model: 仅在已有配置没有时设置
-    """
-    MUTBOT_USER_DIR.mkdir(parents=True, exist_ok=True)
-
-    existing: dict = {}
-    if MUTBOT_CONFIG_PATH.exists():
-        try:
-            existing = json.loads(MUTBOT_CONFIG_PATH.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
-            pass
-
-    # 合并 providers
-    existing_providers = existing.get("providers", {})
-    new_providers = new_data.get("providers", {})
-    existing_providers.update(new_providers)
-    existing["providers"] = existing_providers
-
-    # default_model: 始终更新为新配置的值
-    if "default_model" in new_data:
-        existing["default_model"] = new_data["default_model"]
-
-    MUTBOT_CONFIG_PATH.write_text(
-        json.dumps(existing, indent=2, ensure_ascii=False) + "\n",
-        encoding="utf-8",
-    )
-    logger.info("Config written to %s", MUTBOT_CONFIG_PATH)
-
 # configure 方法返回的三元组类型
 _ConfigResult = tuple[str, dict[str, Any], list[str]]  # (provider_key, config, models)
 
@@ -204,22 +166,27 @@ class ConfigToolkit(UIToolkitBase):
 
     _tool_methods = ["llm", "update"]
 
+    @property
+    def _config(self) -> Config:
+        """共享 Config 实例，通过 Agent 传递链获取。"""
+        return self.owner.agent.config
+
     async def llm(self) -> str:
         """LLM provider 配置管理。
 
         支持查看/添加/编辑/删除 provider。添加后立即保存。
         首次使用（无已有配置）直接进入添加流程。
         """
-        existing = self._load_config()
-        providers = existing.get("providers", {})
+        config = self._config
+        providers = config.get("providers", default={}) or {}
 
         # 首次使用 → 直接添加
         if not providers:
             result = await self._add_provider_flow()
             if result is None:
                 return "Configuration cancelled."
-            key, config, models = result
-            self._save_provider(key, config)
+            key, pconf, models = result
+            self._save_provider(key, pconf)
 
         # 主循环：Provider 列表页
         while True:
@@ -227,13 +194,13 @@ class ConfigToolkit(UIToolkitBase):
             if action == "done":
                 new_default = data.get("default_model", "")
                 if new_default:
-                    self._save_default_model(new_default)
+                    config.set("default_model", new_default)
                 break
             elif action == "add":
                 result = await self._add_provider_flow()
                 if result is not None:
-                    key, config, models = result
-                    self._save_provider(key, config)
+                    key, pconf, models = result
+                    self._save_provider(key, pconf)
             elif action == "edit":
                 pkey = data.get("selected_provider", "")
                 if pkey:
@@ -244,21 +211,20 @@ class ConfigToolkit(UIToolkitBase):
                     await self._delete_provider(pkey)
 
         # 验证还有 provider
-        existing = self._load_config()
-        providers = existing.get("providers", {})
+        providers = config.get("providers", default={}) or {}
         if not providers:
             return "All providers removed. No configuration saved."
 
         # 确保 default_model 有效
-        default_model = existing.get("default_model", "")
+        default_model = config.get("default_model", default="") or ""
         all_model_ids: list[str] = []
         for pconf in providers.values():
             all_model_ids.extend(pconf.get("models", []))
         if default_model not in all_model_ids and all_model_ids:
             default_model = all_model_ids[0]
-            self._save_default_model(default_model)
+            config.set("default_model", default_model)
 
-        return self._activate(self._load_config())
+        return self._activate()
 
     async def update(self, key: str, default_value: str = "", description: str = "") -> str:
         """修改配置项。展示 UI 表单让用户确认后写入。
@@ -294,15 +260,8 @@ class ConfigToolkit(UIToolkitBase):
         if not value:
             return "Configuration cancelled — no value provided."
 
-        # 写入配置
-        config = self._load_config()
-        # 支持点分隔路径（如 "WebToolkit.jina_api_key"）
-        parts = key.split(".")
-        target = config
-        for part in parts[:-1]:
-            target = target.setdefault(part, {})
-        target[parts[-1]] = value
-        self._write_full_config(config)
+        # 写入配置（通过共享 Config 实例，自动持久化 + 触发 on_change）
+        self._config.set(key, value)
 
         return f"Configuration saved: {key} = {value}"
 
@@ -316,9 +275,9 @@ class ConfigToolkit(UIToolkitBase):
         返回 (action, formData)。action: "edit" | "delete" | "add" | "done"。
         布局：Providers → Default Model → 按钮组(Edit/Delete/Add/Done)
         """
-        existing = self._load_config()
-        providers = existing.get("providers", {})
-        default_model = existing.get("default_model", "")
+        config = self._config
+        providers = config.get("providers", default={}) or {}
+        default_model = config.get("default_model", default="") or ""
 
         components: list[dict[str, Any]] = []
         actions: list[dict[str, Any]] = []
@@ -417,8 +376,8 @@ class ConfigToolkit(UIToolkitBase):
 
     async def _edit_provider(self, pkey: str) -> None:
         """编辑已有 provider 的模型列表（不重新验证凭据）。"""
-        existing = self._load_config()
-        pconf = existing.get("providers", {}).get(pkey, {})
+        config = self._config
+        pconf = (config.get(f"providers.{pkey}") or {}).copy()
         if not pconf:
             return
 
@@ -452,7 +411,7 @@ class ConfigToolkit(UIToolkitBase):
         selected = await self._select_provider_models(available_models, preselected=current_models)
         if selected:
             pconf["models"] = selected
-            self._save_provider(pkey, pconf)
+            config.set(f"providers.{pkey}", pconf)
 
     # ------------------------------------------------------------------
     # 删除 Provider
@@ -477,12 +436,11 @@ class ConfigToolkit(UIToolkitBase):
         if event.type != "submit":
             return
 
-        existing = self._load_config()
-        providers = existing.get("providers", {})
+        existing = self._config.get("providers", default={}) or {}
+        providers = dict(existing)
         if pkey in providers:
             del providers[pkey]
-            existing["providers"] = providers
-            self._write_full_config(existing)
+            self._config.set("providers", providers)
             logger.info("Deleted provider: %s", pkey)
 
     # ------------------------------------------------------------------
@@ -495,7 +453,7 @@ class ConfigToolkit(UIToolkitBase):
             {"value": k, "label": d["label"]}
             for k, d in _PROVIDER_DEFS.items()
         ]
-        data = await self.show({
+        data = await self.ui.show({
             "title": "Add Provider",
             "components": [
                 {
@@ -637,7 +595,7 @@ class ConfigToolkit(UIToolkitBase):
             key_label = "OpenAI API Key"
             key_placeholder = "sk-..."
 
-        data = await self.show({
+        data = await self.ui.show({
             "title": f"Configure {pdef['label']}",
             "components": [
                 {
@@ -735,7 +693,7 @@ class ConfigToolkit(UIToolkitBase):
                 "placeholder": "e.g. claude-sonnet-4, gpt-4.1",
             })
 
-        data = await self.show({
+        data = await self.ui.show({
             "title": "Select Models",
             "components": components,
             "actions": [
@@ -758,46 +716,18 @@ class ConfigToolkit(UIToolkitBase):
         return selected if selected else None
 
     # ------------------------------------------------------------------
-    # Config 读写 helpers
+    # Config 写入 helpers
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _load_config() -> dict[str, Any]:
-        """读取已有 config.json。"""
-        if MUTBOT_CONFIG_PATH.exists():
-            try:
-                return json.loads(MUTBOT_CONFIG_PATH.read_text(encoding="utf-8"))
-            except (json.JSONDecodeError, OSError):
-                pass
-        return {}
-
-    @staticmethod
-    def _write_full_config(config: dict[str, Any]) -> None:
-        """完整覆盖写入 config.json。"""
-        from mutbot.runtime.config import MUTBOT_USER_DIR
-        MUTBOT_USER_DIR.mkdir(parents=True, exist_ok=True)
-        MUTBOT_CONFIG_PATH.write_text(
-            json.dumps(config, indent=2, ensure_ascii=False) + "\n",
-            encoding="utf-8",
-        )
-
     def _save_provider(self, key: str, provider_config: dict[str, Any]) -> None:
-        """保存单个 provider（合并写入），同时设置默认模型（如果尚未设置）。"""
-        config = self._load_config()
-        providers = config.setdefault("providers", {})
-        providers[key] = provider_config
-        if "default_model" not in config:
+        """保存单个 provider，同时设置默认模型（如果尚未设置）。"""
+        config = self._config
+        config.set(f"providers.{key}", provider_config)
+        if not config.get("default_model"):
             models = provider_config.get("models", [])
             if models:
-                config["default_model"] = models[0]
-        self._write_full_config(config)
+                config.set("default_model", models[0])
         logger.info("Saved provider: %s", key)
-
-    def _save_default_model(self, model_id: str) -> None:
-        """更新默认模型。"""
-        config = self._load_config()
-        config["default_model"] = model_id
-        self._write_full_config(config)
 
     # ------------------------------------------------------------------
     # Helpers
@@ -890,18 +820,19 @@ class ConfigToolkit(UIToolkitBase):
 
         return _prioritize_models(raw_models)
 
-    def _activate(self, config: dict[str, Any]) -> str:
+    def _activate(self) -> str:
         """激活配置，切换到真实 LLM Provider。"""
         from mutbot.runtime.session_impl import create_llm_client
-        from mutbot.runtime.config import load_mutbot_config
-        mutbot_config = load_mutbot_config()
-        client = create_llm_client(mutbot_config)
+
+        config = self._config
+        client = create_llm_client(config)
 
         agent = self.owner.agent
         agent.llm = client
 
+        providers = config.get("providers", default={}) or {}
         all_models: list[str] = []
-        for pconf in config.get("providers", {}).values():
+        for pconf in providers.values():
             all_models.extend(pconf.get("models", []))
         models_str = ", ".join(all_models)
         return (

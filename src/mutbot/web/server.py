@@ -19,6 +19,7 @@ from mutagent.runtime.log_store import LogStore, LogStoreHandler, SingleLineForm
 from mutbot.runtime.workspace import WorkspaceManager
 from mutbot.runtime.session_impl import SessionManager
 from mutbot.runtime.terminal import TerminalManager
+from mutbot.runtime.config import MutbotConfig, load_mutbot_config
 
 logger = logging.getLogger(__name__)
 
@@ -120,17 +121,12 @@ async def _shutdown_cleanup():
             await session_manager.stop(sid)
 
 
-async def _watch_config_changes() -> None:
+async def _watch_config_changes(config: MutbotConfig) -> None:
     """Background task: poll ~/.mutbot/config.json mtime every 5s.
 
-    On change, reload the SessionManager's cached config and broadcast
-    a ``config_changed`` event to all workspace WebSocket clients.
+    On change, call config.reload() which auto-triggers on_change callbacks.
     """
-    from mutbot.runtime.config import MUTBOT_USER_DIR, load_mutbot_config
-    from mutbot.web.routes import workspace_connection_manager
-    from mutbot.web.rpc import make_event
-
-    config_path = MUTBOT_USER_DIR / "config.json"
+    config_path = config._config_path
     last_mtime: float = 0.0
     try:
         last_mtime = config_path.stat().st_mtime
@@ -146,19 +142,18 @@ async def _watch_config_changes() -> None:
         if current_mtime != last_mtime:
             last_mtime = current_mtime
             logger.info("Config file changed, reloading")
-            # Invalidate SessionManager's cached config
-            if session_manager is not None:
-                session_manager._config = None
-            await workspace_connection_manager.broadcast_all(
-                make_event("config_changed", {"reason": "file_changed"})
-            )
+            config.reload()
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global workspace_manager, session_manager, log_store, terminal_manager
+
+    # --- Config ---
+    config = load_mutbot_config()
+
     workspace_manager = WorkspaceManager()
-    session_manager = SessionManager()
+    session_manager = SessionManager(config=config)
     terminal_manager = TerminalManager()
 
     # --- Load persisted state ---
@@ -221,23 +216,57 @@ async def lifespan(app: FastAPI):
     # Lifespan startup runs during Server.startup(), after uvicorn's handler.
     _install_double_ctrlc_handler()
 
-    # --- LLM proxy routes (optional, loaded via modules config) ---
-    # 注意：proxy config 在 lifespan 中加载，但 router 在模块级注册（见文件末尾）
-    try:
-        from mutbot.proxy.routes import _providers_config as _pc
-        from mutbot.runtime.session_impl import _load_config
-        proxy_config = _load_config()
-        if proxy_config is not None:
-            from mutbot.proxy.routes import _providers_config
+    # --- on_change 回调统一注册 ---
+
+    # 1. LLM client 重建（所有活跃 session）
+    def _on_provider_changed(event):
+        from mutbot.runtime.session_impl import create_llm_client
+        for _sid, rt in session_manager._runtimes.items():
+            if hasattr(rt, 'agent') and rt.agent:
+                try:
+                    rt.agent.llm = create_llm_client(event.config)
+                except Exception:
+                    logger.warning("Failed to rebuild LLM client for session %s", _sid, exc_info=True)
+
+    config.on_change("providers.**", _on_provider_changed)
+    config.on_change("default_model", _on_provider_changed)
+
+    # 2. Proxy 配置刷新
+    def _refresh_proxy(event):
+        try:
             import mutbot.proxy.routes as _proxy_routes
-            _proxy_routes._providers_config = proxy_config.get("providers", {})
-            logger.info("LLM proxy config loaded (%d providers)",
-                        len(_proxy_routes._providers_config))
+            _proxy_routes._providers_config = event.config.get("providers", default={}) or {}
+        except ImportError:
+            pass
+
+    config.on_change("providers.**", _refresh_proxy)
+
+    # 3. WS 广播 config_changed
+    def _broadcast_config_changed(event):
+        from mutbot.web.routes import workspace_connection_manager
+        from mutbot.web.rpc import make_event
+        asyncio.create_task(
+            workspace_connection_manager.broadcast_all(
+                make_event("config_changed", {
+                    "reason": event.source or "changed",
+                    "key": event.key,
+                })
+            )
+        )
+
+    config.on_change("**", _broadcast_config_changed)
+
+    # --- LLM proxy 初始配置 ---
+    try:
+        import mutbot.proxy.routes as _proxy_routes
+        _proxy_routes._providers_config = config.get("providers", default={}) or {}
+        logger.info("LLM proxy config loaded (%d providers)",
+                    len(_proxy_routes._providers_config))
     except Exception:
         logger.warning("Failed to load LLM proxy config", exc_info=True)
 
     # --- Config file change watcher ---
-    config_watcher_task = asyncio.create_task(_watch_config_changes())
+    config_watcher_task = asyncio.create_task(_watch_config_changes(config))
 
     yield
 

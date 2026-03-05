@@ -214,7 +214,7 @@ def setup_environment(config: Config) -> None:
     from pathlib import Path as _Path
 
     # Set env vars
-    for key, value in config.get("env", {}).items():
+    for key, value in config.get("env", default={}).items():
         os.environ[key] = value
 
     # Setup sys.path
@@ -224,26 +224,15 @@ def setup_environment(config: Config) -> None:
     ]:
         if mutagent_dir not in sys.path:
             sys.path.insert(0, mutagent_dir)
-    for p in config.get("path", []):
+    for p in config.get("path", default=[]):
         if p not in sys.path:
             sys.path.insert(0, p)
 
     # Load extension modules
-    for module_name in config.get("modules", []):
+    for module_name in config.get("modules", default=[]):
         importlib.import_module(module_name)
 
 
-def _load_config() -> dict | None:
-    """加载 mutbot 配置文件，返回 providers 相关配置 dict。供 proxy 等模块使用。"""
-    try:
-        from mutbot.runtime.config import load_mutbot_config
-        config = load_mutbot_config()
-        return {
-            "providers": config.get("providers", {}),
-            "default_model": config.get("default_model", ""),
-        }
-    except Exception:
-        return None
 
 
 def create_llm_client(
@@ -261,11 +250,13 @@ def create_llm_client(
     import mutagent.builtins.anthropic_provider  # noqa: F401
     import mutagent.builtins.openai_provider  # noqa: F401
 
-    # Get model config (convert SystemExit to RuntimeError for web context)
-    try:
-        model = config.get_model(model_name or None)
-    except SystemExit as e:
-        raise RuntimeError(str(e)) from None
+    # Get model config
+    model = LLMProvider.resolve_model(config, model_name or None)
+    if model is None:
+        raise RuntimeError(
+            f"No model configured (requested: {model_name!r}). "
+            "Run the setup wizard or check ~/.mutbot/config.json"
+        )
 
     # API call recorder (JSONL, shared log_dir with mutbot)
     api_recorder = None
@@ -276,7 +267,7 @@ def create_llm_client(
     # 通过 provider 配置创建 provider 实例
     provider_path = model.get("provider", "AnthropicProvider")
     provider_cls = mutobj.resolve_class(provider_path, base_cls=LLMProvider)
-    provider = provider_cls.from_config(model)
+    provider = provider_cls.from_spec(model)
 
     # context_window: 配置优先，内置查找表兜底
     from mutagent.client import get_model_context_window
@@ -336,7 +327,7 @@ def build_default_agent(
         )
 
     # message_metadata 配置（默认启用）
-    message_metadata = config.get("message_metadata", True)
+    message_metadata = config.get("message_metadata", default=True)
 
     agent = Agent(
         llm=client,
@@ -346,6 +337,7 @@ def build_default_agent(
             prompts=[Message(role="system", blocks=[TextBlock(text=system_prompt)], label="base")],
             messages=messages if messages is not None else [],
         ),
+        config=config,
     )
     tool_set.agent = agent
     return agent
@@ -362,10 +354,10 @@ class SessionManager:
     runtime 状态（agent、bridge 等）由 _runtimes 字典维护。
     """
 
-    def __init__(self) -> None:
+    def __init__(self, config: Config | None = None) -> None:
         self._sessions: dict[str, Session] = {}
         self._runtimes: dict[str, SessionRuntime] = {}
-        self._config: Config | None = None
+        self.config: Config = config or Config()
         # Set by server.py lifespan for per-session API recording
         self.log_dir: Path | None = None
         # Set by server.py lifespan for terminal session management
@@ -373,13 +365,6 @@ class SessionManager:
         # 跨线程广播支持（Agent 线程创建 Session 时使用）
         self._event_loop: asyncio.AbstractEventLoop | None = None
         self._broadcast_fn: Any = None  # async callable(event_data: dict)
-
-    def _get_config(self) -> Config:
-        """懒加载 Config（首次调用时读取配置文件）。"""
-        if self._config is None:
-            from mutbot.runtime.config import load_mutbot_config
-            self._config = load_mutbot_config()
-        return self._config
 
     # --- Runtime 访问 ---
 
@@ -465,7 +450,7 @@ class SessionManager:
         rt = self.get_agent_runtime(session_id)
         if not rt or not rt.agent:
             return
-        config = self._get_config()
+        config = self.config
         try:
             new_client = create_llm_client(config, session.model, self.log_dir)
             rt.agent.llm = new_client
@@ -626,7 +611,7 @@ class SessionManager:
         else:
             logger.info("Session %s: no saved messages to restore", session_id)
 
-        config = self._get_config()
+        config = self.config
         # 构建 session 文件名前缀：session-YYYYMMDD_HHMMSS-{session_id}
         session_prefix = _build_session_prefix(session, session_id)
         agent = session.create_agent(

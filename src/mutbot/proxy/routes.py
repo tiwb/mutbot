@@ -83,7 +83,7 @@ def create_llm_router(config: dict[str, Any]) -> APIRouter:
 def _find_model_config(model_name: str) -> dict[str, Any] | None:
     """根据模型名查找配置。按 provider 顺序搜索。
 
-    返回合并后的 flat dict（provider 字段 + model_id），与 Config.get_model() 逻辑一致。
+    返回合并后的 flat dict（provider 字段 + model_id），与 LLMProvider.resolve_model() 逻辑一致。
     """
     normalized = normalize_model_name(model_name)
 
