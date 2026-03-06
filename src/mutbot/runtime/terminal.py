@@ -15,6 +15,8 @@ import asyncio
 import logging
 import os
 import re
+import select as _select
+import signal
 import struct
 import sys
 import threading
@@ -110,13 +112,27 @@ class TerminalManager:
         session.process = proc
 
     def _spawn_unix(self, session: TerminalSession, cwd: str) -> None:
+        import fcntl
         import pty
         import subprocess
+        import termios
 
         shell = os.environ.get("SHELL", "/bin/bash")
         master_fd, slave_fd = pty.openpty()
 
+        # Set initial PTY window size before spawning so the shell (and vim)
+        # start up knowing the correct dimensions.
+        winsize = struct.pack("HHHH", session.rows, session.cols, 0, 0)
+        fcntl.ioctl(master_fd, termios.TIOCSWINSZ, winsize)
+
         env = {**os.environ, "TERM": "xterm-256color", "COLORTERM": "truecolor"}
+
+        def _preexec() -> None:
+            os.setsid()
+            # Make the slave PTY the controlling terminal of the new session.
+            # Without this, programs like vim that rely on tcsetattr / tcgetpgrp
+            # do not work correctly (they see no controlling terminal).
+            fcntl.ioctl(slave_fd, termios.TIOCSCTTY, 0)
 
         proc = subprocess.Popen(
             [shell],
@@ -124,7 +140,7 @@ class TerminalManager:
             stdout=slave_fd,
             stderr=slave_fd,
             cwd=cwd,
-            preexec_fn=os.setsid,
+            preexec_fn=_preexec,
             close_fds=True,
             env=env,
         )
@@ -210,6 +226,11 @@ class TerminalManager:
                     fd = session._fd
                     while session.alive and fd is not None:
                         try:
+                            rlist, _, _ = _select.select([fd], [], [], 1.0)
+                            if not rlist:
+                                # Timeout — re-check alive flag and refresh fd
+                                fd = session._fd
+                                continue
                             data = os.read(fd, 4096)
                             if not data:
                                 break
@@ -416,19 +437,27 @@ class TerminalManager:
             except Exception:
                 pass
         else:
+            # Kill the entire process group (shell + vim + all children).
+            # On macOS, os.read(master_fd) does NOT unblock when the fd is
+            # closed from another thread — we must kill the child processes
+            # first so the slave PTY is closed, which causes EIO on the master.
+            try:
+                if session.process:
+                    pgid = os.getpgid(session.process.pid)
+                    os.killpg(pgid, signal.SIGKILL)
+            except Exception:
+                try:
+                    if session.process:
+                        session.process.kill()
+                except Exception:
+                    pass
+            # Close master fd after sending kill signal
             try:
                 if session._fd is not None:
                     os.close(session._fd)
                     session._fd = None
             except OSError:
                 pass
-            try:
-                if session.process:
-                    session.process.terminate()
-            except Exception:
-                pass
-        # No blocking wait — the reader thread detects the closed fd via OSError
-        # and handles process cleanup (proc.wait + _notify_process_exit).
 
     def kill_all(self) -> None:
         for term_id in list(self._sessions):

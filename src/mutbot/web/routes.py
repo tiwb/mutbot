@@ -592,6 +592,43 @@ async def handle_session_update(params: dict, ctx: RpcContext) -> dict:
     return data
 
 
+@workspace_rpc.method("session.restart")
+async def handle_session_restart(params: dict, ctx: RpcContext) -> dict:
+    """重启一个 TerminalSession：重建 PTY（全新开始）。
+
+    用于用户点击 "Restart Terminal" 的场景：
+    - 先终止残留的旧 PTY（如仍存在）
+    - 清除 scrollback_b64（历史已通过 WS handler 展示给用户）
+    - 调用 on_create() 重建全新 PTY
+    - 返回新的 terminal_id 供前端 WebSocket 连接
+    """
+    sm = ctx.managers.get("session_manager")
+    tm = ctx.managers.get("terminal_manager")
+    if not sm:
+        return {"error": "session_manager not available"}
+    session_id = params.get("session_id", "")
+    session = sm.get(session_id)
+    if session is None:
+        return {"error": "session not found"}
+    from mutbot.session import TerminalSession as _TS
+    if not isinstance(session, _TS):
+        return {"error": "session is not a TerminalSession"}
+    # Kill old terminal if still alive
+    if tm:
+        old_term_id = session.config.get("terminal_id")
+        if old_term_id and tm.has(old_term_id):
+            await tm.async_notify_exit(old_term_id)
+            tm.kill(old_term_id)
+    # Start fresh: clear saved scrollback so on_create() creates a clean PTY
+    session.scrollback_b64 = ""
+    session.on_create(sm)
+    sm._persist(session)
+    new_term_id = session.config.get("terminal_id", "")
+    data = _session_dict(session)
+    await ctx.broadcast_event("session_updated", data)
+    return {"session_id": session_id, "terminal_id": new_term_id}
+
+
 # ---------------------------------------------------------------------------
 # Config RPC handlers
 # ---------------------------------------------------------------------------
@@ -995,6 +1032,7 @@ async def websocket_terminal(websocket: WebSocket, term_id: str):
     - Server→Client: 0x01 + output bytes
     - Client→Server: 0x02 + 2B rows (big-endian) + 2B cols (big-endian)
     - Server→Client: 0x03   scrollback replay complete
+    - Server→Client: 0x04   process exited (shows "Restart Terminal" in UI)
 
     PTY survives WebSocket disconnects.  The client can reconnect and
     receive the scrollback buffer to restore the screen.
@@ -1002,7 +1040,48 @@ async def websocket_terminal(websocket: WebSocket, term_id: str):
     tm = _get_terminal_manager()
     await websocket.accept()
     if tm is None or not tm.has(term_id):
-        await websocket.close(code=4004, reason="terminal not found")
+        # Terminal not found after server restart.  If the owning TerminalSession has
+        # saved scrollback, replay it so the user sees their history, then send 0x04
+        # to show the "Restart Terminal" button.  This is preferred over 4004 because
+        # 4004 shows a blank overlay with no history context.
+        from mutbot.session import TerminalSession as _TS
+        _wm, sm = _get_managers()
+        scrollback_replayed = False
+        if sm is not None:
+            for _session in sm._sessions.values():
+                if (isinstance(_session, _TS) and
+                        _session.config.get("terminal_id") == term_id):
+                    scrollback_data = b""
+                    if _session.scrollback_b64:
+                        import base64
+                        try:
+                            scrollback_data = base64.b64decode(_session.scrollback_b64)
+                        except Exception:
+                            pass
+                    if scrollback_data:
+                        try:
+                            await websocket.send_bytes(b"\x01\x1b[0m" + scrollback_data)
+                        except Exception:
+                            pass
+                    # 0x03: scrollback replay complete (unmutes input on client)
+                    try:
+                        await websocket.send_bytes(b"\x03")
+                    except Exception:
+                        pass
+                    # 0x04: process exited → client shows "Restart Terminal" overlay
+                    try:
+                        await websocket.send_bytes(b"\x04")
+                    except Exception:
+                        pass
+                    scrollback_replayed = True
+                    logger.info(
+                        "Terminal WS: replayed saved scrollback for dead terminal %s"
+                        " (session=%s, bytes=%d)",
+                        term_id, _session.id, len(scrollback_data),
+                    )
+                    break
+        if not scrollback_replayed:
+            await websocket.close(code=4004, reason="terminal not found")
         return
     logger.info("Terminal WS connected: term=%s", term_id)
 
@@ -1023,6 +1102,18 @@ async def websocket_terminal(websocket: WebSocket, term_id: str):
             await websocket.send_bytes(b"\x01\x1b[0m" + scrollback)
         except Exception:
             logger.debug("Failed to send scrollback for term=%s", term_id)
+
+    # If the PTY process has already exited, send 0x04 immediately instead of
+    # proceeding to the live loop. This avoids sending 0x03 (which unmutes
+    # client input and removes the overlay) for a dead terminal.
+    _session_check = tm.get(term_id)
+    if _session_check is None or not _session_check.alive:
+        _exit_code = _session_check.exit_code if _session_check else None
+        try:
+            await websocket.send_bytes(tm._make_exit_payload(_exit_code))
+        except Exception:
+            pass
+        return
 
     # Signal scrollback replay is complete — client can unmute input
     try:
