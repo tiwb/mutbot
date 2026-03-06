@@ -49,35 +49,24 @@ def get_session_class(qualified_name: str) -> type[Session]:
 
 @mutobj.impl(Session.serialize)
 def serialize_session(self: Session) -> dict:
-    """序列化为可持久化的 dict（自动包含子类字段）"""
-    d: dict[str, Any] = {
-        "id": self.id,
-        "workspace_id": self.workspace_id,
-        "title": self.title,
-        "type": self.type,
-        "status": self.status,
-        "created_at": self.created_at,
-        "updated_at": self.updated_at,
-        "config": self.config,
-    }
-    # AgentSession 特有字段
-    if isinstance(self, AgentSession):
-        if self.model:
-            d["model"] = self.model
-        if self.system_prompt:
-            d["system_prompt"] = self.system_prompt
-        if self.total_tokens:
-            d["total_tokens"] = self.total_tokens
-        if self.context_used:
-            d["context_used"] = self.context_used
-        if self.context_window:
-            d["context_window"] = self.context_window
-    # DocumentSession 特有字段
-    if isinstance(self, DocumentSession):
-        if self.file_path:
-            d["file_path"] = self.file_path
-        if self.language:
-            d["language"] = self.language
+    """序列化为可持久化的 dict（基于 __annotations__ 自动收集所有声明字段）"""
+    d: dict[str, Any] = {}
+    # 遍历 MRO 收集所有声明字段（跳过 object 和 Declaration 基类）
+    for cls in type(self).__mro__:
+        if cls is object or cls.__name__ == "Declaration":
+            continue
+        for attr_name in getattr(cls, "__annotations__", {}):
+            if attr_name in d:
+                continue  # 子类已处理
+            value = getattr(self, attr_name, None)
+            # 跳过空值/默认值（保持与原有行为一致）
+            if attr_name in ("id", "workspace_id", "title", "type",
+                             "status", "created_at", "updated_at", "config"):
+                # 基类核心字段始终写入
+                d[attr_name] = value if value is not None else ""
+            elif value:
+                # 子类扩展字段：非空/非零时写入
+                d[attr_name] = value
     return d
 
 # ---------------------------------------------------------------------------
@@ -161,46 +150,109 @@ def _remove_session_log_handler(handler: logging.Handler | None) -> None:
 
 
 
-def _session_from_dict(data: dict) -> Session:
-    """从持久化 dict 重建对应子类的 Session 实例。"""
+@mutobj.impl(Session.deserialize)
+def _deserialize_session(cls: type[Session], data: dict) -> Session:
+    """从持久化 dict 重建对应子类的 Session 实例（基于 __annotations__ 自动提取字段）。"""
     raw_type = data.get("type", "")
 
-    # 尝试查找 Session 子类
+    # 查找 Session 子类
     try:
-        cls = Session.get_session_class(raw_type)
+        target_cls = Session.get_session_class(raw_type)
     except ValueError:
-        cls = Session
+        target_cls = Session
 
-    kwargs: dict[str, Any] = {
-        "id": data["id"],
-        "workspace_id": data.get("workspace_id", ""),
-        "title": data.get("title", ""),
-        "type": raw_type,
-        "status": data.get("status", ""),
-        "created_at": data.get("created_at", ""),
-        "updated_at": data.get("updated_at", ""),
-        "config": data.get("config") or {},
-    }
-    # AgentSession 特有字段
-    if issubclass(cls, AgentSession):
-        if "model" in data:
-            kwargs["model"] = data["model"]
-        if "system_prompt" in data:
-            kwargs["system_prompt"] = data["system_prompt"]
-        if "total_tokens" in data:
-            kwargs["total_tokens"] = data["total_tokens"]
-        if "context_used" in data:
-            kwargs["context_used"] = data["context_used"]
-        if "context_window" in data:
-            kwargs["context_window"] = data["context_window"]
-    # DocumentSession 特有字段
-    if issubclass(cls, DocumentSession):
-        if "file_path" in data:
-            kwargs["file_path"] = data["file_path"]
-        if "language" in data:
-            kwargs["language"] = data["language"]
+    # 收集目标类的所有声明字段
+    kwargs: dict[str, Any] = {}
+    for klass in target_cls.__mro__:
+        if klass is object or klass.__name__ == "Declaration":
+            continue
+        for attr_name in getattr(klass, "__annotations__", {}):
+            if attr_name in kwargs:
+                continue  # 子类已处理
+            if attr_name in data:
+                kwargs[attr_name] = data[attr_name]
 
-    return cls(**kwargs)
+    # 确保必填字段存在
+    kwargs.setdefault("id", data.get("id", ""))
+    kwargs.setdefault("workspace_id", data.get("workspace_id", ""))
+    kwargs.setdefault("title", data.get("title", ""))
+    kwargs.setdefault("type", raw_type)
+    # config 特殊处理：None → {}
+    if "config" in kwargs and kwargs["config"] is None:
+        kwargs["config"] = {}
+
+    return target_cls(**kwargs)
+
+
+# ---------------------------------------------------------------------------
+# 生命周期方法实现
+# ---------------------------------------------------------------------------
+
+# -- on_create --
+
+@mutobj.impl(TerminalSession.on_create)
+def _terminal_on_create(self: TerminalSession, sm: SessionManager) -> None:
+    """TerminalSession：创建 PTY，设 running。"""
+    tm = sm.terminal_manager
+    if tm is None:
+        return
+    rows = self.config.get("rows", 24)
+    cols = self.config.get("cols", 80)
+    cwd = self.config.get("cwd", ".")
+    term = tm.create(self.workspace_id, rows, cols, cwd=cwd)
+    self.config["terminal_id"] = term.id
+    self.status = "running"
+
+
+@mutobj.impl(DocumentSession.on_create)
+def _document_on_create(self: DocumentSession, sm: SessionManager) -> None:
+    """DocumentSession：设默认 file_path。"""
+    import time
+    if not self.file_path:
+        self.file_path = self.config.get("file_path", "")
+    if not self.file_path:
+        self.file_path = f"untitled-{int(time.time() * 1000)}.md"
+
+
+# -- on_stop --
+
+@mutobj.impl(AgentSession.on_stop)
+def _agent_on_stop(self: AgentSession, sm: SessionManager) -> None:
+    """AgentSession：状态归位为空。"""
+    self.status = ""
+
+
+@mutobj.impl(TerminalSession.on_stop)
+def _terminal_on_stop(self: TerminalSession, sm: SessionManager) -> None:
+    """TerminalSession：kill PTY，设 stopped。"""
+    tm = sm.terminal_manager
+    if tm is not None and self.config:
+        terminal_id = self.config.get("terminal_id")
+        if terminal_id and tm.has(terminal_id):
+            import asyncio
+            try:
+                loop = asyncio.get_running_loop()
+                loop.create_task(tm.async_notify_exit(terminal_id))
+            except RuntimeError:
+                pass
+            tm.kill(terminal_id)
+    self.status = "stopped"
+
+
+# -- on_restart_cleanup --
+
+@mutobj.impl(AgentSession.on_restart_cleanup)
+def _agent_on_restart_cleanup(self: AgentSession) -> None:
+    """AgentSession：running → 空。"""
+    if self.status == "running":
+        self.status = ""
+
+
+@mutobj.impl(TerminalSession.on_restart_cleanup)
+def _terminal_on_restart_cleanup(self: TerminalSession) -> None:
+    """TerminalSession：running → stopped。"""
+    if self.status == "running":
+        self.status = "stopped"
 
 
 def setup_environment(config: Config) -> None:
@@ -393,7 +445,7 @@ class SessionManager:
         else:
             raw_list = storage.load_all_sessions()
         for data in raw_list:
-            session = _session_from_dict(data)
+            session = Session.deserialize(data)
             self._sessions[session.id] = session
         if self._sessions:
             logger.info("Loaded %d session(s) from disk", len(self._sessions))
@@ -498,6 +550,7 @@ class SessionManager:
             config=config or {},
         )
         self._sessions[session.id] = session
+        session.on_create(self)
         self._persist(session)
         self._maybe_broadcast_created(session)
         return session
@@ -666,25 +719,15 @@ class SessionManager:
         if session is None:
             return
 
-        if isinstance(session, AgentSession):
-            # Stop agent bridge
-            rt = self.get_agent_runtime(session_id)
-            if rt and rt.bridge is not None:
+        # runtime 资源清理（bridge/handler 由 SessionManager 管理）
+        rt = self._runtimes.get(session_id)
+        if rt and isinstance(rt, AgentSessionRuntime):
+            if rt.bridge is not None:
                 await rt.bridge.stop()
-            # 移除 session 级日志 handler
-            if rt:
-                _remove_session_log_handler(rt.log_handler)
-        elif isinstance(session, TerminalSession):
-            # Kill the associated PTY
-            tm = self.terminal_manager
-            if tm is not None and session.config:
-                terminal_id = session.config.get("terminal_id")
-                if terminal_id and tm.has(terminal_id):
-                    await tm.async_notify_exit(terminal_id)
-                    tm.kill(terminal_id)
-        # Document sessions have no runtime resources to clean up
+            _remove_session_log_handler(rt.log_handler)
 
-        session.status = "stopped"
+        # 子类自行处理状态归位和关联资源清理
+        session.on_stop(self)
         session.updated_at = datetime.now(timezone.utc).isoformat()
         # Persist final state (runtime still available so messages are included)
         self._persist(session)

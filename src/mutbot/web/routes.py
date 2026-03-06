@@ -104,7 +104,7 @@ async def handle_app_workspace_create(params: dict, ctx: RpcContext) -> dict:
             existing = sm.list_by_workspace(ws.id)
             agent_session = next(
                 (s for s in existing
-                 if s.type == agent_type and s.status != "stopped"),
+                 if s.type == agent_type),
                 None,
             )
             if agent_session is None:
@@ -309,9 +309,7 @@ async def handle_session_create(params: dict, ctx: RpcContext) -> dict:
     config = params.get("config")
 
     # 未指定类型时：空工作区默认 AgentSession，否则返回错误
-    from mutbot.session import (
-        Session, TerminalSession, DocumentSession,
-    )
+    from mutbot.session import Session
     if not session_type:
         # 检查工作区是否为空（无 session）
         existing = sm.list_by_workspace(ws.id)
@@ -320,32 +318,19 @@ async def handle_session_create(params: dict, ctx: RpcContext) -> dict:
         else:
             return {"error": "session type is required"}
     try:
-        session_cls = Session.get_session_class(session_type)
+        Session.get_session_class(session_type)
     except ValueError:
         return {"error": f"unknown session type: {session_type}"}
 
-    # terminal 类型需创建 PTY
-    if issubclass(session_cls, TerminalSession):
-        tm = ctx.managers.get("terminal_manager")
-        if tm is None:
-            return {"error": "terminal manager not available"}
-        rows = params.get("rows", 24)
-        cols = params.get("cols", 80)
-        term = tm.create(ctx.workspace_id, rows, cols, cwd=ws.project_path)
-        config = config or {}
-        config["terminal_id"] = term.id
-
-    # document 类型生成默认文件路径
-    if issubclass(session_cls, DocumentSession):
-        import time
-        config = config or {}
-        config.setdefault("file_path", f"untitled-{int(time.time() * 1000)}.md")
+    # 将创建参数写入 config，on_create 中按需使用
+    config = config or {}
+    if params.get("rows"):
+        config["rows"] = params["rows"]
+    if params.get("cols"):
+        config["cols"] = params["cols"]
+    config.setdefault("cwd", ws.project_path)
 
     session = sm.create(ctx.workspace_id, session_type=session_type, config=config)
-    # TerminalSession: PTY 创建后设置 running 状态
-    if issubclass(session_cls, TerminalSession):
-        session.status = "running"
-        sm._persist(session)
     ws.sessions.append(session.id)
     wm.update(ws)
 
@@ -519,7 +504,7 @@ async def handle_session_stop(params: dict, ctx: RpcContext) -> dict:
     session = sm.get(session_id)
     data = _session_dict(session) if session else {"session_id": session_id}
     await ctx.broadcast_event("session_updated", data)
-    return {"status": "stopped"}
+    return {"status": session.status if session else "stopped"}
 
 
 @workspace_rpc.method("session.delete")
@@ -886,9 +871,10 @@ async def websocket_session(websocket: WebSocket, session_id: str):
     loop = asyncio.get_running_loop()
     bridge = None
 
-    # active session → 立即启动 agent bridge
-    # stopped/empty status session → 延迟到用户发消息时再启动
-    if session.status not in ("", "stopped"):
+    # active agent session → 立即启动 agent bridge
+    # 非 agent 或空状态 → 延迟到用户发消息时再启动
+    from mutbot.session import AgentSession
+    if isinstance(session, AgentSession) and session.status != "":
         try:
             bridge = sm.start(session_id, loop, connection_manager.broadcast)
         except Exception as exc:
@@ -907,9 +893,9 @@ async def websocket_session(websocket: WebSocket, session_id: str):
                 text = raw.get("text", "")
                 data = raw.get("data")
                 if text:
-                    # 延迟启动：非活跃 session 在用户发消息时激活
-                    if bridge is None:
-                        was_inactive = session.status in ("", "stopped")
+                    # 延迟启动：非活跃 agent session 在用户发消息时激活
+                    if bridge is None and isinstance(session, AgentSession):
+                        was_inactive = session.status == ""
                         try:
                             bridge = sm.start(session_id, loop, connection_manager.broadcast)
                         except Exception as exc:

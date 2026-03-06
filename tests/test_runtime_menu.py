@@ -257,14 +257,7 @@ class TestAddSessionMenu:
         assert fake_sm.created == [("ws_1", "mutbot.session.AgentSession")]
 
     def test_execute_creates_terminal_session(self):
-        """terminal session 创建时应同时创建 PTY"""
-
-        class FakeTerm:
-            id = "term_123"
-
-        class FakeTerminalManager:
-            def create(self, workspace_id, rows, cols, cwd=""):
-                return FakeTerm()
+        """terminal session 创建时 cwd 写入 config，on_create 中创建 PTY"""
 
         class FakeWorkspace:
             project_path = "/test"
@@ -289,7 +282,6 @@ class TestAddSessionMenu:
             workspace_id="ws_1",
             managers={
                 "session_manager": fake_sm,
-                "terminal_manager": FakeTerminalManager(),
                 "workspace_manager": FakeWorkspaceManager(),
             },
         )
@@ -299,22 +291,24 @@ class TestAddSessionMenu:
 
         assert result.action == "session_created"
         assert result.data["session_type"] == "mutbot.session.TerminalSession"
-        assert fake_sm.last_config["terminal_id"] == "term_123"
+        assert fake_sm.last_config["cwd"] == "/test"
 
-    def test_execute_terminal_without_terminal_manager(self):
-        """缺少 terminal_manager 时返回 error"""
+    def test_execute_terminal_without_workspace_manager(self):
+        """缺少 workspace_manager 时 cwd 不设置，仍能创建 session"""
 
         class FakeSessionManager:
             def create(self, workspace_id, session_type, config=None):
+                self.last_config = config
                 class FakeSession:
                     id = "s1"
                     title = "T1"
                 return FakeSession()
 
-        ctx = _make_context(managers={"session_manager": FakeSessionManager()})
+        fake_sm = FakeSessionManager()
+        ctx = _make_context(managers={"session_manager": fake_sm})
         menu = AddSessionMenu()
         result = menu.execute({"session_type": "mutbot.session.TerminalSession"}, ctx)
-        assert result.action == "error"
+        assert result.action == "session_created"
 
     def test_execute_without_session_manager(self):
         ctx = _make_context(managers={})

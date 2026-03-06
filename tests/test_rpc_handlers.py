@@ -207,7 +207,8 @@ class TestSessionHandlers:
         resp = await _dispatch("session.create", {"type": "mutbot.session.TerminalSession"}, ctx)
         result = resp["result"]
         assert result["type"] == "mutbot.session.TerminalSession"
-        assert result["config"]["terminal_id"].startswith("t_")
+        # cwd 由 routes.py 写入 config，terminal_id 由 on_create 在真实 SessionManager 中设置
+        assert result["config"]["cwd"] == "/tmp/test"
 
     @pytest.mark.asyncio
     async def test_session_list(self):
@@ -244,7 +245,7 @@ class TestSessionHandlers:
         ctx = _make_context(broadcasted, session_manager=sm)
 
         resp = await _dispatch("session.stop", {"session_id": "s1"}, ctx)
-        assert resp["result"]["status"] == "stopped"
+        assert resp["result"]["status"] == "ended"
         assert "s1" in sm.stopped
         # 验证 broadcast
         assert len(broadcasted) == 1

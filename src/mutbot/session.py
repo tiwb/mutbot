@@ -15,6 +15,7 @@ if TYPE_CHECKING:
     from mutagent.agent import Agent
     from mutagent.config import Config
     from mutagent.messages import Message
+    from mutbot.runtime.session_impl import SessionManager
 
 
 # ---------------------------------------------------------------------------
@@ -52,6 +53,31 @@ class Session(mutobj.Declaration):
     def serialize(self) -> dict:
         from mutbot.runtime.session_impl import serialize_session
         return serialize_session(self)
+
+    @classmethod
+    def deserialize(cls, data: dict) -> Session:
+        """从 dict 重建 Session 实例。默认实现基于 __annotations__ 自动提取字段。"""
+        ...
+
+    def on_create(self, sm: SessionManager) -> None:
+        """创建后的初始化（设状态、创建关联资源等）。
+
+        sm 提供 terminal_manager、config 等运行时资源。
+        各子类按需从 sm 取用，基类默认空操作。
+        """
+        ...
+
+    def on_stop(self, sm: SessionManager) -> None:
+        """停止时的关联资源清理和状态归位。
+
+        runtime 资源（bridge、log handler）由 SessionManager 清理，
+        此方法只负责 Session 自身的状态和关联资源（如 PTY）。
+        """
+        ...
+
+    def on_restart_cleanup(self) -> None:
+        """服务器重启时清理残留状态（无需外部资源）。"""
+        ...
 
 
 class AgentSession(Session):

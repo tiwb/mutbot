@@ -24,7 +24,6 @@ from mutbot.runtime.session_impl import (
     SessionManager,
     SessionRuntime,
     AgentSessionRuntime,
-    _session_from_dict,
 )
 
 
@@ -125,7 +124,7 @@ class TestTypeRegistry:
 # ---------------------------------------------------------------------------
 
 class TestSerialization:
-    """Session.serialize() 和 _session_from_dict() 往返测试"""
+    """Session.serialize() 和 Session.deserialize() 往返测试"""
 
     def test_agent_session_serialize(self):
         s = AgentSession(
@@ -151,7 +150,7 @@ class TestSerialization:
             created_at="2026-01-01", updated_at="2026-01-02",
         )
         data = original.serialize()
-        restored = _session_from_dict(data)
+        restored = Session.deserialize(data)
         assert isinstance(restored, AgentSession)
         assert restored.id == original.id
         assert restored.type == "mutbot.session.AgentSession"
@@ -165,7 +164,7 @@ class TestSerialization:
             config={"terminal_id": "tid1"},
         )
         data = original.serialize()
-        restored = _session_from_dict(data)
+        restored = Session.deserialize(data)
         assert isinstance(restored, TerminalSession)
         assert restored.config["terminal_id"] == "tid1"
 
@@ -174,7 +173,7 @@ class TestSerialization:
             id="rt3", workspace_id="ws1", title="Doc",
         )
         data = original.serialize()
-        restored = _session_from_dict(data)
+        restored = Session.deserialize(data)
         assert isinstance(restored, DocumentSession)
 
 
@@ -357,7 +356,7 @@ class TestSessionStatus:
             "type": "mutbot.session.AgentSession",
             "status": "stopped",
         }
-        restored = _session_from_dict(data)
+        restored = Session.deserialize(data)
         assert restored.status == "stopped"
 
     def test_status_restore_empty(self):
@@ -367,7 +366,7 @@ class TestSessionStatus:
             "type": "mutbot.session.AgentSession",
             "status": "",
         }
-        restored = _session_from_dict(data)
+        restored = Session.deserialize(data)
         assert restored.status == ""
 
     def test_status_restore_missing_defaults_empty(self):
@@ -376,7 +375,7 @@ class TestSessionStatus:
             "id": "a", "workspace_id": "w", "title": "t",
             "type": "mutbot.session.AgentSession",
         }
-        restored = _session_from_dict(data)
+        restored = Session.deserialize(data)
         assert restored.status == ""
 
     def test_status_roundtrip_custom_value(self):
@@ -384,7 +383,7 @@ class TestSessionStatus:
         original = AgentSession(id="rt", workspace_id="w", title="t")
         original.status = "my_custom_status"
         data = original.serialize()
-        restored = _session_from_dict(data)
+        restored = Session.deserialize(data)
         assert restored.status == "my_custom_status"
 
     def test_set_session_status(self):

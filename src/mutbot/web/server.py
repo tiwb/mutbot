@@ -165,11 +165,12 @@ async def lifespan(app: FastAPI):
         all_session_ids.update(ws.sessions)
     session_manager.load_from_disk(all_session_ids)
 
-    # 服务器重启：清除残留的运行时状态（running → 空，无运行中的 agent/PTY）
+    # 服务器重启：清除残留的运行时状态（各 Session 子类自行处理状态归位）
     _cleared = 0
     for session in session_manager._sessions.values():
-        if session.status == "running":
-            session.status = ""
+        old_status = session.status
+        session.on_restart_cleanup()
+        if session.status != old_status:
             session_manager._persist(session)
             _cleared += 1
     if _cleared:

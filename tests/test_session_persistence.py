@@ -16,11 +16,10 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from mutbot.session import AgentSession
+from mutbot.session import AgentSession, Session
 from mutbot.runtime.session_impl import (
     SessionManager,
     AgentSessionRuntime,
-    _session_from_dict,
 )
 from mutbot.runtime import storage
 from mutagent.messages import Message, TextBlock, ToolUseBlock
@@ -98,7 +97,7 @@ class TestTotalTokensSerialization:
             "type": "mutbot.session.AgentSession",
             "total_tokens": 99999,
         }
-        s = _session_from_dict(data)
+        s = Session.deserialize(data)
         assert isinstance(s, AgentSession)
         assert s.total_tokens == 99999
 
@@ -107,7 +106,7 @@ class TestTotalTokensSerialization:
             "id": "a", "workspace_id": "w", "title": "t",
             "type": "mutbot.session.AgentSession",
         }
-        s = _session_from_dict(data)
+        s = Session.deserialize(data)
         assert isinstance(s, AgentSession)
         assert s.total_tokens == 0
 
@@ -357,7 +356,7 @@ class TestStopPreservesMessages:
 
         # Messages 应保留在磁盘上
         data = _read_session_json(storage_dir, session.id)
-        assert data["status"] == "stopped"
+        assert data["status"] == ""
         assert len(data["messages"]) == 3
 
     @pytest.mark.asyncio
@@ -377,5 +376,5 @@ class TestStopPreservesMessages:
         await sm.stop(session.id)
 
         data = _read_session_json(storage_dir, session.id)
-        assert data["status"] == "stopped"
+        assert data["status"] == ""
         assert len(data["messages"]) == 3, "stop 不应覆盖已有 messages"

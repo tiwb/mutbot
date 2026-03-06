@@ -59,14 +59,10 @@ class AddSessionMenu(Menu):
         """创建指定类型的 Session。
 
         处理特殊逻辑：
-        - terminal: 创建 PTY 并将 terminal_id 写入 config
-        - document: 生成默认文件路径写入 config
+        - terminal: on_create 中创建 PTY 并设 running 状态
+        - document: on_create 中生成默认文件路径
         """
-        import time
-
-        from mutbot.session import (
-            Session, TerminalSession, DocumentSession,
-        )
+        from mutbot.session import Session
 
         session_type = params.get("session_type", "")
         if not session_type:
@@ -75,34 +71,24 @@ class AddSessionMenu(Menu):
         if sm is None:
             return MenuResult(action="error", data={"message": "session_manager not available"})
 
-        # 查找 Session 类以判断类型
+        # 验证 Session 类型
         try:
-            session_cls = Session.get_session_class(session_type)
+            Session.get_session_class(session_type)
         except ValueError:
             return MenuResult(action="error", data={"message": f"unknown session type: {session_type}"})
 
+        # 将 cwd 写入 config，on_create 按需使用
         config: dict = {}
-
-        if issubclass(session_cls, TerminalSession):
-            tm = context.managers.get("terminal_manager")
-            wm = context.managers.get("workspace_manager")
-            if tm is None:
-                return MenuResult(action="error", data={"message": "terminal_manager not available"})
-            ws = wm.get(context.workspace_id) if wm else None
-            cwd = ws.project_path if ws else "."
-            term = tm.create(context.workspace_id, 24, 80, cwd=cwd)
-            config["terminal_id"] = term.id
-        elif issubclass(session_cls, DocumentSession):
-            config["file_path"] = f"untitled-{int(time.time() * 1000)}.md"
+        wm = context.managers.get("workspace_manager")
+        ws = wm.get(context.workspace_id) if wm else None
+        if ws:
+            config["cwd"] = ws.project_path
 
         session = sm.create(
             workspace_id=context.workspace_id,
             session_type=session_type,
             config=config if config else None,
         )
-        # TerminalSession: PTY 创建后设置 running 状态
-        if issubclass(session_cls, TerminalSession):
-            session.status = "running"
 
         # 将 workspace 的 sessions 列表也更新
         if context.managers.get("workspace_manager"):
