@@ -35,6 +35,7 @@ export default function TerminalPanel({ sessionId, terminalId: initialId, worksp
   const termIdRef = useRef<string | null>(initialId ?? null);
 
   const [expired, setExpired] = useState(false);
+  const [connected, setConnected] = useState(false);
 
   // Expose init() via ref so handleRecreate can call it
   const initRef = useRef<(() => void) | null>(null);
@@ -154,11 +155,13 @@ export default function TerminalPanel({ sessionId, terminalId: initialId, worksp
         }
 
         if (bytes[0] === 0x03) {
-          // Scrollback replay complete — delay unmute until xterm.js
-          // finishes processing all pending writes (prevents DA1 response
-          // leak like ^[[?1;2c being sent back to PTY as user input).
-          term.write("", () => {
+          // Scrollback replay complete — use requestAnimationFrame to defer
+          // unmuting until after xterm.js has fully processed pending writes.
+          // This prevents DA1/cursor-position responses generated during replay
+          // from being forwarded to the PTY as spurious user input.
+          requestAnimationFrame(() => {
             inputMuted = false;
+            setConnected(true);
             sendResize(
               termRef.current?.rows ?? rows,
               termRef.current?.cols ?? cols,
@@ -174,6 +177,7 @@ export default function TerminalPanel({ sessionId, terminalId: initialId, worksp
 
       ws.onclose = (event) => {
         if (!active) return;
+        setConnected(false);
         if (event.code === 4004) {
           // Terminal not found — show expired UI instead of auto-creating
           if (!processExited) {
@@ -212,9 +216,16 @@ export default function TerminalPanel({ sessionId, terminalId: initialId, worksp
       let termId = termIdRef.current;
       if (!termId) {
         if (!rpc) return;
-        const result = await rpc.call<{ id: string }>("terminal.create", { rows, cols });
-        if (!active) return;
-        termId = result.id;
+        if (sessionId) {
+          // Session-backed terminal: restart via session RPC to restore scrollback
+          const result = await rpc.call<{ terminal_id: string }>("session.restart", { session_id: sessionId });
+          if (!active) return;
+          termId = result.terminal_id;
+        } else {
+          const result = await rpc.call<{ id: string }>("terminal.create", { rows, cols });
+          if (!active) return;
+          termId = result.id;
+        }
         termIdRef.current = termId;
         // Persist terminal ID into the flexlayout tab config
         if (nodeId && onTerminalCreated) {
@@ -229,10 +240,13 @@ export default function TerminalPanel({ sessionId, terminalId: initialId, worksp
       // Close old WS connection (terminal process is dead)
       ws?.close();
       wsRef.current?.close();
-      // Delete old dead terminal
-      const oldTid = termIdRef.current;
-      if (oldTid && rpc) {
-        rpc.call("terminal.delete", { term_id: oldTid }).catch(() => {});
+      // For session-backed terminals, session.restart handles cleanup (saves scrollback
+      // then kills old PTY).  For standalone terminals, delete the old PTY now.
+      if (!sessionId) {
+        const oldTid = termIdRef.current;
+        if (oldTid && rpc) {
+          rpc.call("terminal.delete", { term_id: oldTid }).catch(() => {});
+        }
       }
       // Clear terminal screen for fresh start
       term.write("\x1b[2J\x1b[H");
@@ -288,6 +302,7 @@ export default function TerminalPanel({ sessionId, terminalId: initialId, worksp
 
   const handleRecreate = useCallback(() => {
     setExpired(false);
+    setConnected(false);
     initRef.current?.();
   }, []);
 
@@ -342,10 +357,14 @@ export default function TerminalPanel({ sessionId, terminalId: initialId, worksp
 
   return (
     <div ref={containerRef} className="terminal-panel" onContextMenu={handleContextMenu}>
-      {expired && (
+      {(!connected || expired) && (
         <div className="terminal-expired-overlay">
           <div className="terminal-expired-content">
-            <button onClick={handleRecreate}>Restart Terminal</button>
+            {expired ? (
+              <button onClick={handleRecreate}>Restart Terminal</button>
+            ) : (
+              <span className="terminal-connecting">Connecting...</span>
+            )}
           </div>
         </div>
       )}

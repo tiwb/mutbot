@@ -515,6 +515,14 @@ async def handle_session_delete(params: dict, ctx: RpcContext) -> dict:
     if not sm:
         return {"error": "session_manager not available"}
     session_id = params.get("session_id", "")
+    # Notify terminal clients before stop so they receive 0x04 while connections are live
+    tm = ctx.managers.get("terminal_manager")
+    if tm:
+        session = sm.get(session_id)
+        if session and isinstance(getattr(session, "config", None), dict):
+            terminal_id = session.config.get("terminal_id")
+            if terminal_id and tm.has(terminal_id):
+                await tm.async_notify_exit(terminal_id)
     await sm.stop(session_id)
     if not sm.delete(session_id):
         return {"error": "session not found"}
@@ -538,8 +546,16 @@ async def handle_session_delete_batch(params: dict, ctx: RpcContext) -> dict:
     session_ids = params.get("session_ids", [])
     if not session_ids:
         return {"error": "no session_ids provided"}
+    tm = ctx.managers.get("terminal_manager")
     ws = wm.get(ctx.workspace_id) if wm else None
     for sid in session_ids:
+        # Notify terminal clients before stop
+        if tm:
+            session = sm.get(sid)
+            if session and isinstance(getattr(session, "config", None), dict):
+                terminal_id = session.config.get("terminal_id")
+                if terminal_id and tm.has(terminal_id):
+                    await tm.async_notify_exit(terminal_id)
         await sm.stop(sid)
         sm.delete(sid)
         if ws and sid in ws.sessions:
@@ -574,6 +590,43 @@ async def handle_session_update(params: dict, ctx: RpcContext) -> dict:
     data = _session_dict(session)
     await ctx.broadcast_event("session_updated", data)
     return data
+
+
+@workspace_rpc.method("session.restart")
+async def handle_session_restart(params: dict, ctx: RpcContext) -> dict:
+    """重启一个 TerminalSession：重建 PTY（全新开始）。
+
+    用于用户点击 "Restart Terminal" 的场景：
+    - 先终止残留的旧 PTY（如仍存在）
+    - 清除 scrollback_b64（历史已通过 WS handler 展示给用户）
+    - 调用 on_create() 重建全新 PTY
+    - 返回新的 terminal_id 供前端 WebSocket 连接
+    """
+    sm = ctx.managers.get("session_manager")
+    tm = ctx.managers.get("terminal_manager")
+    if not sm:
+        return {"error": "session_manager not available"}
+    session_id = params.get("session_id", "")
+    session = sm.get(session_id)
+    if session is None:
+        return {"error": "session not found"}
+    from mutbot.session import TerminalSession as _TS
+    if not isinstance(session, _TS):
+        return {"error": "session is not a TerminalSession"}
+    # Kill old terminal if still alive
+    if tm:
+        old_term_id = session.config.get("terminal_id")
+        if old_term_id and tm.has(old_term_id):
+            await tm.async_notify_exit(old_term_id)
+            tm.kill(old_term_id)
+    # Start fresh: clear saved scrollback so on_create() creates a clean PTY
+    session.scrollback_b64 = ""
+    session.on_create(sm)
+    sm._persist(session)
+    new_term_id = session.config.get("terminal_id", "")
+    data = _session_dict(session)
+    await ctx.broadcast_event("session_updated", data)
+    return {"session_id": session_id, "terminal_id": new_term_id}
 
 
 # ---------------------------------------------------------------------------
@@ -979,6 +1032,7 @@ async def websocket_terminal(websocket: WebSocket, term_id: str):
     - Server→Client: 0x01 + output bytes
     - Client→Server: 0x02 + 2B rows (big-endian) + 2B cols (big-endian)
     - Server→Client: 0x03   scrollback replay complete
+    - Server→Client: 0x04   process exited (shows "Restart Terminal" in UI)
 
     PTY survives WebSocket disconnects.  The client can reconnect and
     receive the scrollback buffer to restore the screen.
@@ -986,7 +1040,48 @@ async def websocket_terminal(websocket: WebSocket, term_id: str):
     tm = _get_terminal_manager()
     await websocket.accept()
     if tm is None or not tm.has(term_id):
-        await websocket.close(code=4004, reason="terminal not found")
+        # Terminal not found after server restart.  If the owning TerminalSession has
+        # saved scrollback, replay it so the user sees their history, then send 0x04
+        # to show the "Restart Terminal" button.  This is preferred over 4004 because
+        # 4004 shows a blank overlay with no history context.
+        from mutbot.session import TerminalSession as _TS
+        _wm, sm = _get_managers()
+        scrollback_replayed = False
+        if sm is not None:
+            for _session in sm._sessions.values():
+                if (isinstance(_session, _TS) and
+                        _session.config.get("terminal_id") == term_id):
+                    scrollback_data = b""
+                    if _session.scrollback_b64:
+                        import base64
+                        try:
+                            scrollback_data = base64.b64decode(_session.scrollback_b64)
+                        except Exception:
+                            pass
+                    if scrollback_data:
+                        try:
+                            await websocket.send_bytes(b"\x01\x1b[0m" + scrollback_data)
+                        except Exception:
+                            pass
+                    # 0x03: scrollback replay complete (unmutes input on client)
+                    try:
+                        await websocket.send_bytes(b"\x03")
+                    except Exception:
+                        pass
+                    # 0x04: process exited → client shows "Restart Terminal" overlay
+                    try:
+                        await websocket.send_bytes(b"\x04")
+                    except Exception:
+                        pass
+                    scrollback_replayed = True
+                    logger.info(
+                        "Terminal WS: replayed saved scrollback for dead terminal %s"
+                        " (session=%s, bytes=%d)",
+                        term_id, _session.id, len(scrollback_data),
+                    )
+                    break
+        if not scrollback_replayed:
+            await websocket.close(code=4004, reason="terminal not found")
         return
     logger.info("Terminal WS connected: term=%s", term_id)
 
@@ -1008,19 +1103,34 @@ async def websocket_terminal(websocket: WebSocket, term_id: str):
         except Exception:
             logger.debug("Failed to send scrollback for term=%s", term_id)
 
+    # If the PTY process has already exited, send 0x04 immediately instead of
+    # proceeding to the live loop. This avoids sending 0x03 (which unmutes
+    # client input and removes the overlay) for a dead terminal.
+    _session_check = tm.get(term_id)
+    if _session_check is None or not _session_check.alive:
+        _exit_code = _session_check.exit_code if _session_check else None
+        try:
+            await websocket.send_bytes(tm._make_exit_payload(_exit_code))
+        except Exception:
+            pass
+        return
+
     # Signal scrollback replay is complete — client can unmute input
     try:
         await websocket.send_bytes(b"\x03")
     except Exception:
-        pass
+        # If we can't send 0x03, the client's inputMuted will never clear.
+        # Close so the client reconnects and gets a fresh 0x03.
+        await websocket.close()
+        return
 
     # Immediately sync PTY dimensions to match the connecting client,
     # so the shell redraws its prompt at the correct cursor position.
+    client_id = id(websocket)
     if rows_param > 0 and cols_param > 0:
-        tm.resize(term_id, rows_param, cols_param)
+        tm.resize(term_id, rows_param, cols_param, client_id=str(client_id))
 
     # Bind WebSocket → TerminalManager via callback
-    client_id = id(websocket)
     tm.attach(term_id, str(client_id), websocket.send_bytes, loop)
 
     try:
@@ -1050,7 +1160,7 @@ async def websocket_terminal(websocket: WebSocket, term_id: str):
                 # Resize: 2B rows + 2B cols (big-endian)
                 rows = int.from_bytes(raw[1:3], "big")
                 cols = int.from_bytes(raw[3:5], "big")
-                tm.resize(term_id, rows, cols)
+                tm.resize(term_id, rows, cols, client_id=str(client_id))
     except WebSocketDisconnect:
         logger.info("Terminal WS disconnected: term=%s", term_id)
     except Exception:

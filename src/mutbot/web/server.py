@@ -113,12 +113,16 @@ def _install_double_ctrlc_handler():
 
 
 async def _shutdown_cleanup():
-    """Stop sessions that have active runtimes."""
+    """Stop all sessions cleanly (saves scrollback, cleans up PTYs), then kill orphan terminals."""
+    # Stop ALL sessions: on_stop() saves TerminalSession scrollback and kills their PTYs;
+    # for AgentSessions it stops the bridge. _runtimes only holds AgentSessions so we
+    # must iterate _sessions to reach TerminalSessions.
+    if session_manager is not None:
+        for sid in list(session_manager._sessions):
+            await session_manager.stop(sid)
+    # Kill any remaining terminals not owned by a session (safety net)
     if terminal_manager is not None:
         terminal_manager.kill_all()
-    if session_manager is not None:
-        for sid in list(session_manager._runtimes):
-            await session_manager.stop(sid)
 
 
 async def _watch_config_changes(config: MutbotConfig) -> None:

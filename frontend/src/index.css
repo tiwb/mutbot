@@ -2240,6 +2240,12 @@ body,
   color: white;
 }
 
+.terminal-connecting {
+  color: var(--text-dim);
+  font-size: 13px;
+  opacity: 0.7;
+}
+
 /* ----------------------------------------------------------------
    Code Editor Panel
    ---------------------------------------------------------------- */

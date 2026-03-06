@@ -115,6 +115,8 @@ class TerminalSession(Session):
     display_name = "Terminal"
     display_icon = "terminal"
 
+    scrollback_b64: str = ""  # persisted scrollback, base64-encoded
+
 
 class DocumentSession(Session):
     """文档编辑 Session"""

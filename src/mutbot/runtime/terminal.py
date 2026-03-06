@@ -14,10 +14,12 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
+import select as _select
+import signal
 import struct
 import sys
 import threading
-import time
 import uuid
 from collections.abc import Awaitable
 from dataclasses import dataclass, field
@@ -32,6 +34,10 @@ IS_WINDOWS = sys.platform == "win32"
 
 # Scrollback buffer: keep the last 64 KB of PTY output for reconnection
 SCROLLBACK_MAX = 64 * 1024
+
+# Strip OSC 0/1/2 (window/icon title) sequences from PTY output to prevent
+# host terminal title from being overwritten.
+_OSC_TITLE_RE = re.compile(rb"\x1b\][012];[^\x07\x1b]*(?:\x07|\x1b\\)")
 
 
 @dataclass
@@ -48,6 +54,8 @@ class TerminalSession:
     # Scrollback buffer for reconnection replay
     _scrollback: bytearray = field(default_factory=bytearray, repr=False)
     _scrollback_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+    # Per-client reported sizes for multi-client min-size tracking
+    _client_sizes: dict[str, tuple[int, int]] = field(default_factory=dict, repr=False)
 
 
 class TerminalManager:
@@ -104,11 +112,27 @@ class TerminalManager:
         session.process = proc
 
     def _spawn_unix(self, session: TerminalSession, cwd: str) -> None:
+        import fcntl
         import pty
         import subprocess
+        import termios
 
         shell = os.environ.get("SHELL", "/bin/bash")
         master_fd, slave_fd = pty.openpty()
+
+        # Set initial PTY window size before spawning so the shell (and vim)
+        # start up knowing the correct dimensions.
+        winsize = struct.pack("HHHH", session.rows, session.cols, 0, 0)
+        fcntl.ioctl(master_fd, termios.TIOCSWINSZ, winsize)
+
+        env = {**os.environ, "TERM": "xterm-256color", "COLORTERM": "truecolor"}
+
+        def _preexec() -> None:
+            os.setsid()
+            # Make the slave PTY the controlling terminal of the new session.
+            # Without this, programs like vim that rely on tcsetattr / tcgetpgrp
+            # do not work correctly (they see no controlling terminal).
+            fcntl.ioctl(slave_fd, termios.TIOCSCTTY, 0)
 
         proc = subprocess.Popen(
             [shell],
@@ -116,8 +140,9 @@ class TerminalManager:
             stdout=slave_fd,
             stderr=slave_fd,
             cwd=cwd,
-            preexec_fn=os.setsid,
+            preexec_fn=_preexec,
             close_fds=True,
+            env=env,
         )
         os.close(slave_fd)
 
@@ -142,6 +167,12 @@ class TerminalManager:
 
     def detach(self, term_id: str, client_id: str) -> None:
         """Remove an output callback without killing the PTY."""
+        session = self._sessions.get(term_id)
+        if session:
+            session._client_sizes.pop(client_id, None)
+            # If other clients remain, reapply the new minimum size
+            if session._client_sizes:
+                self._apply_min_size(session)
         conns = self._connections.get(term_id)
         if conns:
             conns.pop(client_id, None)
@@ -195,6 +226,11 @@ class TerminalManager:
                     fd = session._fd
                     while session.alive and fd is not None:
                         try:
+                            rlist, _, _ = _select.select([fd], [], [], 1.0)
+                            if not rlist:
+                                # Timeout — re-check alive flag and refresh fd
+                                fd = session._fd
+                                continue
                             data = os.read(fd, 4096)
                             if not data:
                                 break
@@ -226,7 +262,12 @@ class TerminalManager:
         t.start()
 
     def _on_pty_output(self, session: TerminalSession, data: bytes) -> None:
-        """Handle PTY output: append to scrollback and broadcast to all clients."""
+        """Handle PTY output: strip title sequences, append to scrollback, broadcast."""
+        # Strip OSC 0/1/2 title sequences before storing or forwarding
+        data = _OSC_TITLE_RE.sub(b"", data)
+        if not data:
+            return
+
         # Append to scrollback buffer
         with session._scrollback_lock:
             session._scrollback.extend(data)
@@ -328,22 +369,41 @@ class TerminalManager:
                 except OSError:
                     logger.exception("Terminal write error: %s", term_id)
 
-    def resize(self, term_id: str, rows: int, cols: int) -> None:
+    def resize(self, term_id: str, rows: int, cols: int, client_id: str | None = None) -> None:
         session = self._sessions.get(term_id)
         if session is None or not session.alive:
             return
 
-        session.rows = rows
-        session.cols = cols
+        if client_id is not None:
+            session._client_sizes[client_id] = (rows, cols)
 
+        # Use the minimum size across all connected clients (tmux behaviour)
+        if session._client_sizes:
+            self._apply_min_size(session)
+        else:
+            session.rows = rows
+            session.cols = cols
+            self._set_pty_size(session, rows, cols)
+
+    def _apply_min_size(self, session: TerminalSession) -> None:
+        """Recompute effective size as the minimum across all clients and apply."""
+        if not session._client_sizes or not session.alive:
+            return
+        eff_rows = min(r for r, _ in session._client_sizes.values())
+        eff_cols = min(c for _, c in session._client_sizes.values())
+        session.rows = eff_rows
+        session.cols = eff_cols
+        self._set_pty_size(session, eff_rows, eff_cols)
+
+    def _set_pty_size(self, session: TerminalSession, rows: int, cols: int) -> None:
+        """Apply rows/cols to the underlying PTY device."""
         if IS_WINDOWS:
             try:
                 session.process.setwinsize(rows, cols)
             except Exception:
-                logger.debug("Terminal resize failed: %s", term_id)
+                logger.debug("Terminal resize failed: %s", session.id)
         else:
             import fcntl
-            import struct
             import termios
             fd = session._fd
             if fd is not None:
@@ -351,7 +411,7 @@ class TerminalManager:
                     winsize = struct.pack("HHHH", rows, cols, 0, 0)
                     fcntl.ioctl(fd, termios.TIOCSWINSZ, winsize)
                 except Exception:
-                    logger.debug("Terminal resize failed: %s", term_id)
+                    logger.debug("Terminal resize failed: %s", session.id)
 
     # ------------------------------------------------------------------
     # Destroy
@@ -377,22 +437,42 @@ class TerminalManager:
             except Exception:
                 pass
         else:
+            # Kill the entire process group (shell + vim + all children).
+            # On macOS, os.read(master_fd) does NOT unblock when the fd is
+            # closed from another thread — we must kill the child processes
+            # first so the slave PTY is closed, which causes EIO on the master.
+            try:
+                if session.process:
+                    pgid = os.getpgid(session.process.pid)
+                    os.killpg(pgid, signal.SIGKILL)
+            except Exception:
+                try:
+                    if session.process:
+                        session.process.kill()
+                except Exception:
+                    pass
+            # Close master fd after sending kill signal
             try:
                 if session._fd is not None:
                     os.close(session._fd)
                     session._fd = None
             except OSError:
                 pass
-            try:
-                if session.process:
-                    session.process.terminate()
-                    session.process.wait(timeout=2)
-            except Exception:
-                try:
-                    session.process.kill()
-                except Exception:
-                    pass
 
     def kill_all(self) -> None:
         for term_id in list(self._sessions):
             self.kill(term_id)
+
+    def inject_scrollback(self, term_id: str, data: bytes) -> None:
+        """Prepend historical scrollback data into a newly-created terminal's buffer.
+
+        Used to restore persisted scrollback after a server restart.
+        """
+        session = self._sessions.get(term_id)
+        if session is None or not data:
+            return
+        with session._scrollback_lock:
+            combined = bytearray(data) + session._scrollback
+            if len(combined) > SCROLLBACK_MAX:
+                combined = combined[-SCROLLBACK_MAX:]
+            session._scrollback = combined
