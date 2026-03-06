@@ -515,6 +515,14 @@ async def handle_session_delete(params: dict, ctx: RpcContext) -> dict:
     if not sm:
         return {"error": "session_manager not available"}
     session_id = params.get("session_id", "")
+    # Notify terminal clients before stop so they receive 0x04 while connections are live
+    tm = ctx.managers.get("terminal_manager")
+    if tm:
+        session = sm.get(session_id)
+        if session and isinstance(getattr(session, "config", None), dict):
+            terminal_id = session.config.get("terminal_id")
+            if terminal_id and tm.has(terminal_id):
+                await tm.async_notify_exit(terminal_id)
     await sm.stop(session_id)
     if not sm.delete(session_id):
         return {"error": "session not found"}
@@ -538,8 +546,16 @@ async def handle_session_delete_batch(params: dict, ctx: RpcContext) -> dict:
     session_ids = params.get("session_ids", [])
     if not session_ids:
         return {"error": "no session_ids provided"}
+    tm = ctx.managers.get("terminal_manager")
     ws = wm.get(ctx.workspace_id) if wm else None
     for sid in session_ids:
+        # Notify terminal clients before stop
+        if tm:
+            session = sm.get(sid)
+            if session and isinstance(getattr(session, "config", None), dict):
+                terminal_id = session.config.get("terminal_id")
+                if terminal_id and tm.has(terminal_id):
+                    await tm.async_notify_exit(terminal_id)
         await sm.stop(sid)
         sm.delete(sid)
         if ws and sid in ws.sessions:
@@ -1012,15 +1028,18 @@ async def websocket_terminal(websocket: WebSocket, term_id: str):
     try:
         await websocket.send_bytes(b"\x03")
     except Exception:
-        pass
+        # If we can't send 0x03, the client's inputMuted will never clear.
+        # Close so the client reconnects and gets a fresh 0x03.
+        await websocket.close()
+        return
 
     # Immediately sync PTY dimensions to match the connecting client,
     # so the shell redraws its prompt at the correct cursor position.
+    client_id = id(websocket)
     if rows_param > 0 and cols_param > 0:
-        tm.resize(term_id, rows_param, cols_param)
+        tm.resize(term_id, rows_param, cols_param, client_id=str(client_id))
 
     # Bind WebSocket → TerminalManager via callback
-    client_id = id(websocket)
     tm.attach(term_id, str(client_id), websocket.send_bytes, loop)
 
     try:
@@ -1050,7 +1069,7 @@ async def websocket_terminal(websocket: WebSocket, term_id: str):
                 # Resize: 2B rows + 2B cols (big-endian)
                 rows = int.from_bytes(raw[1:3], "big")
                 cols = int.from_bytes(raw[3:5], "big")
-                tm.resize(term_id, rows, cols)
+                tm.resize(term_id, rows, cols, client_id=str(client_id))
     except WebSocketDisconnect:
         logger.info("Terminal WS disconnected: term=%s", term_id)
     except Exception:

@@ -154,10 +154,11 @@ export default function TerminalPanel({ sessionId, terminalId: initialId, worksp
         }
 
         if (bytes[0] === 0x03) {
-          // Scrollback replay complete — delay unmute until xterm.js
-          // finishes processing all pending writes (prevents DA1 response
-          // leak like ^[[?1;2c being sent back to PTY as user input).
-          term.write("", () => {
+          // Scrollback replay complete — use requestAnimationFrame to defer
+          // unmuting until after xterm.js has fully processed pending writes.
+          // This prevents DA1/cursor-position responses generated during replay
+          // from being forwarded to the PTY as spurious user input.
+          requestAnimationFrame(() => {
             inputMuted = false;
             sendResize(
               termRef.current?.rows ?? rows,

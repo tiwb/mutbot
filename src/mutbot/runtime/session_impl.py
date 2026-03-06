@@ -192,7 +192,7 @@ def _deserialize_session(cls: type[Session], data: dict) -> Session:
 
 @mutobj.impl(TerminalSession.on_create)
 def _terminal_on_create(self: TerminalSession, sm: SessionManager) -> None:
-    """TerminalSession：创建 PTY，设 running。"""
+    """TerminalSession：创建 PTY，恢复历史 scrollback，设 running。"""
     tm = sm.terminal_manager
     if tm is None:
         return
@@ -201,6 +201,17 @@ def _terminal_on_create(self: TerminalSession, sm: SessionManager) -> None:
     cwd = self.config.get("cwd", ".")
     term = tm.create(self.workspace_id, rows, cols, cwd=cwd)
     self.config["terminal_id"] = term.id
+
+    # Restore persisted scrollback from previous session
+    if self.scrollback_b64:
+        import base64
+        try:
+            data = base64.b64decode(self.scrollback_b64)
+            tm.inject_scrollback(term.id, data)
+        except Exception:
+            pass
+        self.scrollback_b64 = ""
+
     self.status = "running"
 
 
@@ -224,17 +235,17 @@ def _agent_on_stop(self: AgentSession, sm: SessionManager) -> None:
 
 @mutobj.impl(TerminalSession.on_stop)
 def _terminal_on_stop(self: TerminalSession, sm: SessionManager) -> None:
-    """TerminalSession：kill PTY，设 stopped。"""
+    """TerminalSession：persist scrollback, kill PTY, set stopped."""
     tm = sm.terminal_manager
     if tm is not None and self.config:
         terminal_id = self.config.get("terminal_id")
         if terminal_id and tm.has(terminal_id):
-            import asyncio
-            try:
-                loop = asyncio.get_running_loop()
-                loop.create_task(tm.async_notify_exit(terminal_id))
-            except RuntimeError:
-                pass
+            # Persist scrollback before killing (SessionManager.stop() calls
+            # _persist(session) after on_stop returns, so this is written to disk)
+            scrollback = tm.get_scrollback(terminal_id)
+            if scrollback:
+                import base64
+                self.scrollback_b64 = base64.b64encode(scrollback).decode()
             tm.kill(terminal_id)
     self.status = "stopped"
 
