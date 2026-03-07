@@ -39,8 +39,6 @@ channel_manager: Any = None
 # Shutdown helpers
 # ---------------------------------------------------------------------------
 
-_SHUTDOWN_TIMEOUT = 10  # seconds
-
 def _force_exit_flush():
     """Flush standard streams and log handlers before os._exit()."""
     try:
@@ -55,28 +53,20 @@ def _force_exit_flush():
             pass
 
 
-def _start_exit_watchdog():
-    """Start a daemon thread that forces os._exit after SHUTDOWN_TIMEOUT seconds.
-
-    Covers the case where uvicorn's own shutdown hangs before reaching
-    the lifespan shutdown code.  Being a daemon thread, it is harmless
-    if the process exits normally before the timeout.
-    """
-    import time
-    import threading as _threading
-
-    def _watchdog():
-        time.sleep(_SHUTDOWN_TIMEOUT)
-        print(f"\nShutdown timed out after {_SHUTDOWN_TIMEOUT}s, forcing exit...",
-              flush=True)
-        _force_exit_flush()
-        os._exit(0)
-
-    t = _threading.Thread(target=_watchdog, daemon=True, name="exit-watchdog")
-    t.start()
-
-
 _sigint_count = 0
+
+
+def _stop_all_clients():
+    """Stop all WebSocket clients, cancelling their _send_worker tasks."""
+    try:
+        from mutbot.web.routes import _clients
+        clients = list(_clients.values())
+        if clients:
+            logger.info("Stopping %d WebSocket client(s)", len(clients))
+            for client in clients:
+                client.stop()
+    except Exception:
+        pass
 
 
 def _install_double_ctrlc_handler():
@@ -100,8 +90,9 @@ def _install_double_ctrlc_handler():
             print("\nForce shutting down...", flush=True)
             _force_exit_flush()
             os._exit(0)
-        # 第一次 Ctrl+C：启动超时 watchdog，提示用户，然后交给 uvicorn 优雅退出
-        _start_exit_watchdog()
+        # 第一次 Ctrl+C：交给 uvicorn 优雅退出。
+        # uvicorn 的 timeout_graceful_shutdown 会在超时后进入 lifespan exit，
+        # 我们的 _shutdown_cleanup() 在 lifespan exit 中处理 session/client 清理。
         print("\nShutting down gracefully... Press Ctrl+C again to force exit",
               flush=True)
         if callable(prev_handler):
@@ -120,8 +111,15 @@ async def _shutdown_cleanup():
     # for AgentSessions it stops the bridge. _runtimes only holds AgentSessions so we
     # must iterate _sessions to reach TerminalSessions.
     if session_manager is not None:
-        for sid in list(session_manager._sessions):
+        sids = list(session_manager._sessions)
+        logger.info("Stopping %d sessions: %s", len(sids), sids)
+        for sid in sids:
             await session_manager.stop(sid)
+
+    # Stop all WebSocket clients — cancel _send_worker tasks that would otherwise
+    # block the event loop and prevent uvicorn from shutting down.
+    _stop_all_clients()
+
     # Kill any remaining terminals not owned by a session (safety net)
     if terminal_manager is not None:
         terminal_manager.kill_all()
@@ -392,6 +390,7 @@ def main():
     # 4. uvicorn（log_config=None 禁用 uvicorn 自带日志配置）
     uvi_config = uvicorn.Config(
         app, host=args.host, port=args.port, log_config=None,
+        timeout_graceful_shutdown=3,
     )
     server = uvicorn.Server(uvi_config)
 
