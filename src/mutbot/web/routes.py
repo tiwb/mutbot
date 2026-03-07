@@ -11,16 +11,53 @@ from urllib.parse import urlparse
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
-from mutbot.web.connection import ConnectionManager
 from mutbot.web.rpc import RpcDispatcher, RpcContext, make_event
+from mutbot.web.transport import Client, decode_varint
 from mutbot.runtime.menu_impl import menu_registry
 from mutbot.menu import MenuResult
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
-connection_manager = ConnectionManager()
-workspace_connection_manager = ConnectionManager()
+
+# Workspace pending events: events queued before any client connects
+# (e.g., setup flow creates session → event flushed on first WS connect)
+_workspace_pending_events: dict[str, list[dict]] = {}
+
+
+def queue_workspace_event(workspace_id: str, event: str, data: dict | None = None) -> None:
+    """Queue an event for delivery when the first client connects to this workspace."""
+    msg = {"type": "event", "event": event, "data": data or {}}
+    _workspace_pending_events.setdefault(workspace_id, []).append(msg)
+
+
+def _pop_pending_events(workspace_id: str) -> list[dict]:
+    return _workspace_pending_events.pop(workspace_id, [])
+
+# Client registry: client_id → Client (for reconnection matching)
+_clients: dict[str, Client] = {}
+# Workspace → connected Clients (for workspace-level broadcast via send buffer)
+_workspace_clients: dict[str, set[Client]] = {}
+
+
+def _broadcast_to_workspace(
+    workspace_id: str, data: dict, *, exclude_client: Client | None = None,
+) -> None:
+    """广播到 workspace 的所有 Client（通过 send buffer，计入 total_sent）。"""
+    clients = _workspace_clients.get(workspace_id)
+    if not clients:
+        return
+    for c in list(clients):
+        if c is exclude_client:
+            continue
+        c.send_json(data)
+
+
+def _broadcast_to_all_workspaces(data: dict) -> None:
+    """广播到所有 workspace 的所有 Client。"""
+    for clients in _workspace_clients.values():
+        for c in list(clients):
+            c.send_json(data)
 
 
 @router.get("/api/health")
@@ -95,9 +132,8 @@ async def handle_app_workspace_create(params: dict, ctx: RpcContext) -> dict:
     ws = wm.create(name, str(p))
 
     # 无 LLM 配置时，创建默认 AgentSession 供配置向导使用
-    from mutbot.runtime.config import load_mutbot_config
-    _cfg = load_mutbot_config()
-    if not _cfg.get("providers"):
+    _cfg = ctx.managers.get("config")
+    if not _cfg or not _cfg.get("providers"):
         sm = ctx.managers.get("session_manager")
         if sm:
             agent_type = "mutbot.session.AgentSession"
@@ -112,7 +148,7 @@ async def handle_app_workspace_create(params: dict, ctx: RpcContext) -> dict:
                 ws.sessions.append(agent_session.id)
                 wm.update(ws)
             # 前端连接后自动打开 tab
-            workspace_connection_manager.queue_event(
+            queue_workspace_event(
                 ws.id, "open_session", {"session_id": agent_session.id},
             )
 
@@ -262,6 +298,7 @@ async def handle_menu_execute(params: dict, ctx: RpcContext) -> dict:
             await ctx.broadcast_event("session_created", _session_dict(session))
 
     elif result.action == "session_deleted" and sm and session_id:
+        _close_channels_for_session(session_id, "session_deleted")
         await sm.stop(session_id)
         sm.delete(session_id)
         # 从 workspace.sessions 列表移除
@@ -278,6 +315,7 @@ async def handle_menu_execute(params: dict, ctx: RpcContext) -> dict:
         wm = ctx.managers.get("workspace_manager")
         ws = wm.get(ctx.workspace_id) if wm else None
         for sid in batch_ids:
+            _close_channels_for_session(sid, "session_deleted")
             await sm.stop(sid)
             sm.delete(sid)
             if ws and sid in ws.sessions:
@@ -389,9 +427,10 @@ async def handle_run_setup(params: dict, ctx: RpcContext) -> dict:
 
     # 确保 bridge 已启动
     loop = asyncio.get_running_loop()
+    cm = _get_channel_manager()
     try:
         bridge = sm.start(
-            session_id, loop, connection_manager.broadcast,
+            session_id, loop, _make_channel_broadcast_fn(cm),
         )
     except Exception as exc:
         logger.exception("Failed to start bridge for setup session=%s", session_id)
@@ -515,6 +554,8 @@ async def handle_session_delete(params: dict, ctx: RpcContext) -> dict:
     if not sm:
         return {"error": "session_manager not available"}
     session_id = params.get("session_id", "")
+    # Close associated channels before stopping
+    _close_channels_for_session(session_id, "session_deleted")
     # Notify terminal clients before stop so they receive 0x04 while connections are live
     tm = ctx.managers.get("terminal_manager")
     if tm:
@@ -549,6 +590,8 @@ async def handle_session_delete_batch(params: dict, ctx: RpcContext) -> dict:
     tm = ctx.managers.get("terminal_manager")
     ws = wm.get(ctx.workspace_id) if wm else None
     for sid in session_ids:
+        # Close associated channels before stopping
+        _close_channels_for_session(sid, "session_deleted")
         # Notify terminal clients before stop
         if tm:
             session = sm.get(sid)
@@ -614,6 +657,7 @@ async def handle_session_restart(params: dict, ctx: RpcContext) -> dict:
     if not isinstance(session, _TS):
         return {"error": "session is not a TerminalSession"}
     # Kill old terminal if still alive
+    _close_channels_for_session(session_id, "session_restarted")
     if tm:
         old_term_id = session.config.get("terminal_id")
         if old_term_id and tm.has(old_term_id):
@@ -830,6 +874,11 @@ def _get_terminal_manager():
     return terminal_manager
 
 
+def _get_channel_manager():
+    from mutbot.web.server import channel_manager
+    return channel_manager
+
+
 def _workspace_dict(ws) -> dict[str, Any]:
     return {
         "id": ws.id,
@@ -893,125 +942,11 @@ def _session_type_display(qualified: str, cls: type) -> tuple[str, str]:
 
 
 # ---------------------------------------------------------------------------
-# WebSocket handler
+# fe_logger — for frontend log forwarding via channel
 # ---------------------------------------------------------------------------
 
 fe_logger = logging.getLogger("mutbot.frontend")
 
-
-async def _broadcast_connection_count(session_id: str) -> None:
-    """Broadcast current connection count to all clients of a session."""
-    count = len(connection_manager.get_connections(session_id))
-    await connection_manager.broadcast(
-        session_id, {"type": "connection_count", "count": count}
-    )
-
-
-@router.websocket("/ws/session/{session_id}")
-async def websocket_session(websocket: WebSocket, session_id: str):
-    _, sm = _get_managers()
-    session = sm.get(session_id)
-    if session is None:
-        await websocket.close(code=4004, reason="session not found")
-        return
-
-    await connection_manager.connect(session_id, websocket)
-    logger.info("WS connected: session=%s (status=%s)", session_id, session.status)
-
-    # Broadcast updated connection count
-    await _broadcast_connection_count(session_id)
-
-    loop = asyncio.get_running_loop()
-    bridge = None
-
-    # active agent session → 立即启动 agent bridge
-    # 非 agent 或空状态 → 延迟到用户发消息时再启动
-    from mutbot.session import AgentSession
-    if isinstance(session, AgentSession) and session.status != "":
-        try:
-            bridge = sm.start(session_id, loop, connection_manager.broadcast)
-        except Exception as exc:
-            logger.exception("Failed to start agent for session=%s", session_id)
-            await sm.stop(session_id)
-            await websocket.send_json({"type": "error", "error": str(exc)})
-            connection_manager.disconnect(session_id, websocket)
-            await websocket.close(code=4500, reason="agent start failed")
-            return
-
-    try:
-        while True:
-            raw = await websocket.receive_json()
-            msg_type = raw.get("type", "")
-            if msg_type == "message":
-                text = raw.get("text", "")
-                data = raw.get("data")
-                if text:
-                    # 延迟启动：非活跃 agent session 在用户发消息时激活
-                    if bridge is None and isinstance(session, AgentSession):
-                        was_inactive = session.status == ""
-                        try:
-                            bridge = sm.start(session_id, loop, connection_manager.broadcast)
-                        except Exception as exc:
-                            logger.exception("Failed to start agent for session=%s", session_id)
-                            await sm.stop(session_id)
-                            await websocket.send_json({"type": "error", "error": str(exc)})
-                            break
-                        if was_inactive:
-                            await workspace_connection_manager.broadcast(
-                                session.workspace_id,
-                                make_event("session_updated", _session_dict(session)),
-                            )
-                    bridge.send_message(text, data)
-            elif msg_type == "cancel":
-                b = bridge or sm.get_bridge(session_id)
-                if b:
-                    bridge = b
-                    await bridge.cancel()
-            elif msg_type == "run_tool":
-                # 运行时注入工具调用（如菜单触发 Config-llm）
-                tool_name = raw.get("tool", "")
-                b = bridge or sm.get_bridge(session_id)
-                if tool_name and b:
-                    bridge = b
-                    bridge.request_tool(tool_name, raw.get("input", {}))
-            elif msg_type == "ui_event":
-                # 前端 UI 事件 → 路由到对应的 UIContext
-                from mutbot.ui import deliver_event
-                from mutbot.ui.events import UIEvent
-                context_id = raw.get("context_id", "")
-                if context_id:
-                    event = UIEvent(
-                        type=raw.get("event_type", ""),
-                        data=raw.get("data", {}),
-                        source=raw.get("source"),
-                        context_id=context_id,
-                    )
-                    deliver_event(context_id, event)
-            elif msg_type == "log":
-                # Frontend log forwarding
-                level = raw.get("level", "debug")
-                message = raw.get("message", "")
-                log_fn = getattr(fe_logger, level, fe_logger.debug)
-                log_fn("[%s] %s", session_id[:8], message)
-            elif msg_type == "stop":
-                await sm.stop(session_id)
-                break
-    except WebSocketDisconnect:
-        logger.info("WS disconnected: session=%s", session_id)
-    except Exception:
-        logger.exception("WS error: session=%s", session_id)
-    finally:
-        connection_manager.disconnect(session_id, websocket)
-        # Broadcast updated connection count after disconnect
-        try:
-            await _broadcast_connection_count(session_id)
-        except Exception:
-            pass
-
-
-# ---------------------------------------------------------------------------
-# Terminal WebSocket handler
-# ---------------------------------------------------------------------------
 
 def _terminal_dict(t) -> dict[str, Any]:
     return {
@@ -1021,153 +956,6 @@ def _terminal_dict(t) -> dict[str, Any]:
         "cols": t.cols,
         "alive": t.alive,
     }
-
-
-@router.websocket("/ws/terminal/{term_id}")
-async def websocket_terminal(websocket: WebSocket, term_id: str):
-    """Binary WebSocket for terminal I/O.
-
-    Protocol:
-    - Client→Server: 0x00 + input bytes
-    - Server→Client: 0x01 + output bytes
-    - Client→Server: 0x02 + 2B rows (big-endian) + 2B cols (big-endian)
-    - Server→Client: 0x03   scrollback replay complete
-    - Server→Client: 0x04   process exited (shows "Restart Terminal" in UI)
-
-    PTY survives WebSocket disconnects.  The client can reconnect and
-    receive the scrollback buffer to restore the screen.
-    """
-    tm = _get_terminal_manager()
-    await websocket.accept()
-    if tm is None or not tm.has(term_id):
-        # Terminal not found after server restart.  If the owning TerminalSession has
-        # saved scrollback, replay it so the user sees their history, then send 0x04
-        # to show the "Restart Terminal" button.  This is preferred over 4004 because
-        # 4004 shows a blank overlay with no history context.
-        from mutbot.session import TerminalSession as _TS
-        _wm, sm = _get_managers()
-        scrollback_replayed = False
-        if sm is not None:
-            for _session in sm._sessions.values():
-                if (isinstance(_session, _TS) and
-                        _session.config.get("terminal_id") == term_id):
-                    scrollback_data = b""
-                    if _session.scrollback_b64:
-                        import base64
-                        try:
-                            scrollback_data = base64.b64decode(_session.scrollback_b64)
-                        except Exception:
-                            pass
-                    if scrollback_data:
-                        try:
-                            await websocket.send_bytes(b"\x01\x1b[0m" + scrollback_data)
-                        except Exception:
-                            pass
-                    # 0x03: scrollback replay complete (unmutes input on client)
-                    try:
-                        await websocket.send_bytes(b"\x03")
-                    except Exception:
-                        pass
-                    # 0x04: process exited → client shows "Restart Terminal" overlay
-                    try:
-                        await websocket.send_bytes(b"\x04")
-                    except Exception:
-                        pass
-                    scrollback_replayed = True
-                    logger.info(
-                        "Terminal WS: replayed saved scrollback for dead terminal %s"
-                        " (session=%s, bytes=%d)",
-                        term_id, _session.id, len(scrollback_data),
-                    )
-                    break
-        if not scrollback_replayed:
-            await websocket.close(code=4004, reason="terminal not found")
-        return
-    logger.info("Terminal WS connected: term=%s", term_id)
-
-    # Read optional terminal dimensions from query params for immediate
-    # resize after scrollback replay (avoids cursor position mismatch).
-    rows_param = int(websocket.query_params.get("rows", "0"))
-    cols_param = int(websocket.query_params.get("cols", "0"))
-
-    loop = asyncio.get_running_loop()
-
-    # Send scrollback BEFORE attaching, so live output from the reader
-    # thread doesn't arrive before the historical replay.
-    scrollback = tm.get_scrollback(term_id)
-    if scrollback:
-        # Prepend attribute reset to handle truncated escape sequences
-        # at the scrollback buffer boundary.
-        try:
-            await websocket.send_bytes(b"\x01\x1b[0m" + scrollback)
-        except Exception:
-            logger.debug("Failed to send scrollback for term=%s", term_id)
-
-    # If the PTY process has already exited, send 0x04 immediately instead of
-    # proceeding to the live loop. This avoids sending 0x03 (which unmutes
-    # client input and removes the overlay) for a dead terminal.
-    _session_check = tm.get(term_id)
-    if _session_check is None or not _session_check.alive:
-        _exit_code = _session_check.exit_code if _session_check else None
-        try:
-            await websocket.send_bytes(tm._make_exit_payload(_exit_code))
-        except Exception:
-            pass
-        return
-
-    # Signal scrollback replay is complete — client can unmute input
-    try:
-        await websocket.send_bytes(b"\x03")
-    except Exception:
-        # If we can't send 0x03, the client's inputMuted will never clear.
-        # Close so the client reconnects and gets a fresh 0x03.
-        await websocket.close()
-        return
-
-    # Immediately sync PTY dimensions to match the connecting client,
-    # so the shell redraws its prompt at the correct cursor position.
-    client_id = id(websocket)
-    if rows_param > 0 and cols_param > 0:
-        tm.resize(term_id, rows_param, cols_param, client_id=str(client_id))
-
-    # Bind WebSocket → TerminalManager via callback
-    tm.attach(term_id, str(client_id), websocket.send_bytes, loop)
-
-    try:
-        while True:
-            try:
-                raw = await asyncio.wait_for(websocket.receive_bytes(), timeout=2.0)
-            except asyncio.TimeoutError:
-                # Periodic alive check — fallback for process exit detection
-                session = tm.get(term_id)
-                if session is None or not session.alive:
-                    exit_code = session.exit_code if session else None
-                    payload = tm._make_exit_payload(exit_code)
-                    try:
-                        await websocket.send_bytes(payload)
-                    except Exception:
-                        pass
-                    break
-                continue
-
-            if len(raw) < 1:
-                continue
-            msg_type = raw[0]
-            if msg_type == 0x00:
-                # Terminal input
-                tm.write(term_id, raw[1:])
-            elif msg_type == 0x02 and len(raw) >= 5:
-                # Resize: 2B rows + 2B cols (big-endian)
-                rows = int.from_bytes(raw[1:3], "big")
-                cols = int.from_bytes(raw[3:5], "big")
-                tm.resize(term_id, rows, cols, client_id=str(client_id))
-    except WebSocketDisconnect:
-        logger.info("Terminal WS disconnected: term=%s", term_id)
-    except Exception:
-        logger.exception("Terminal WS error: term=%s", term_id)
-    finally:
-        # Detach only — PTY stays alive for reconnection
-        tm.detach(term_id, str(client_id))
 
 
 # ---------------------------------------------------------------------------
@@ -1247,8 +1035,7 @@ async def websocket_app(websocket: WebSocket):
 
     # 推送 welcome 事件：应用状态（版本、setup_required 等）
     import mutbot
-    from mutbot.runtime.config import load_mutbot_config
-    _cfg = load_mutbot_config()
+    _cfg = websocket.app.state.config
     await websocket.send_json({
         "type": "event",
         "event": "welcome",
@@ -1264,7 +1051,7 @@ async def websocket_app(websocket: WebSocket):
     context = RpcContext(
         workspace_id="",
         broadcast=broadcast,
-        managers={"workspace_manager": wm, "session_manager": sm},
+        managers={"workspace_manager": wm, "session_manager": sm, "config": _cfg},
     )
 
     try:
@@ -1285,13 +1072,10 @@ async def websocket_app(websocket: WebSocket):
 
 @router.websocket("/ws/workspace/{workspace_id}")
 async def websocket_workspace(websocket: WebSocket, workspace_id: str):
-    """Workspace 级 WebSocket：承载 RPC 调用和服务端事件推送。
+    """统一 Workspace WebSocket：承载 RPC 调用、事件推送和 Channel 多路复用。
 
-    消息格式：
-    - 请求: { "type": "rpc", "id": str, "method": str, "params": dict }
-    - 响应: { "type": "rpc_result", "id": str, "result": Any }
-    - 错误: { "type": "rpc_error", "id": str, "error": { "code": int, "message": str } }
-    - 推送: { "type": "event", "event": str, "data": dict }
+    支持 Text Frame（JSON）和 Binary Frame 混合传输。
+    通过 client_id + last_seq 支持断线重连时的消息恢复。
     """
     wm, sm = _get_managers()
     ws = wm.get(workspace_id)
@@ -1300,27 +1084,107 @@ async def websocket_workspace(websocket: WebSocket, workspace_id: str):
         return
 
     wm.touch_accessed(ws)
-    await workspace_connection_manager.connect(workspace_id, websocket)
-    logger.info("Workspace WS connected: workspace=%s", workspace_id)
 
-    # 新连接推送 config_changed，让前端刷新模型列表等配置状态
-    try:
-        await websocket.send_json(make_event("config_changed", {"reason": "connect"}))
-    except Exception:
-        pass
+    # --- 解析重连参数 ---
+    client_id = websocket.query_params.get("client_id", "")
+    last_seq_str = websocket.query_params.get("last_seq")
+    last_seq = int(last_seq_str) if last_seq_str is not None else None
 
-    async def broadcast(data: dict) -> None:
-        await workspace_connection_manager.broadcast(workspace_id, data)
+    await websocket.accept()
 
-    # 确保 SessionManager 能从 Agent 线程广播事件
+    loop = asyncio.get_running_loop()
+    cm = _get_channel_manager()
+
+    # --- 确保 SessionManager 能从 Agent 线程广播事件 ---
     if sm and not sm._broadcast_fn:
-        import asyncio as _asyncio
-        loop = _asyncio.get_running_loop()
-
         async def _sm_broadcast(ws_id: str, data: dict) -> None:
-            await workspace_connection_manager.broadcast(ws_id, data)
-
+            _broadcast_to_workspace(ws_id, data)
         sm.set_broadcast(loop, _sm_broadcast)
+
+    # --- Client 匹配 / 创建 ---
+    resumed = False
+    client: Client | None = None
+
+    if client_id and last_seq is not None:
+        client = _clients.get(client_id)
+        if client and client.state == "buffering" and client.workspace_id == workspace_id:
+            if client.resume(websocket, last_seq):
+                resumed = True
+                logger.info(
+                    "Workspace WS resumed: client=%s, last_seq=%d",
+                    client_id, last_seq,
+                )
+            else:
+                # last_seq 不可覆盖 → 完全重连
+                client.reset_for_fresh_connection(websocket)
+                logger.info(
+                    "Workspace WS full reconnect (seq out of range): client=%s",
+                    client_id,
+                )
+        else:
+            client = None  # 不匹配 → 当新连接处理
+
+    if client is None:
+        # 新连接
+        if not client_id:
+            import uuid
+            client_id = str(uuid.uuid4())
+        client = Client(client_id, workspace_id, websocket, loop=loop)
+        client.start()
+
+        # 注册过期回调
+        def _on_client_expire(c: Client) -> None:
+            cm.close_all_for_client(c)
+            _clients.pop(c.client_id, None)
+            ws_clients = _workspace_clients.get(c.workspace_id)
+            if ws_clients:
+                ws_clients.discard(c)
+                if not ws_clients:
+                    del _workspace_clients[c.workspace_id]
+
+        client.on_expire(_on_client_expire)
+        _clients[client_id] = client
+        logger.info("Workspace WS connected: client=%s, workspace=%s", client_id, workspace_id)
+
+    # --- 发送 welcome ---
+    welcome: dict[str, Any] = {"type": "welcome", "resumed": resumed}
+    if resumed:
+        welcome["last_seq"] = client.recv_count
+        # 重发缺失消息
+        replay_msgs = client.get_replay_messages(last_seq)
+        try:
+            await websocket.send_json(welcome)
+            for frame_type, data in replay_msgs:
+                if frame_type == "json":
+                    await websocket.send_json(data)
+                else:
+                    await websocket.send_bytes(data)
+        except Exception:
+            logger.exception("Failed to send welcome/replay")
+            client.enter_buffering()
+            return
+    else:
+        try:
+            await websocket.send_json(welcome)
+        except Exception:
+            logger.exception("Failed to send welcome")
+            return
+
+    # --- 注册到 workspace clients 索引 ---
+    _workspace_clients.setdefault(workspace_id, set()).add(client)
+
+    # 新连接推送 config_changed
+    if not resumed:
+        client.send_json(make_event("config_changed", {"reason": "connect"}))
+
+    # 新连接 flush pending events
+    if not resumed:
+        for event in _pop_pending_events(workspace_id):
+            client.send_json(event)
+
+    # --- RPC context ---
+    async def broadcast(data: dict) -> None:
+        _broadcast_to_workspace(workspace_id, data)
 
     context = RpcContext(
         workspace_id=workspace_id,
@@ -1329,19 +1193,370 @@ async def websocket_workspace(websocket: WebSocket, workspace_id: str):
             "workspace_manager": wm,
             "session_manager": sm,
             "terminal_manager": _get_terminal_manager(),
+            "channel_manager": cm,
+            "config": websocket.app.state.config,
         },
         sender_ws=websocket,
     )
 
+    # --- 注册 channel.open / channel.close RPC ---
+    _ensure_channel_rpc_registered()
+
+    # --- 消息循环 ---
     try:
         while True:
-            raw = await websocket.receive_json()
-            response = await workspace_rpc.dispatch(raw, context)
-            if response is not None:
-                await websocket.send_json(response)
+            msg = await websocket.receive()
+            ws_type = msg.get("type", "")
+
+            if ws_type == "websocket.receive":
+                if "text" in msg:
+                    # --- JSON (Text Frame) ---
+                    import json as _json
+                    try:
+                        raw = _json.loads(msg["text"])
+                    except Exception:
+                        logger.warning("Invalid JSON in WS frame", exc_info=True)
+                        continue
+
+                    msg_type = raw.get("type", "")
+
+                    # 控制消息
+                    if msg_type == "ack":
+                        client.on_peer_ack(raw.get("ack", 0))
+                        client.on_control_received()
+                        continue
+
+                    # 内容消息 → 递增计数
+                    client.on_content_received()
+
+                    ch = raw.get("ch", 0)
+                    if ch == 0:
+                        # Workspace 级消息 → RPC dispatch
+                        context._post_send = None
+                        response = await workspace_rpc.dispatch(raw, context)
+                        if response is not None:
+                            client.send_json(response)
+                        if context._post_send is not None:
+                            context._post_send()
+                    else:
+                        # Channel 消息 → 路由到对应 channel handler
+                        channel = cm.get_channel(ch)
+                        if channel:
+                            await _handle_channel_json(channel, raw, sm, cm, loop, context)
+
+                elif "bytes" in msg:
+                    # --- Binary Frame ---
+                    data = msg["bytes"]
+                    if not data:
+                        continue
+                    client.on_content_received()
+                    try:
+                        ch_id, consumed = decode_varint(data)
+                    except ValueError:
+                        logger.warning("Invalid varint in binary frame", exc_info=True)
+                        continue
+                    channel = cm.get_channel(ch_id)
+                    if channel:
+                        await _handle_channel_binary(channel, data[consumed:])
+
+            elif ws_type == "websocket.disconnect":
+                break
+
     except WebSocketDisconnect:
-        logger.info("Workspace WS disconnected: workspace=%s", workspace_id)
+        logger.info("Workspace WS disconnected: client=%s", client_id)
     except Exception:
-        logger.exception("Workspace WS error: workspace=%s", workspace_id)
+        logger.exception("Workspace WS error: client=%s", client_id)
     finally:
-        workspace_connection_manager.disconnect(workspace_id, websocket)
+        ws_clients = _workspace_clients.get(workspace_id)
+        if ws_clients:
+            ws_clients.discard(client)
+            if not ws_clients:
+                del _workspace_clients[workspace_id]
+        client.enter_buffering()
+
+
+# ---------------------------------------------------------------------------
+# Channel message handlers
+# ---------------------------------------------------------------------------
+
+
+async def _handle_channel_json(
+    channel, raw: dict, sm, cm, loop, context: RpcContext,
+) -> None:
+    """处理频道级 JSON 消息。"""
+    session_id = channel.session_id
+    if not session_id:
+        return
+
+    from mutbot.session import AgentSession
+    session = sm.get(session_id)
+    if session is None:
+        return
+
+    msg_type = raw.get("type", "")
+
+    if not isinstance(session, AgentSession):
+        return
+
+    if msg_type == "message":
+        text = raw.get("text", "")
+        data = raw.get("data")
+        if text:
+            bridge = sm.get_bridge(session_id)
+            if bridge is None:
+                was_inactive = session.status == ""
+                try:
+                    broadcast_fn = _make_channel_broadcast_fn(cm)
+                    bridge = sm.start(session_id, loop, broadcast_fn)
+                except Exception as exc:
+                    logger.exception("Failed to start agent: session=%s", session_id)
+                    await sm.stop(session_id)
+                    channel.enqueue_json({"type": "error", "error": str(exc)})
+                    return
+                if was_inactive:
+                    _broadcast_to_workspace(
+                        session.workspace_id,
+                        make_event("session_updated", _session_dict(session)),
+                    )
+            bridge.send_message(text, data)
+    elif msg_type == "cancel":
+        bridge = sm.get_bridge(session_id)
+        if bridge:
+            await bridge.cancel()
+    elif msg_type == "run_tool":
+        tool_name = raw.get("tool", "")
+        bridge = sm.get_bridge(session_id)
+        if tool_name and bridge:
+            bridge.request_tool(tool_name, raw.get("input", {}))
+    elif msg_type == "ui_event":
+        from mutbot.ui import deliver_event
+        from mutbot.ui.events import UIEvent
+        context_id = raw.get("context_id", "")
+        if context_id:
+            event = UIEvent(
+                type=raw.get("event_type", ""),
+                data=raw.get("data", {}),
+                source=raw.get("source"),
+                context_id=context_id,
+            )
+            deliver_event(context_id, event)
+    elif msg_type == "log":
+        level = raw.get("level", "debug")
+        message = raw.get("message", "")
+        log_fn = getattr(fe_logger, level, fe_logger.debug)
+        log_fn("[%s] %s", session_id[:8], message)
+    elif msg_type == "stop":
+        await sm.stop(session_id)
+
+
+async def _handle_channel_binary(channel, payload: bytes) -> None:
+    """处理频道级 Binary 消息（Terminal I/O）。"""
+    from mutbot.session import TerminalSession
+    session_id = channel.session_id
+    if not session_id:
+        return
+
+    tm = _get_terminal_manager()
+    if tm is None:
+        return
+
+    _, sm = _get_managers()
+    session = sm.get(session_id) if sm else None
+    if not isinstance(session, TerminalSession):
+        return
+
+    term_id = session.config.get("terminal_id", "")
+    if not term_id or not tm.has(term_id):
+        return
+
+    if len(payload) < 1:
+        return
+
+    msg_type = payload[0]
+    if msg_type == 0x00:
+        # Terminal input
+        tm.write(term_id, payload[1:])
+    elif msg_type == 0x02 and len(payload) >= 5:
+        # Resize: 2B rows + 2B cols (big-endian)
+        rows = int.from_bytes(payload[1:3], "big")
+        cols = int.from_bytes(payload[3:5], "big")
+        client_id = str(channel.client.client_id)
+        tm.resize(term_id, rows, cols, client_id=client_id)
+
+
+# ---------------------------------------------------------------------------
+# Channel broadcast function (replaces old ConnectionManager.broadcast)
+# ---------------------------------------------------------------------------
+
+
+def _make_channel_broadcast_fn(cm):
+    """创建基于 ChannelManager 的 broadcast_fn（AgentBridge 使用）。
+
+    签名与旧 broadcast_fn 一致: async (session_id, data) -> None
+    """
+    async def broadcast_fn(session_id: str, data: dict) -> None:
+        channels = cm.get_channels_for_session(session_id)
+        for channel in channels:
+            channel.enqueue_json(data)
+    return broadcast_fn
+
+
+# ---------------------------------------------------------------------------
+# Channel RPC handlers (channel.open / channel.close)
+# ---------------------------------------------------------------------------
+
+_channel_rpc_registered = False
+
+
+def _ensure_channel_rpc_registered() -> None:
+    global _channel_rpc_registered
+    if _channel_rpc_registered:
+        return
+    _channel_rpc_registered = True
+
+    @workspace_rpc.method("channel.open")
+    async def handle_channel_open(params: dict, ctx: RpcContext) -> dict:
+        target = params.get("target", "")
+        session_id = params.get("session_id")
+        cm = ctx.managers.get("channel_manager")
+        sm = ctx.managers.get("session_manager")
+
+        if not target:
+            raise ValueError("missing target")
+        if target == "session" and not session_id:
+            raise ValueError("missing session_id")
+
+        # 查找发送者的 Client
+        client = _find_client_by_ws(ctx.sender_ws)
+        if client is None:
+            raise ValueError("client not found")
+
+        channel = cm.open(client, target, session_id=session_id)
+
+        # 通过 post_send 延后 attach，确保 rpc_result 先入队
+        if target == "session" and session_id and sm:
+            from mutbot.session import TerminalSession, AgentSession
+            session = sm.get(session_id)
+            if isinstance(session, TerminalSession):
+                def _post_attach():
+                    _attach_terminal_channel(channel, session, sm)
+                ctx._post_send = _post_attach
+            elif isinstance(session, AgentSession):
+                _ensure_agent_broadcast(session_id, sm, cm, channel)
+
+        return {"ch": channel.ch}
+
+    @workspace_rpc.method("channel.close")
+    async def handle_channel_close(params: dict, ctx: RpcContext) -> dict:
+        ch = params.get("ch", 0)
+        cm = ctx.managers.get("channel_manager")
+        channel = cm.close(ch)
+        if channel:
+            # Terminal → detach
+            _detach_terminal_channel(channel)
+        return {"ok": True}
+
+
+def _find_client_by_ws(ws) -> Client | None:
+    """查找拥有指定 WebSocket 的 Client。"""
+    for client in _clients.values():
+        if client.ws is ws:
+            return client
+    return None
+
+
+def _attach_terminal_channel(channel, session, sm, loop=None) -> None:
+    """打开 terminal channel 时自动 attach + scrollback replay。
+
+    全同步操作（enqueue_binary = put_nowait），可作为 post_send 回调直接调用。
+    """
+    term_id = session.config.get("terminal_id", "")
+    tm = _get_terminal_manager()
+    if not tm or not term_id:
+        return
+
+    if not tm.has(term_id):
+        # Terminal 已死 → 发送保存的 scrollback + 退出信号
+        scrollback_data = b""
+        if session.scrollback_b64:
+            import base64
+            try:
+                scrollback_data = base64.b64decode(session.scrollback_b64)
+            except Exception:
+                logger.warning("scrollback decode failed", exc_info=True)
+        if scrollback_data:
+            channel.enqueue_binary(bytes([0x01]) + b"\x1b[0m" + scrollback_data)
+        channel.enqueue_binary(bytes([0x03]))  # scrollback done
+        channel.enqueue_binary(bytes([0x04]))  # process exited
+        return
+
+    # 发送 scrollback
+    scrollback = tm.get_scrollback(term_id)
+    if scrollback:
+        channel.enqueue_binary(bytes([0x01]) + b"\x1b[0m" + scrollback)
+
+    # 检查进程是否已退出
+    ts = tm.get(term_id)
+    if ts is None or not ts.alive:
+        exit_code = ts.exit_code if ts else None
+        channel.enqueue_binary(tm._make_exit_payload(exit_code))
+        return
+
+    # scrollback replay 完成
+    channel.enqueue_binary(bytes([0x03]))
+
+    # Attach — terminal 读线程通过 channel.enqueue_binary 推送输出
+    client_id = channel.client.client_id
+
+    def on_output(payload: bytes) -> None:
+        channel.enqueue_binary(payload)
+
+    if loop is None:
+        loop = asyncio.get_running_loop()
+    tm.attach(term_id, client_id, on_output, loop)
+
+
+def _close_channels_for_session(session_id: str, reason: str) -> None:
+    """关闭指定 session 的所有 channel 并推送 channel.closed 事件。
+
+    用于 session 删除、终端删除等场景的被动关闭通知。
+    """
+    cm = _get_channel_manager()
+    if cm is None:
+        return
+    channels = cm.get_channels_for_session(session_id)
+    for channel in channels:
+        _detach_terminal_channel(channel)
+        cm.close(channel.ch)
+        channel.client.send_json({
+            "type": "event",
+            "event": "channel.closed",
+            "closed_ch": channel.ch,
+            "reason": reason,
+        })
+
+
+def _detach_terminal_channel(channel) -> None:
+    """关闭 terminal channel 时自动 detach。"""
+    if not channel.session_id:
+        return
+    _, sm = _get_managers()
+    if not sm:
+        return
+    from mutbot.session import TerminalSession
+    session = sm.get(channel.session_id)
+    if not isinstance(session, TerminalSession):
+        return
+    term_id = session.config.get("terminal_id", "")
+    tm = _get_terminal_manager()
+    if tm and term_id:
+        tm.detach(term_id, channel.client.client_id)
+
+
+def _ensure_agent_broadcast(session_id: str, sm, cm, channel) -> None:
+    """确保 agent bridge 使用 channel-based broadcast。"""
+    bridge = sm.get_bridge(session_id)
+    if bridge is not None:
+        # 已有 bridge → 更新其 broadcast_fn
+        broadcast_fn = _make_channel_broadcast_fn(cm)
+        bridge.broadcast_fn = broadcast_fn

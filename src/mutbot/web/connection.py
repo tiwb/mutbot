@@ -31,6 +31,7 @@ class ConnectionManager:
                 try:
                     await websocket.send_json(event)
                 except Exception:
+                    logger.debug("flush pending event failed", exc_info=True)
                     break
 
     def disconnect(self, session_id: str, websocket: WebSocket) -> None:
@@ -56,6 +57,7 @@ class ConnectionManager:
             try:
                 await ws.send_json(data)
             except Exception:
+                logger.debug("broadcast send failed", exc_info=True)
                 dead.append(ws)
         for ws in dead:
             conns.discard(ws)
@@ -84,6 +86,7 @@ class ConnectionManager:
                 try:
                     await ws.send_json(data)
                 except Exception:
+                    logger.debug("broadcast_all send failed", exc_info=True)
                     dead_pairs.append((key, ws))
         for key, ws in dead_pairs:
             conns = self._connections.get(key)

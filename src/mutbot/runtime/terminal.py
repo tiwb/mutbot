@@ -25,8 +25,9 @@ from collections.abc import Awaitable
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-# 输出回调类型：接收原始字节（含协议前缀），异步发送给客户端
-OutputCallback = Callable[[bytes], Awaitable[None]]
+# 输出回调类型：接收原始字节（含协议前缀）
+# 支持异步回调（旧模式：run_coroutine_threadsafe）和同步回调（新模式：直接调用）
+OutputCallback = Callable[[bytes], Awaitable[None] | None]
 
 logger = logging.getLogger(__name__)
 
@@ -284,7 +285,10 @@ class TerminalManager:
         dead: list[str] = []
         for client_id, (on_output, loop) in list(conns.items()):
             try:
-                asyncio.run_coroutine_threadsafe(on_output(payload), loop)
+                result = on_output(payload)
+                if result is not None:
+                    # 异步回调 → run_coroutine_threadsafe
+                    asyncio.run_coroutine_threadsafe(result, loop)
             except Exception:
                 dead.append(client_id)
         for client_id in dead:
@@ -307,7 +311,9 @@ class TerminalManager:
         payload = self._make_exit_payload(exit_code)
         for _client_id, (on_output, loop) in list(conns.items()):
             try:
-                asyncio.run_coroutine_threadsafe(on_output(payload), loop)
+                result = on_output(payload)
+                if result is not None:
+                    asyncio.run_coroutine_threadsafe(result, loop)
             except Exception:
                 pass
 
@@ -325,7 +331,9 @@ class TerminalManager:
         payload = self._make_exit_payload(exit_code)
         for _client_id, (on_output, _loop) in list(conns.items()):
             try:
-                await on_output(payload)
+                result = on_output(payload)
+                if result is not None:
+                    await result
             except Exception:
                 pass
 

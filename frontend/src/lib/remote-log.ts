@@ -1,19 +1,21 @@
 /**
- * Remote logging — sends frontend logs through WebSocket to the backend.
+ * Remote logging — sends frontend logs through channel to the backend.
  *
  * Usage:
- *   import { rlog, setLogSocket } from "../lib/remote-log";
- *   setLogSocket(ws);          // bind to current WebSocket
- *   rlog.debug("event", data); // logs to console AND sends to backend
+ *   import { rlog, setLogChannel } from "../lib/remote-log";
+ *   setLogChannel(rpc, ch);      // bind to channel
+ *   rlog.debug("event", data);   // logs to console AND sends to backend
  */
 
-import type { ReconnectingWebSocket } from "./websocket";
+import type { WorkspaceRpc } from "./workspace-rpc";
 
-let _ws: ReconnectingWebSocket | null = null;
+let _rpc: WorkspaceRpc | null = null;
+let _ch: number = 0;
 let _sessionId: string = "";
 
-export function setLogSocket(ws: ReconnectingWebSocket | null, sessionId?: string) {
-  _ws = ws;
+export function setLogChannel(rpc: WorkspaceRpc | null, ch?: number, sessionId?: string) {
+  _rpc = rpc;
+  if (ch !== undefined) _ch = ch;
   if (sessionId) _sessionId = sessionId;
 }
 
@@ -26,12 +28,12 @@ function send(level: string, args: unknown[]) {
   if (level === "error") console.error(tag, ...args);
   else if (level === "warn") console.warn(tag, ...args);
   else console.log(tag, ...args);
-  // Forward to backend via WebSocket
-  if (_ws) {
+  // Forward to backend via channel
+  if (_rpc && _ch > 0) {
     try {
-      _ws.send({ type: "log", level, message, ts: Date.now() });
+      _rpc.sendToChannel(_ch, { type: "log", level, message, ts: Date.now() });
     } catch {
-      // WS not ready — ignore
+      // channel not ready — ignore
     }
   }
 }

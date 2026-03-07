@@ -3,7 +3,6 @@ import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import "@xterm/xterm/css/xterm.css";
-import { getWsUrl } from "../lib/connection";
 import type { WorkspaceRpc } from "../lib/workspace-rpc";
 import ContextMenu, { type ContextMenuItem } from "../components/ContextMenu";
 
@@ -17,22 +16,12 @@ interface Props {
   onTerminalExited?: (sessionId: string) => void;
 }
 
-/** Build WS URL with terminal dimensions. */
-function buildWsUrl(termId: string, rows?: number, cols?: number): string {
-  const params = new URLSearchParams();
-  if (rows) params.set("rows", String(rows));
-  if (cols) params.set("cols", String(cols));
-  const qs = params.toString();
-  const base = getWsUrl(`/ws/terminal/${termId}`);
-  return qs ? `${base}?${qs}` : base;
-}
-
 export default function TerminalPanel({ sessionId, terminalId: initialId, workspaceId, nodeId, rpc, onTerminalCreated, onTerminalExited }: Props) {
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
-  const wsRef = useRef<WebSocket | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
   const termIdRef = useRef<string | null>(initialId ?? null);
+  const chRef = useRef<number>(0);
 
   const [expired, setExpired] = useState(false);
   const [connected, setConnected] = useState(false);
@@ -42,10 +31,9 @@ export default function TerminalPanel({ sessionId, terminalId: initialId, worksp
 
   useEffect(() => {
     const container = containerRef.current;
-    if (!container) return;
+    if (!container || !rpc) return;
 
     // Per-invocation flag — survives React StrictMode's unmount/remount
-    // cycle without being reset by the next mount (unlike destroyedRef).
     let active = true;
 
     const term = new Terminal({
@@ -89,133 +77,91 @@ export default function TerminalPanel({ sessionId, terminalId: initialId, worksp
     const rows = term.rows;
     const cols = term.cols;
 
-    let ws: WebSocket | null = null;
-    let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-    let retryCount = 0;
-    const maxRetries = 10;
     // Mute terminal input during scrollback replay to prevent
     // xterm.js from echoing responses to terminal query sequences
     // (e.g. \e[6n cursor position report) back as user input.
     let inputMuted = true;
     // Guard against duplicate 0x04 signals (reader thread + alive-check fallback)
     let processExited = false;
+    let ch = 0;
 
     function sendResize(r: number, c: number) {
-      if (ws && ws.readyState === WebSocket.OPEN) {
+      if (ch > 0 && rpc) {
         const buf = new ArrayBuffer(5);
         const view = new DataView(buf);
         view.setUint8(0, 0x02);
         view.setUint16(1, r, false);
         view.setUint16(3, c, false);
-        ws.send(buf);
+        rpc.sendBinaryToChannel(ch, buf);
       }
     }
 
-    function connectWs(termId: string) {
+    function handleBinaryData(payload: Uint8Array) {
       if (!active) return;
+      if (payload.length === 0) return;
 
-      // Mute input until scrollback replay is complete
+      if (payload[0] === 0x04) {
+        // Terminal process exited — idempotent guard
+        if (processExited) return;
+        processExited = true;
+        let exitInfo = "";
+        if (payload.length >= 5) {
+          const dv = new DataView(payload.buffer, payload.byteOffset + 1, 4);
+          const code = dv.getInt32(0, false);
+          exitInfo = ` (exit code: ${code})`;
+        }
+        term.write(`\r\n\x1b[33m[Terminal process has ended${exitInfo}]\x1b[0m\r\n`);
+        setExpired(true);
+        // Notify parent to sync session status
+        if (sessionId && onTerminalExited) {
+          onTerminalExited(sessionId);
+        }
+        return;
+      }
+
+      if (payload[0] === 0x03) {
+        // Scrollback replay complete — use requestAnimationFrame to defer
+        // unmuting until after xterm.js has fully processed pending writes.
+        requestAnimationFrame(() => {
+          inputMuted = false;
+          setConnected(true);
+          sendResize(
+            termRef.current?.rows ?? rows,
+            termRef.current?.cols ?? cols,
+          );
+        });
+        return;
+      }
+
+      if (payload[0] === 0x01) {
+        term.write(payload.slice(1));
+      }
+    }
+
+    async function openTerminalChannel(termSessionId: string) {
+      if (!active || !rpc) return;
       inputMuted = true;
 
-      const curRows = termRef.current?.rows ?? rows;
-      const curCols = termRef.current?.cols ?? cols;
-      const url = buildWsUrl(termId, curRows, curCols);
-      ws = new WebSocket(url);
-      ws.binaryType = "arraybuffer";
-      wsRef.current = ws;
-
-      ws.onopen = () => {
-        if (!active) { ws?.close(); return; }
-        retryCount = 0;
-      };
-
-      ws.onmessage = (event) => {
-        if (!active) return;
-        const data = event.data as ArrayBuffer;
-        const bytes = new Uint8Array(data);
-        if (bytes.length === 0) return;
-
-        if (bytes[0] === 0x04) {
-          // Terminal process exited — idempotent guard
-          if (processExited) return;
-          processExited = true;
-          let exitInfo = "";
-          if (bytes.length >= 5) {
-            const dv = new DataView(data, 1, 4);
-            const code = dv.getInt32(0, false);
-            exitInfo = ` (exit code: ${code})`;
-          }
-          term.write(`\r\n\x1b[33m[Terminal process has ended${exitInfo}]\x1b[0m\r\n`);
-          setExpired(true);
-          // Notify parent to sync session status
-          if (sessionId && onTerminalExited) {
-            onTerminalExited(sessionId);
-          }
+      try {
+        ch = await rpc.openChannel("session", { session_id: termSessionId });
+        if (!active) {
+          rpc.closeChannel(ch).catch(() => {});
           return;
         }
-
-        if (bytes[0] === 0x03) {
-          // Scrollback replay complete — use requestAnimationFrame to defer
-          // unmuting until after xterm.js has fully processed pending writes.
-          // This prevents DA1/cursor-position responses generated during replay
-          // from being forwarded to the PTY as spurious user input.
-          requestAnimationFrame(() => {
-            inputMuted = false;
-            setConnected(true);
-            sendResize(
-              termRef.current?.rows ?? rows,
-              termRef.current?.cols ?? cols,
-            );
-          });
-          return;
+        chRef.current = ch;
+        rpc.onBinaryChannel(ch, handleBinaryData);
+      } catch {
+        // Channel open failed
+        if (!processExited) {
+          term.write("\r\n\x1b[31m[Failed to connect to terminal]\x1b[0m\r\n");
         }
-
-        if (bytes[0] === 0x01) {
-          term.write(bytes.slice(1));
-        }
-      };
-
-      ws.onclose = (event) => {
-        if (!active) return;
-        setConnected(false);
-        if (event.code === 4004) {
-          // Terminal not found — show expired UI instead of auto-creating
-          if (!processExited) {
-            processExited = true;
-            term.write("\r\n\x1b[33m[Terminal process has ended]\x1b[0m\r\n");
-            if (sessionId && onTerminalExited) {
-              onTerminalExited(sessionId);
-            }
-          }
-          setExpired(true);
-          return;
-        }
-        // Don't reconnect if the terminal process has already exited
-        if (processExited) return;
-        // Auto-reconnect with backoff
-        if (retryCount < maxRetries) {
-          const delay = Math.min(1000 * 2 ** retryCount, 15000);
-          retryCount++;
-          reconnectTimer = setTimeout(() => {
-            if (active && termIdRef.current) {
-              connectWs(termIdRef.current);
-            }
-          }, delay);
-        } else {
-          term.write("\r\n\x1b[31m[Terminal disconnected]\x1b[0m\r\n");
-        }
-      };
-
-      ws.onerror = () => {
-        ws?.close();
-      };
+      }
     }
 
     async function init() {
-      if (!active) return;
+      if (!active || !rpc) return;
       let termId = termIdRef.current;
       if (!termId) {
-        if (!rpc) return;
         if (sessionId) {
           // Session-backed terminal: restart via session RPC to restore scrollback
           const result = await rpc.call<{ terminal_id: string }>("session.restart", { session_id: sessionId });
@@ -232,14 +178,21 @@ export default function TerminalPanel({ sessionId, terminalId: initialId, worksp
           onTerminalCreated(nodeId, { sessionId, terminalId: termId, workspaceId });
         }
       }
-      connectWs(termId!);
+      // Open channel using the session_id that owns this terminal
+      // For session-backed terminals, use the session_id prop
+      // For standalone terminals, use the termId as a workaround (the channel target is "session")
+      const channelSessionId = sessionId || termId!;
+      await openTerminalChannel(channelSessionId);
     }
 
     // Expose init for external re-creation
     initRef.current = () => {
-      // Close old WS connection (terminal process is dead)
-      ws?.close();
-      wsRef.current?.close();
+      // Close old channel
+      if (ch > 0 && rpc) {
+        rpc.closeChannel(ch).catch(() => {});
+        ch = 0;
+        chRef.current = 0;
+      }
       // For session-backed terminals, session.restart handles cleanup (saves scrollback
       // then kills old PTY).  For standalone terminals, delete the old PTY now.
       if (!sessionId) {
@@ -250,22 +203,30 @@ export default function TerminalPanel({ sessionId, terminalId: initialId, worksp
       }
       // Clear terminal screen for fresh start
       term.write("\x1b[2J\x1b[H");
-      retryCount = 0;
       processExited = false;
       termIdRef.current = null;
       init();
     };
 
-    // Terminal input → WebSocket (muted during scrollback replay)
+    // Listen for channel.closed (session deleted, connection reset, etc.)
+    const unsubClosed = rpc.onChannelClosed((closedCh, _reason) => {
+      if (closedCh === chRef.current) {
+        setConnected(false);
+        chRef.current = 0;
+        ch = 0;
+      }
+    });
+
+    // Terminal input → channel binary (muted during scrollback replay)
     const inputDisposable = term.onData((data) => {
       if (inputMuted) return;
-      if (ws && ws.readyState === WebSocket.OPEN) {
+      if (ch > 0 && rpc) {
         const encoder = new TextEncoder();
         const encoded = encoder.encode(data);
         const buf = new Uint8Array(1 + encoded.length);
         buf[0] = 0x00;
         buf.set(encoded, 1);
-        ws.send(buf.buffer);
+        rpc.sendBinaryToChannel(ch, buf);
       }
     });
 
@@ -283,14 +244,13 @@ export default function TerminalPanel({ sessionId, terminalId: initialId, worksp
     return () => {
       active = false;
       initRef.current = null;
-      if (reconnectTimer) clearTimeout(reconnectTimer);
       inputDisposable.dispose();
       resizeObserver.disconnect();
-      // Close via both local var and ref — the WS may have been
-      // created after cleanup was scheduled (async race).
-      ws?.close();
-      wsRef.current?.close();
-      wsRef.current = null;
+      unsubClosed();
+      // Close channel on cleanup
+      if (ch > 0 && rpc) {
+        rpc.closeChannel(ch).catch(() => {});
+      }
       term.dispose();
       termRef.current = null;
       // PTY lifecycle managed by backend session — no deletion on unmount
@@ -298,7 +258,7 @@ export default function TerminalPanel({ sessionId, terminalId: initialId, worksp
   // eslint-disable-next-line react-hooks/exhaustive-deps -- initialId only used
   // for ref initialization on mount; re-running the effect on prop change would
   // destroy and recreate the terminal (handleRecreate manages recreation).
-  }, [workspaceId]);
+  }, [workspaceId, rpc]);
 
   const handleRecreate = useCallback(() => {
     setExpired(false);
@@ -334,14 +294,14 @@ export default function TerminalPanel({ sessionId, terminalId: initialId, worksp
       shortcut: "Ctrl+V",
       onClick: () => {
         navigator.clipboard.readText().then((text) => {
-          const ws = wsRef.current;
-          if (ws && ws.readyState === WebSocket.OPEN && text) {
+          const ch = chRef.current;
+          if (ch > 0 && rpc && text) {
             const encoder = new TextEncoder();
             const encoded = encoder.encode(text);
             const buf = new Uint8Array(1 + encoded.length);
             buf[0] = 0x00;
             buf.set(encoded, 1);
-            ws.send(buf.buffer);
+            rpc.sendBinaryToChannel(ch, buf);
           }
         });
       },

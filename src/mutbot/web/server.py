@@ -10,6 +10,7 @@ import sys
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
@@ -31,6 +32,7 @@ workspace_manager: WorkspaceManager | None = None
 session_manager: SessionManager | None = None
 log_store: LogStore | None = None
 terminal_manager: TerminalManager | None = None
+channel_manager: Any = None
 
 
 # ---------------------------------------------------------------------------
@@ -151,14 +153,18 @@ async def _watch_config_changes(config: MutbotConfig) -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global workspace_manager, session_manager, log_store, terminal_manager
+    global workspace_manager, session_manager, log_store, terminal_manager, channel_manager
 
-    # --- Config ---
-    config = load_mutbot_config()
+    # --- Config & logging from app.state (initialized in main()) ---
+    config = app.state.config
+    log_store = app.state.log_store
 
     workspace_manager = WorkspaceManager()
     session_manager = SessionManager(config=config)
     terminal_manager = TerminalManager()
+
+    from mutbot.web.transport import ChannelManager as _ChannelManager
+    channel_manager = _ChannelManager()
 
     # --- Load persisted state ---
     workspace_manager.load_from_disk()
@@ -182,34 +188,8 @@ async def lifespan(app: FastAPI):
 
     # --- Setup 模式：推迟到 workspace.create RPC 中处理 ---
 
-    # --- Unified logging setup ---
-    session_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     log_dir = Path.home() / ".mutbot" / "logs"
-
-    log_store = LogStore()
-
-    # Capture both mutbot.* and mutagent.* loggers
-    for root_name in ("mutbot", "mutagent"):
-        root_logger = logging.getLogger(root_name)
-        root_logger.setLevel(logging.DEBUG)
-
-        # In-memory handler → LogStore (message only, timestamp in LogEntry)
-        mem_handler = LogStoreHandler(log_store)
-        mem_handler.setFormatter(logging.Formatter("%(message)s"))
-        root_logger.addHandler(mem_handler)
-
-        # File handler → ~/.mutbot/logs/server-YYYYMMDD_HHMMSS.log
-        log_dir.mkdir(parents=True, exist_ok=True)
-        file_handler = logging.FileHandler(
-            log_dir / f"server-{session_ts}.log", encoding="utf-8",
-        )
-        file_handler.setLevel(logging.DEBUG)
-        file_handler.setFormatter(SingleLineFormatter(
-            "%(asctime)s %(levelname)-8s %(name)s - %(message)s"
-        ))
-        root_logger.addHandler(file_handler)
-
-    logger.info("Logging initialized (session=%s, log_dir=%s)", session_ts, log_dir)
+    logger.info("Logging initialized (log_dir=%s)", log_dir)
 
     # Pass log_dir to SessionManager for per-session API recording
     session_manager.log_dir = log_dir
@@ -248,15 +228,13 @@ async def lifespan(app: FastAPI):
 
     # 3. WS 广播 config_changed
     def _broadcast_config_changed(event):
-        from mutbot.web.routes import workspace_connection_manager
+        from mutbot.web.routes import _broadcast_to_all_workspaces
         from mutbot.web.rpc import make_event
-        asyncio.create_task(
-            workspace_connection_manager.broadcast_all(
-                make_event("config_changed", {
-                    "reason": event.source or "changed",
-                    "key": event.key,
-                })
-            )
+        _broadcast_to_all_workspaces(
+            make_event("config_changed", {
+                "reason": event.source or "changed",
+                "key": event.key,
+            })
         )
 
     config.on_change("**", _broadcast_config_changed)
@@ -272,6 +250,25 @@ async def lifespan(app: FastAPI):
 
     # --- Config file change watcher ---
     config_watcher_task = asyncio.create_task(_watch_config_changes(config))
+
+    # --- asyncio 未捕获异常兜底 ---
+    def _asyncio_exception_handler(loop, context):
+        exception = context.get("exception")
+        message = context.get("message", "Unhandled exception in async task")
+        _logger = logging.getLogger("mutbot.asyncio")
+        if exception:
+            # CPython bug: Windows Proactor 在 _call_connection_lost 中对已重置的
+            # socket 调用 shutdown() 抛出 ConnectionResetError（WinError 10054）。
+            # 此时 protocol.connection_lost() 已执行完毕，应用层断开处理不受影响。
+            # https://github.com/python/cpython/issues/93821
+            if isinstance(exception, ConnectionResetError):
+                _logger.debug("%s: %s", message, exception)
+            else:
+                _logger.error("%s: %s", message, exception, exc_info=exception)
+        else:
+            _logger.error(message)
+
+    asyncio.get_running_loop().set_exception_handler(_asyncio_exception_handler)
 
     yield
 
@@ -325,6 +322,92 @@ try:
     app.include_router(_llm_router, prefix="/llm")
 except ImportError:
     pass
+
+
+# ---------------------------------------------------------------------------
+# CLI entry point
+# ---------------------------------------------------------------------------
+
+
+def main():
+    """MutBot server entry point: config → logging → app.state → uvicorn."""
+    import argparse
+
+    import uvicorn
+
+    parser = argparse.ArgumentParser(description="MutBot Web UI")
+    parser.add_argument(
+        "-V", "--version", action="version",
+        version=f"mutbot {mutbot.__version__}",
+    )
+    parser.add_argument("--host", default="127.0.0.1", help="Bind host (default: 127.0.0.1)")
+    parser.add_argument("--port", type=int, default=8741, help="Bind port (default: 8741)")
+    parser.add_argument("--debug", action="store_true", help="Enable debug logging to console")
+    args = parser.parse_args()
+
+    # 1. Config（进程最早阶段）
+    config = load_mutbot_config()
+
+    # 2. 日志初始化（紧随 config，保证不丢日志）
+    session_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_dir = Path.home() / ".mutbot" / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.DEBUG)
+
+    # 控制台 StreamHandler（--debug 覆盖 config）
+    if args.debug:
+        console_level = logging.DEBUG
+    else:
+        level_name = config.get("logging.console_level", default="WARNING")
+        console_level = getattr(logging, level_name.upper(), logging.WARNING)
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(console_level)
+    console_handler.setFormatter(logging.Formatter(
+        "%(levelname)-8s %(name)s: %(message)s",
+    ))
+    root_logger.addHandler(console_handler)
+
+    # FileHandler → ~/.mutbot/logs/server-YYYYMMDD_HHMMSS.log（全量 DEBUG）
+    file_handler = logging.FileHandler(
+        log_dir / f"server-{session_ts}.log", encoding="utf-8",
+    )
+    file_handler.setLevel(logging.DEBUG)
+    file_handler.setFormatter(SingleLineFormatter(
+        "%(asctime)s %(levelname)-8s %(name)s - %(message)s",
+    ))
+    root_logger.addHandler(file_handler)
+
+    # LogStoreHandler（全量 DEBUG，lifespan 中取出使用）
+    _log_store = LogStore()
+    mem_handler = LogStoreHandler(_log_store)
+    mem_handler.setFormatter(logging.Formatter("%(message)s"))
+    root_logger.addHandler(mem_handler)
+
+    # 3. app.state 赋值
+    app.state.config = config
+    app.state.log_store = _log_store
+
+    # 4. uvicorn（log_config=None 禁用 uvicorn 自带日志配置）
+    uvi_config = uvicorn.Config(
+        app, host=args.host, port=args.port, log_config=None,
+    )
+    server = uvicorn.Server(uvi_config)
+
+    # banner
+    _original_startup = server.startup
+
+    async def _startup_with_banner(sockets=None):
+        await _original_startup(sockets=sockets)
+        print(f"\n  Open https://mutbot.ai to get started\n")
+
+    server.startup = _startup_with_banner
+
+    try:
+        server.run()
+    except KeyboardInterrupt:
+        pass
 
 
 # ---------------------------------------------------------------------------

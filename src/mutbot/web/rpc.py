@@ -38,9 +38,11 @@ class RpcContext:
     managers: dict[str, Any] = field(default_factory=dict)
     # 发送者 WebSocket，用于 broadcast 时排除自身
     sender_ws: WebSocket | None = None
+    # dispatch 发送 rpc_result 后执行的回调（handler 可设置）
+    _post_send: Callable[[], Any] | None = None
 
     async def broadcast_event(self, event: str, data: dict | None = None) -> None:
-        """广播事件到当前 workspace 所有客户端（自动排除发送者）"""
+        """广播事件到当前 workspace 所有客户端（含发送者）"""
         await self.broadcast(make_event(event, data))
 
 

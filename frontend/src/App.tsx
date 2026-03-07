@@ -250,15 +250,18 @@ export default function App() {
     const wsRpc = new WorkspaceRpc(workspace.id, {
       onOpen: () => {
         setWsConnected(true);
+        // 连接就绪后再暴露给面板，避免面板在 WS 连接前发 RPC 被 resetState 拒绝
+        setRpc(wsRpc);
         // 连接建立后通过 RPC 获取 session 列表
         wsRpc.call<Session[]>("session.list", { workspace_id: workspace.id }).then(setSessions).catch(() => {});
       },
       onClose: () => {
         setWsConnected(false);
+        // 清除 rpc 引用，断线重连时触发面板 useEffect 重新 openChannel
+        setRpc(null);
       },
     });
     rpcRef.current = wsRpc;
-    setRpc(wsRpc);
 
     // 事件监听：session_created / session_updated / session_deleted
     const unsubs = [

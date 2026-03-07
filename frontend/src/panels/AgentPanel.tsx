@@ -1,8 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ReconnectingWebSocket } from "../lib/websocket";
-import { getWsUrl } from "../lib/connection";
 import type { WorkspaceRpc } from "../lib/workspace-rpc";
-import { rlog, setLogSocket } from "../lib/remote-log";
+import { rlog, setLogChannel } from "../lib/remote-log";
 import MessageList, { type ChatMessage, type AgentDisplay } from "../components/MessageList";
 import ChatInput from "../components/ChatInput";
 import AgentStatusBar from "../components/AgentStatusBar";
@@ -49,7 +47,7 @@ export default function AgentPanel({ sessionId, rpc, onSessionLink }: Props) {
     ...agentDisplayBase,
     name: currentModel || agentDisplayBase.name,
   };
-  const wsRef = useRef<ReconnectingWebSocket | null>(null);
+  const chRef = useRef<number>(0);
   const pendingTextRef = useRef(pendingTextCache.get(sessionId) ?? "");
   const messagesRef = useRef<ChatMessage[]>(messages);
   const toolCallMapRef = useRef<Map<string, string>>(new Map());
@@ -327,6 +325,8 @@ export default function AgentPanel({ sessionId, rpc, onSessionLink }: Props) {
   }
 
   useEffect(() => {
+    if (!rpc) return;
+
     // Restore from cache (or keep initialState from useState)
     const cached = messageCache.get(sessionId);
     const cachedPending = pendingTextCache.get(sessionId) ?? "";
@@ -341,81 +341,91 @@ export default function AgentPanel({ sessionId, rpc, onSessionLink }: Props) {
 
     // Track whether this session was already replayed from cache
     const hadCache = !!cached && cached.length > 0;
+    let ch = 0;
 
-    const url = getWsUrl(`/ws/session/${sessionId}`);
+    // Open channel for this session
+    rpc.openChannel("session", { session_id: sessionId }).then((channelId) => {
+      ch = channelId;
+      chRef.current = ch;
 
-    const ws = new ReconnectingWebSocket(
-      url,
-      (data) => handleEvent(data),
-      {
-        onOpen: () => {
-          if (DEBUG) rlog.debug("WS open");
-          setConnected(true);
+      // Register channel message handler
+      rpc!.onChannel(ch, handleEvent);
 
-          // If no cached messages, load history from server
-          if (!hadCache && !replayedRef.current.has(sessionId)) {
-            replayedRef.current.add(sessionId);
-            if (rpc) {
-              rpc.call<{
-                session_id: string;
-                messages: {
-                  role: string;
-                  blocks: { type: string; text?: string; id?: string; name?: string;
-                    input?: Record<string, unknown>; status?: string; result?: string;
-                    is_error?: boolean; duration?: number; turn_id?: string }[];
-                  id?: string; timestamp?: number; duration?: number;
-                  model?: string; sender?: string;
-                  input_tokens?: number; output_tokens?: number;
-                }[];
-                total_tokens: number;
-                context_used: number;
-                context_window: number;
-                agent_display?: { name: string; avatar?: string };
-              }>("session.messages", { session_id: sessionId }).then((result) => {
-                if (result.agent_display) {
-                  setAgentDisplayBase(result.agent_display);
-                }
-                if (result.messages && result.messages.length > 0) {
-                  if (DEBUG) rlog.debug("Restoring", result.messages.length, "messages from history");
-                  const restored = restoreChatMessages(result.messages);
-                  setMessages(restored);
-                }
-                if (result.total_tokens || result.context_used) {
-                  const cw = result.context_window || null;
-                  const cu = result.context_used || 0;
-                  const cp = cw && cu ? Math.round(cu / cw * 1000) / 10 : null;
-                  setTokenUsage({
-                    contextUsed: cu,
-                    contextWindow: cw,
-                    contextPercent: cp,
-                    sessionTotalTokens: result.total_tokens || 0,
-                    model: "",
-                  });
-                }
-              }).catch((err) => {
-                if (DEBUG) rlog.error("Failed to fetch session messages:", String(err));
-              });
-            }
+      // Setup remote logging through channel
+      setLogChannel(rpc!, ch, sessionId);
+
+      setConnected(true);
+      if (DEBUG) rlog.debug("Channel open:", ch);
+
+      // If no cached messages, load history from server
+      if (!hadCache && !replayedRef.current.has(sessionId)) {
+        replayedRef.current.add(sessionId);
+        rpc!.call<{
+          session_id: string;
+          messages: {
+            role: string;
+            blocks: { type: string; text?: string; id?: string; name?: string;
+              input?: Record<string, unknown>; status?: string; result?: string;
+              is_error?: boolean; duration?: number; turn_id?: string }[];
+            id?: string; timestamp?: number; duration?: number;
+            model?: string; sender?: string;
+            input_tokens?: number; output_tokens?: number;
+          }[];
+          total_tokens: number;
+          context_used: number;
+          context_window: number;
+          agent_display?: { name: string; avatar?: string };
+        }>("session.messages", { session_id: sessionId }).then((result) => {
+          if (result.agent_display) {
+            setAgentDisplayBase(result.agent_display);
           }
-        },
-        onClose: () => {
-          if (DEBUG) rlog.debug("WS close");
-          setConnected(false);
-        },
-      },
-    );
-    wsRef.current = ws;
-    setLogSocket(ws, sessionId);
+          if (result.messages && result.messages.length > 0) {
+            if (DEBUG) rlog.debug("Restoring", result.messages.length, "messages from history");
+            const restored = restoreChatMessages(result.messages);
+            setMessages(restored);
+          }
+          if (result.total_tokens || result.context_used) {
+            const cw = result.context_window || null;
+            const cu = result.context_used || 0;
+            const cp = cw && cu ? Math.round(cu / cw * 1000) / 10 : null;
+            setTokenUsage({
+              contextUsed: cu,
+              contextWindow: cw,
+              contextPercent: cp,
+              sessionTotalTokens: result.total_tokens || 0,
+              model: "",
+            });
+          }
+        }).catch((err) => {
+          if (DEBUG) rlog.error("Failed to fetch session messages:", String(err));
+        });
+      }
+    }).catch((err) => {
+      if (DEBUG) rlog.error("Failed to open channel:", String(err));
+      setConnected(false);
+    });
+
+    // Listen for channel.closed (session deleted, connection reset, etc.)
+    const unsubClosed = rpc.onChannelClosed((closedCh, reason) => {
+      if (closedCh === chRef.current) {
+        if (DEBUG) rlog.debug("Channel closed:", closedCh, reason);
+        setConnected(false);
+        chRef.current = 0;
+      }
+    });
 
     return () => {
       if (DEBUG) rlog.debug("cleanup session", sessionId, "saving", messagesRef.current.length, "msgs");
       // Save current session state to cache before switching
       messageCache.set(sessionId, messagesRef.current);
       pendingTextCache.set(sessionId, pendingTextRef.current);
-      setLogSocket(null);
-      ws.close();
+      setLogChannel(null);
+      unsubClosed();
+      if (ch > 0) {
+        rpc!.closeChannel(ch).catch(() => {});
+      }
     };
-  }, [sessionId]);
+  }, [sessionId, rpc]);
 
   // 加载初始 model 并订阅 session_updated 事件
   useEffect(() => {
@@ -436,25 +446,34 @@ export default function AgentPanel({ sessionId, rpc, onSessionLink }: Props) {
     if (!text.trim()) return;
     if (DEBUG) rlog.debug("send:", text.slice(0, 80));
     pendingTextRef.current = "";
-    wsRef.current?.send({ type: "message", text });
+    const ch = chRef.current;
+    if (rpc && ch > 0) {
+      rpc.sendToChannel(ch, { type: "message", text });
+    }
     // 乐观更新：立即切 thinking 状态
     setAgentStatus("thinking");
     setScrollSignal((s) => s + 1);
-  }, []);
+  }, [rpc]);
 
   const handleCancel = useCallback(() => {
-    wsRef.current?.send({ type: "cancel" });
-  }, []);
+    const ch = chRef.current;
+    if (rpc && ch > 0) {
+      rpc.sendToChannel(ch, { type: "cancel" });
+    }
+  }, [rpc]);
 
   const handleUIEvent = useCallback((toolCallId: string, event: UIEventPayload) => {
-    wsRef.current?.send({
-      type: "ui_event",
-      context_id: toolCallId,
-      event_type: event.type,
-      data: event.data,
-      source: event.source,
-    });
-  }, []);
+    const ch = chRef.current;
+    if (rpc && ch > 0) {
+      rpc.sendToChannel(ch, {
+        type: "ui_event",
+        context_id: toolCallId,
+        event_type: event.type,
+        data: event.data,
+        source: event.source,
+      });
+    }
+  }, [rpc]);
 
   return (
     <div className="agent-panel">
