@@ -75,28 +75,35 @@ WebSocket 断开后自动重连（指数退避），重连期间保持 Connectin
 
 ## WebSocket 通信协议
 
-客户端与服务端通过二进制 WebSocket 消息通信，消息首字节标识类型。
+终端 channel 同时使用 Binary 帧和 JSON 帧，按消息频率分工：Binary 帧传输高频 I/O 数据，JSON 帧传输低频控制信号。
 
-**服务端 → 客户端**：
+### Binary 帧 — I/O 数据
 
-| 字节 | 含义 |
+Binary 帧不含 msg_type 前缀，payload 即为原始数据。方向由 WebSocket 帧的发送方隐式区分：
+
+| 方向 | 含义 |
 |------|------|
-| `0x01` | PTY 输出数据（后续字节为终端内容） |
-| `0x03` | Scrollback 回放完成，客户端可开始接受输入 |
-| `0x04` | PTY 进程已结束（后续 4 字节为 exit code） |
+| Client→Server | 用户键盘输入（UTF-8 编码） |
+| Server→Client | PTY 输出数据（终端内容） |
 
-**客户端 → 服务端**：
+### JSON 帧 — 控制信号
 
-| 字节 | 含义 |
-|------|------|
-| `0x00` | 用户键盘输入（后续字节为 UTF-8 内容） |
-| `0x02` | 终端尺寸变更（后续 2+2 字节为 rows/cols，大端序） |
+**Client→Server**：
 
-WebSocket 关闭码 `4004` 表示 terminal_id 不存在（已被清理）。
+| type | 含义 | 字段 |
+|------|------|------|
+| `resize` | 终端尺寸变更 | `rows`, `cols` |
+
+**Server→Client**：
+
+| type | 含义 | 字段 |
+|------|------|------|
+| `scrollback_done` | Scrollback 回放完成，客户端可开始接受输入 | 无 |
+| `process_exit` | PTY 进程已结束 | `exit_code`（可选） |
 
 ### Input Muting
 
-为防止 xterm.js 在 scrollback 回放期间将终端查询响应序列作为用户输入发送，客户端在收到 `0x03` 之前静音所有输入。
+为防止 xterm.js 在 scrollback 回放期间将终端查询响应序列作为用户输入发送，客户端在收到 `scrollback_done` JSON 消息之前静音所有输入。
 
 ## 多客户端支持
 

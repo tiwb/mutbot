@@ -1288,12 +1288,24 @@ async def _handle_channel_json(
     if not session_id:
         return
 
-    from mutbot.session import AgentSession
+    from mutbot.session import AgentSession, TerminalSession
     session = sm.get(session_id)
     if session is None:
         return
 
     msg_type = raw.get("type", "")
+
+    # Terminal channel JSON messages (resize)
+    if isinstance(session, TerminalSession):
+        if msg_type == "resize":
+            tm = _get_terminal_manager()
+            term_id = session.config.get("terminal_id", "")
+            if tm and term_id and tm.has(term_id):
+                rows = raw.get("rows", 24)
+                cols = raw.get("cols", 80)
+                client_id = str(channel.client.client_id)
+                tm.resize(term_id, rows, cols, client_id=client_id)
+        return
 
     if not isinstance(session, AgentSession):
         return
@@ -1350,7 +1362,7 @@ async def _handle_channel_json(
 
 
 async def _handle_channel_binary(channel, payload: bytes) -> None:
-    """处理频道级 Binary 消息（Terminal I/O）。"""
+    """处理频道级 Binary 消息（Terminal 输入数据）。"""
     from mutbot.session import TerminalSession
     session_id = channel.session_id
     if not session_id:
@@ -1372,16 +1384,8 @@ async def _handle_channel_binary(channel, payload: bytes) -> None:
     if len(payload) < 1:
         return
 
-    msg_type = payload[0]
-    if msg_type == 0x00:
-        # Terminal input
-        tm.write(term_id, payload[1:])
-    elif msg_type == 0x02 and len(payload) >= 5:
-        # Resize: 2B rows + 2B cols (big-endian)
-        rows = int.from_bytes(payload[1:3], "big")
-        cols = int.from_bytes(payload[3:5], "big")
-        client_id = str(channel.client.client_id)
-        tm.resize(term_id, rows, cols, client_id=client_id)
+    # Binary payload = raw terminal input (no msg_type prefix)
+    tm.write(term_id, payload)
 
 
 # ---------------------------------------------------------------------------
@@ -1485,35 +1489,44 @@ def _attach_terminal_channel(channel, session, sm, loop=None) -> None:
             except Exception:
                 logger.warning("scrollback decode failed", exc_info=True)
         if scrollback_data:
-            channel.enqueue_binary(bytes([0x01]) + b"\x1b[0m" + scrollback_data)
-        channel.enqueue_binary(bytes([0x03]))  # scrollback done
-        channel.enqueue_binary(bytes([0x04]))  # process exited
+            channel.enqueue_binary(b"\x1b[0m" + scrollback_data)
+        channel.enqueue_json({"type": "scrollback_done"})
+        channel.enqueue_json({"type": "process_exit"})
         return
 
     # 发送 scrollback
     scrollback = tm.get_scrollback(term_id)
     if scrollback:
-        channel.enqueue_binary(bytes([0x01]) + b"\x1b[0m" + scrollback)
+        channel.enqueue_binary(b"\x1b[0m" + scrollback)
 
     # 检查进程是否已退出
     ts = tm.get(term_id)
     if ts is None or not ts.alive:
         exit_code = ts.exit_code if ts else None
-        channel.enqueue_binary(tm._make_exit_payload(exit_code))
+        event: dict = {"type": "process_exit"}
+        if exit_code is not None:
+            event["exit_code"] = exit_code
+        channel.enqueue_json(event)
         return
 
     # scrollback replay 完成
-    channel.enqueue_binary(bytes([0x03]))
+    channel.enqueue_json({"type": "scrollback_done"})
 
     # Attach — terminal 读线程通过 channel.enqueue_binary 推送输出
     client_id = channel.client.client_id
 
-    def on_output(payload: bytes) -> None:
-        channel.enqueue_binary(payload)
+    def on_output(data: bytes) -> None:
+        channel.enqueue_binary(data)
+
+    def on_exit(exit_code: int | None) -> None:
+        event: dict = {"type": "process_exit"}
+        if exit_code is not None:
+            event["exit_code"] = exit_code
+        channel.enqueue_json(event)
 
     if loop is None:
         loop = asyncio.get_running_loop()
-    tm.attach(term_id, client_id, on_output, loop)
+    tm.attach(term_id, client_id, on_output, on_exit, loop)
 
 
 def _close_channels_for_session(session_id: str, reason: str) -> None:

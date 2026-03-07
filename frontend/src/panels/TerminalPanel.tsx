@@ -87,39 +87,35 @@ export default function TerminalPanel({ sessionId, terminalId: initialId, worksp
 
     function sendResize(r: number, c: number) {
       if (ch > 0 && rpc) {
-        const buf = new ArrayBuffer(5);
-        const view = new DataView(buf);
-        view.setUint8(0, 0x02);
-        view.setUint16(1, r, false);
-        view.setUint16(3, c, false);
-        rpc.sendBinaryToChannel(ch, buf);
+        rpc.sendToChannel(ch, { type: "resize", rows: r, cols: c });
       }
     }
 
     function handleBinaryData(payload: Uint8Array) {
       if (!active) return;
       if (payload.length === 0) return;
+      // Binary payload = raw PTY output (no msg_type prefix)
+      term.write(payload);
+    }
 
-      if (payload[0] === 0x04) {
-        // Terminal process exited — idempotent guard
+    function handleJsonMessage(msg: Record<string, unknown>) {
+      if (!active) return;
+      const msgType = msg.type as string;
+
+      if (msgType === "process_exit") {
         if (processExited) return;
         processExited = true;
-        let exitInfo = "";
-        if (payload.length >= 5) {
-          const dv = new DataView(payload.buffer, payload.byteOffset + 1, 4);
-          const code = dv.getInt32(0, false);
-          exitInfo = ` (exit code: ${code})`;
-        }
+        const exitCode = msg.exit_code as number | undefined;
+        const exitInfo = exitCode !== undefined ? ` (exit code: ${exitCode})` : "";
         term.write(`\r\n\x1b[33m[Terminal process has ended${exitInfo}]\x1b[0m\r\n`);
         setExpired(true);
-        // Notify parent to sync session status
         if (sessionId && onTerminalExited) {
           onTerminalExited(sessionId);
         }
         return;
       }
 
-      if (payload[0] === 0x03) {
+      if (msgType === "scrollback_done") {
         // Scrollback replay complete — use requestAnimationFrame to defer
         // unmuting until after xterm.js has fully processed pending writes.
         requestAnimationFrame(() => {
@@ -131,10 +127,6 @@ export default function TerminalPanel({ sessionId, terminalId: initialId, worksp
           );
         });
         return;
-      }
-
-      if (payload[0] === 0x01) {
-        term.write(payload.slice(1));
       }
     }
 
@@ -150,6 +142,7 @@ export default function TerminalPanel({ sessionId, terminalId: initialId, worksp
         }
         chRef.current = ch;
         rpc.onBinaryChannel(ch, handleBinaryData);
+        rpc.onChannel(ch, handleJsonMessage);
       } catch {
         // Channel open failed
         if (!processExited) {
@@ -223,10 +216,7 @@ export default function TerminalPanel({ sessionId, terminalId: initialId, worksp
       if (ch > 0 && rpc) {
         const encoder = new TextEncoder();
         const encoded = encoder.encode(data);
-        const buf = new Uint8Array(1 + encoded.length);
-        buf[0] = 0x00;
-        buf.set(encoded, 1);
-        rpc.sendBinaryToChannel(ch, buf);
+        rpc.sendBinaryToChannel(ch, encoded);
       }
     });
 
@@ -298,10 +288,7 @@ export default function TerminalPanel({ sessionId, terminalId: initialId, worksp
           if (ch > 0 && rpc && text) {
             const encoder = new TextEncoder();
             const encoded = encoder.encode(text);
-            const buf = new Uint8Array(1 + encoded.length);
-            buf[0] = 0x00;
-            buf.set(encoded, 1);
-            rpc.sendBinaryToChannel(ch, buf);
+            rpc.sendBinaryToChannel(ch, encoded);
           }
         });
       },

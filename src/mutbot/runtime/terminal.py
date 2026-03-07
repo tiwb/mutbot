@@ -25,9 +25,12 @@ from collections.abc import Awaitable
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-# 输出回调类型：接收原始字节（含协议前缀）
+# 输出回调类型：接收原始 PTY 输出字节
 # 支持异步回调（旧模式：run_coroutine_threadsafe）和同步回调（新模式：直接调用）
 OutputCallback = Callable[[bytes], Awaitable[None] | None]
+
+# 退出回调类型：接收 exit_code（可为 None）
+ExitCallback = Callable[[int | None], None]
 
 logger = logging.getLogger(__name__)
 
@@ -71,8 +74,8 @@ class TerminalManager:
 
     def __init__(self) -> None:
         self._sessions: dict[str, TerminalSession] = {}
-        # Multi-client: term_id → {client_id: (on_output, event_loop)}
-        self._connections: dict[str, dict[str, tuple[OutputCallback, asyncio.AbstractEventLoop]]] = {}
+        # Multi-client: term_id → {client_id: (on_output, on_exit, event_loop)}
+        self._connections: dict[str, dict[str, tuple[OutputCallback, ExitCallback, asyncio.AbstractEventLoop]]] = {}
 
     # ------------------------------------------------------------------
     # Session lifecycle
@@ -159,11 +162,12 @@ class TerminalManager:
         term_id: str,
         client_id: str,
         on_output: OutputCallback,
+        on_exit: ExitCallback,
         loop: asyncio.AbstractEventLoop,
     ) -> None:
-        """Register an output callback as an I/O channel for this terminal."""
+        """Register output/exit callbacks as an I/O channel for this terminal."""
         conns = self._connections.setdefault(term_id, {})
-        conns[client_id] = (on_output, loop)
+        conns[client_id] = (on_output, on_exit, loop)
         logger.info("Terminal %s: attached client %s (total=%d)", term_id, client_id, len(conns))
 
     def detach(self, term_id: str, client_id: str) -> None:
@@ -281,9 +285,9 @@ class TerminalManager:
         conns = self._connections.get(session.id)
         if not conns:
             return
-        payload = b"\x01" + data
+        payload = data
         dead: list[str] = []
-        for client_id, (on_output, loop) in list(conns.items()):
+        for client_id, (on_output, _on_exit, loop) in list(conns.items()):
             try:
                 result = on_output(payload)
                 if result is not None:
@@ -294,46 +298,33 @@ class TerminalManager:
         for client_id in dead:
             conns.pop(client_id, None)
 
-    def _make_exit_payload(self, exit_code: int | None = None) -> bytes:
-        """Build a 0x04 exit signal payload, optionally including exit code."""
-        if exit_code is not None:
-            return b"\x04" + struct.pack(">i", exit_code)
-        return b"\x04"
-
     def _notify_process_exit(self, term_id: str, exit_code: int | None = None) -> None:
-        """Send process exit signal (0x04) to all attached clients.
+        """Send process exit signal to all attached clients via on_exit callback.
 
-        Called from the reader thread — uses run_coroutine_threadsafe.
+        Called from the reader thread — on_exit is synchronous (put_nowait).
         """
         conns = self._connections.get(term_id)
         if not conns:
             return
-        payload = self._make_exit_payload(exit_code)
-        for _client_id, (on_output, loop) in list(conns.items()):
+        for _client_id, (_on_output, on_exit, _loop) in list(conns.items()):
             try:
-                result = on_output(payload)
-                if result is not None:
-                    asyncio.run_coroutine_threadsafe(result, loop)
+                on_exit(exit_code)
             except Exception:
                 pass
 
     async def async_notify_exit(self, term_id: str) -> None:
-        """Send process exit signal (0x04) to all attached clients (async).
+        """Send process exit signal to all attached clients via on_exit callback (async).
 
         Must be called from the event loop thread, before kill().
-        Uses await for reliable delivery.
         """
         session = self._sessions.get(term_id)
         exit_code = session.exit_code if session else None
         conns = self._connections.get(term_id)
         if not conns:
             return
-        payload = self._make_exit_payload(exit_code)
-        for _client_id, (on_output, _loop) in list(conns.items()):
+        for _client_id, (_on_output, on_exit, _loop) in list(conns.items()):
             try:
-                result = on_output(payload)
-                if result is not None:
-                    await result
+                on_exit(exit_code)
             except Exception:
                 pass
 
