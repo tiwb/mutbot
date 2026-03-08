@@ -60,6 +60,8 @@ class TerminalSession:
     _scrollback_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
     # Per-client reported sizes for multi-client min-size tracking
     _client_sizes: dict[str, tuple[int, int]] = field(default_factory=dict, repr=False)
+    # Callback invoked from reader thread when PTY process dies
+    _on_dead: Callable[[str, bytes], None] | None = field(default=None, repr=False)
 
 
 class TerminalManager:
@@ -81,13 +83,15 @@ class TerminalManager:
     # Session lifecycle
     # ------------------------------------------------------------------
 
-    def create(self, workspace_id: str, rows: int, cols: int, cwd: str | None = None) -> TerminalSession:
+    def create(self, workspace_id: str, rows: int, cols: int, cwd: str | None = None,
+               on_dead: Callable[[str, bytes], None] | None = None) -> TerminalSession:
         term_id = uuid.uuid4().hex[:12]
         session = TerminalSession(
             id=term_id,
             workspace_id=workspace_id,
             rows=rows,
             cols=cols,
+            _on_dead=on_dead,
         )
 
         work_dir = cwd or os.getcwd()
@@ -170,14 +174,19 @@ class TerminalManager:
         conns[client_id] = (on_output, on_exit, loop)
         logger.info("Terminal %s: attached client %s (total=%d)", term_id, client_id, len(conns))
 
-    def detach(self, term_id: str, client_id: str) -> None:
-        """Remove an output callback without killing the PTY."""
+    def detach(self, term_id: str, client_id: str) -> tuple[int, int] | None:
+        """Remove an output callback without killing the PTY.
+
+        Returns the updated (rows, cols) after recalculating min size,
+        or None if no remaining clients or session is dead.
+        """
+        result: tuple[int, int] | None = None
         session = self._sessions.get(term_id)
         if session:
             session._client_sizes.pop(client_id, None)
             # If other clients remain, reapply the new minimum size
             if session._client_sizes:
-                self._apply_min_size(session)
+                result = self._apply_min_size(session)
         conns = self._connections.get(term_id)
         if conns:
             conns.pop(client_id, None)
@@ -185,6 +194,7 @@ class TerminalManager:
                 del self._connections[term_id]
         remaining = len(self._connections.get(term_id, {}))
         logger.info("Terminal %s: detached client %s (remaining=%d)", term_id, client_id, remaining)
+        return result
 
     def get_scrollback(self, term_id: str) -> bytes:
         """Return the scrollback buffer contents for replay on reconnect."""
@@ -259,6 +269,11 @@ class TerminalManager:
                 except Exception:
                     pass
                 session.exit_code = exit_code
+                # Copy scrollback to session owner before notifying exit
+                if session._on_dead:
+                    with session._scrollback_lock:
+                        scrollback_copy = bytes(session._scrollback)
+                    session._on_dead(session.id, scrollback_copy)
                 logger.info("Terminal reader stopped: %s (exit_code=%s)", term_id, exit_code)
                 self._notify_process_exit(term_id, exit_code)
 
@@ -368,31 +383,34 @@ class TerminalManager:
                 except OSError:
                     logger.exception("Terminal write error: %s", term_id)
 
-    def resize(self, term_id: str, rows: int, cols: int, client_id: str | None = None) -> None:
+    def resize(self, term_id: str, rows: int, cols: int, client_id: str | None = None) -> tuple[int, int] | None:
+        """Resize the PTY, returning the actual (rows, cols) applied, or None."""
         session = self._sessions.get(term_id)
         if session is None or not session.alive:
-            return
+            return None
 
         if client_id is not None:
             session._client_sizes[client_id] = (rows, cols)
 
         # Use the minimum size across all connected clients (tmux behaviour)
         if session._client_sizes:
-            self._apply_min_size(session)
+            return self._apply_min_size(session)
         else:
             session.rows = rows
             session.cols = cols
             self._set_pty_size(session, rows, cols)
+            return (rows, cols)
 
-    def _apply_min_size(self, session: TerminalSession) -> None:
+    def _apply_min_size(self, session: TerminalSession) -> tuple[int, int] | None:
         """Recompute effective size as the minimum across all clients and apply."""
         if not session._client_sizes or not session.alive:
-            return
+            return None
         eff_rows = min(r for r, _ in session._client_sizes.values())
         eff_cols = min(c for _, c in session._client_sizes.values())
         session.rows = eff_rows
         session.cols = eff_cols
         self._set_pty_size(session, eff_rows, eff_cols)
+        return (eff_rows, eff_cols)
 
     def _set_pty_size(self, session: TerminalSession, rows: int, cols: int) -> None:
         """Apply rows/cols to the underlying PTY device."""

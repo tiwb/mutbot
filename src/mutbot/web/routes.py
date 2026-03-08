@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
 import os
+import re
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -644,6 +646,9 @@ async def handle_session_restart(params: dict, ctx: RpcContext) -> dict:
     - 清除 scrollback_b64（历史已通过 WS handler 展示给用户）
     - 调用 on_create() 重建全新 PTY
     - 返回新的 terminal_id 供前端 WebSocket 连接
+
+    幂等保护：如果 session 已有正在运行的 PTY，直接返回现有 terminal_id，
+    不重复创建。用于多客户端同时重连的场景。
     """
     sm = ctx.managers.get("session_manager")
     tm = ctx.managers.get("terminal_manager")
@@ -656,8 +661,16 @@ async def handle_session_restart(params: dict, ctx: RpcContext) -> dict:
     from mutbot.session import TerminalSession as _TS
     if not isinstance(session, _TS):
         return {"error": "session is not a TerminalSession"}
-    # Kill old terminal if still alive
-    _close_channels_for_session(session_id, "session_restarted")
+
+    # Idempotent: if PTY is already alive, return existing terminal_id
+    existing_term_id = session.config.get("terminal_id")
+    if existing_term_id and tm and tm.has(existing_term_id):
+        ts = tm.get(existing_term_id)
+        if ts and ts.alive:
+            return {"session_id": session_id, "terminal_id": existing_term_id}
+
+    # Kill old terminal if still alive (sends process_exit to all channels)
+    # Do NOT close channels — they're bound to the session, not the PTY
     if tm:
         old_term_id = session.config.get("terminal_id")
         if old_term_id and tm.has(old_term_id):
@@ -668,6 +681,15 @@ async def handle_session_restart(params: dict, ctx: RpcContext) -> dict:
     session.on_create(sm)
     sm._persist(session)
     new_term_id = session.config.get("terminal_id", "")
+
+    # Re-attach all remaining channels to the new PTY
+    cm = _get_channel_manager()
+    if cm:
+        loop = asyncio.get_running_loop()
+        channels = cm.get_channels_for_session(session_id)
+        for channel in channels:
+            _attach_terminal_channel(channel, session, sm, loop)
+
     data = _session_dict(session)
     await ctx.broadcast_event("session_updated", data)
     return {"session_id": session_id, "terminal_id": new_term_id}
@@ -1304,7 +1326,9 @@ async def _handle_channel_json(
                 rows = raw.get("rows", 24)
                 cols = raw.get("cols", 80)
                 client_id = str(channel.client.client_id)
-                tm.resize(term_id, rows, cols, client_id=client_id)
+                actual = tm.resize(term_id, rows, cols, client_id=client_id)
+                if actual is not None:
+                    _broadcast_pty_resize(session_id, actual[0], actual[1])
         return
 
     if not isinstance(session, AgentSession):
@@ -1469,8 +1493,20 @@ def _find_client_by_ws(ws) -> Client | None:
     return None
 
 
+_CSI_QUERY_RE = re.compile(rb"\x1b\[(?:[>=]?0?c|[56]n)")
+_CLEAR_SCREEN = b"\x1b[0m\x1b[2J\x1b[H"
+
+
+def _strip_replay_queries(data: bytes) -> bytes:
+    """Strip CSI query sequences from scrollback data before replay."""
+    return _CSI_QUERY_RE.sub(b"", data)
+
+
 def _attach_terminal_channel(channel, session, sm, loop=None) -> None:
     """打开 terminal channel 时自动 attach + scrollback replay。
+
+    Scrollback 回放完成后发送一条 ``ready`` 消息告知客户端终端当前状态，
+    客户端据此决定进入 Connected 还是 Expired 状态。
 
     全同步操作（enqueue_binary = put_nowait），可作为 post_send 回调直接调用。
     """
@@ -1479,54 +1515,47 @@ def _attach_terminal_channel(channel, session, sm, loop=None) -> None:
     if not tm or not term_id:
         return
 
-    if not tm.has(term_id):
-        # Terminal 已死 → 发送保存的 scrollback + 退出信号
-        scrollback_data = b""
-        if session.scrollback_b64:
-            import base64
-            try:
-                scrollback_data = base64.b64decode(session.scrollback_b64)
-            except Exception:
-                logger.warning("scrollback decode failed", exc_info=True)
-        if scrollback_data:
-            channel.enqueue_binary(b"\x1b[0m" + scrollback_data)
-        channel.enqueue_json({"type": "scrollback_done"})
-        channel.enqueue_json({"type": "process_exit"})
-        return
-
-    # 发送 scrollback
-    scrollback = tm.get_scrollback(term_id)
-    if scrollback:
-        channel.enqueue_binary(b"\x1b[0m" + scrollback)
-
-    # 检查进程是否已退出
+    # ---- 发送 scrollback（始终先清屏，前端无需判断） ----
     ts = tm.get(term_id)
-    if ts is None or not ts.alive:
-        exit_code = ts.exit_code if ts else None
-        event: dict = {"type": "process_exit"}
-        if exit_code is not None:
-            event["exit_code"] = exit_code
+    if ts:
+        scrollback = tm.get_scrollback(term_id)
+        scrollback = _strip_replay_queries(scrollback) if scrollback else b""
+        channel.enqueue_binary(_CLEAR_SCREEN + scrollback)
+    elif session.scrollback_b64:
+        try:
+            scrollback_data = base64.b64decode(session.scrollback_b64)
+            scrollback_data = _strip_replay_queries(scrollback_data) if scrollback_data else b""
+            channel.enqueue_binary(_CLEAR_SCREEN + scrollback_data)
+        except Exception:
+            logger.warning("scrollback decode failed", exc_info=True)
+            channel.enqueue_binary(_CLEAR_SCREEN)
+    else:
+        channel.enqueue_binary(_CLEAR_SCREEN)
+
+    # ---- 判断终端状态，发送 ready ----
+    alive = ts is not None and ts.alive
+    if alive:
+        # 先发 ready 再 attach，保证 ready 在所有 live output 之前到达
+        channel.enqueue_json({"type": "ready", "alive": True})
+        client_id = channel.client.client_id
+
+        def on_output(data: bytes) -> None:
+            channel.enqueue_binary(data)
+
+        def on_exit(exit_code: int | None) -> None:
+            event: dict = {"type": "process_exit"}
+            if exit_code is not None:
+                event["exit_code"] = exit_code
+            channel.enqueue_json(event)
+
+        if loop is None:
+            loop = asyncio.get_running_loop()
+        tm.attach(term_id, client_id, on_output, on_exit, loop)
+    else:
+        event: dict = {"type": "ready", "alive": False}
+        if ts and ts.exit_code is not None:
+            event["exit_code"] = ts.exit_code
         channel.enqueue_json(event)
-        return
-
-    # scrollback replay 完成
-    channel.enqueue_json({"type": "scrollback_done"})
-
-    # Attach — terminal 读线程通过 channel.enqueue_binary 推送输出
-    client_id = channel.client.client_id
-
-    def on_output(data: bytes) -> None:
-        channel.enqueue_binary(data)
-
-    def on_exit(exit_code: int | None) -> None:
-        event: dict = {"type": "process_exit"}
-        if exit_code is not None:
-            event["exit_code"] = exit_code
-        channel.enqueue_json(event)
-
-    if loop is None:
-        loop = asyncio.get_running_loop()
-    tm.attach(term_id, client_id, on_output, on_exit, loop)
 
 
 def _close_channels_for_session(session_id: str, reason: str) -> None:
@@ -1549,6 +1578,17 @@ def _close_channels_for_session(session_id: str, reason: str) -> None:
         })
 
 
+def _broadcast_pty_resize(session_id: str, rows: int, cols: int) -> None:
+    """广播实际 PTY 尺寸给该 session 的所有 channel。"""
+    cm = _get_channel_manager()
+    if cm is None:
+        return
+    channels = cm.get_channels_for_session(session_id)
+    msg = {"type": "pty_resize", "rows": rows, "cols": cols}
+    for channel in channels:
+        channel.enqueue_json(msg)
+
+
 def _detach_terminal_channel(channel) -> None:
     """关闭 terminal channel 时自动 detach。"""
     if not channel.session_id:
@@ -1563,7 +1603,10 @@ def _detach_terminal_channel(channel) -> None:
     term_id = session.config.get("terminal_id", "")
     tm = _get_terminal_manager()
     if tm and term_id:
-        tm.detach(term_id, channel.client.client_id)
+        new_size = tm.detach(term_id, channel.client.client_id)
+        # Broadcast updated PTY size to remaining clients
+        if new_size is not None:
+            _broadcast_pty_resize(channel.session_id, new_size[0], new_size[1])
 
 
 def _ensure_agent_broadcast(session_id: str, sm, cm, channel) -> None:

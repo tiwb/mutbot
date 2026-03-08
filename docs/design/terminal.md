@@ -27,8 +27,8 @@ TerminalSession 是终端的持久化表示，保存在磁盘上。PTY 实例是
 PTY 的所有输出都被服务端缓存在内存中（Scrollback Buffer）。新客户端连接时，服务端先回放完整历史，再进入实时模式。
 
 Scrollback 在以下情况持久化到磁盘（session JSON 文件）：
-- PTY 进程结束时
-- 服务器正常关闭时
+- PTY 进程结束时（读线程通过 `on_dead` 回调拷贝 scrollback 并标记 dirty，5 秒内异步写盘）
+- 服务器正常关闭时（`on_stop` 同步持久化）
 
 服务重启后，新 PTY 创建时会先注入已保存的 scrollback，使历史连续。
 
@@ -98,12 +98,13 @@ Binary 帧不含 msg_type 前缀，payload 即为原始数据。方向由 WebSoc
 
 | type | 含义 | 字段 |
 |------|------|------|
-| `scrollback_done` | Scrollback 回放完成，客户端可开始接受输入 | 无 |
-| `process_exit` | PTY 进程已结束 | `exit_code`（可选） |
+| `ready` | Scrollback 回放完成，告知终端当前状态 | `alive`（bool），`exit_code`（可选，仅 alive=false 时） |
+| `process_exit` | PTY 进程运行中退出（运行时事件） | `exit_code`（可选） |
+| `pty_resize` | PTY 实际尺寸（取所有客户端最小值后） | `rows`, `cols` |
 
 ### Input Muting
 
-为防止 xterm.js 在 scrollback 回放期间将终端查询响应序列作为用户输入发送，客户端在收到 `scrollback_done` JSON 消息之前静音所有输入。
+为防止 xterm.js 在 scrollback 回放期间将终端查询响应序列作为用户输入发送，客户端在收到 `ready` JSON 消息之前静音所有输入。客户端使用 xterm.js 的写回调（`term.write('', callback)`）确保所有 scrollback 数据解析完毕后再解除静音。
 
 ## 多客户端支持
 
@@ -112,6 +113,16 @@ Binary 帧不含 msg_type 前缀，payload 即为原始数据。方向由 WebSoc
 - 所有客户端实时收到相同的 PTY 输出
 - 终端尺寸取所有连接客户端中的最小值（与 tmux 行为一致），避免某个小窗口客户端看到内容截断
 - 某个客户端断开时，剩余客户端的最小尺寸重新计算并应用
+
+### PTY 尺寸广播
+
+每个客户端通过 FitAddon 计算并上报自己面板的期望尺寸。服务端取所有客户端的最小值设为 PTY 尺寸后，广播 `pty_resize` JSON 消息给所有客户端。客户端收到后调用 `term.resize()` 将 xterm 的逻辑尺寸覆盖为 PTY 实际尺寸，多余的面板空间显示为终端背景色。
+
+广播时机：
+- 任一客户端上报 resize 后
+- 某客户端 detach 后（剩余客户端的最小尺寸可能变化）
+
+前端使用标志位抑制 `term.resize()` 触发的 `onResize` 事件引发的回环上报。
 
 ## PTY 环境
 

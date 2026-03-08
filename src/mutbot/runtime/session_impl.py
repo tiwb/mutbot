@@ -7,6 +7,7 @@ Session Declaration 基类已迁移到 mutbot.session（公开 API），
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
 import uuid
 from dataclasses import dataclass
@@ -199,12 +200,18 @@ def _terminal_on_create(self: TerminalSession, sm: SessionManager) -> None:
     rows = self.config.get("rows", 24)
     cols = self.config.get("cols", 80)
     cwd = self.config.get("cwd", ".")
-    term = tm.create(self.workspace_id, rows, cols, cwd=cwd)
+
+    # on_dead: called from reader thread when PTY dies — copy scrollback + mark dirty
+    session_id = self.id
+    def on_dead(term_id: str, scrollback: bytes) -> None:
+        self.scrollback_b64 = base64.b64encode(scrollback).decode()
+        sm.mark_dirty(session_id)
+
+    term = tm.create(self.workspace_id, rows, cols, cwd=cwd, on_dead=on_dead)
     self.config["terminal_id"] = term.id
 
     # Restore persisted scrollback from previous session
     if self.scrollback_b64:
-        import base64
         try:
             data = base64.b64decode(self.scrollback_b64)
             tm.inject_scrollback(term.id, data)
@@ -244,7 +251,6 @@ def _terminal_on_stop(self: TerminalSession, sm: SessionManager) -> None:
             # _persist(session) after on_stop returns, so this is written to disk)
             scrollback = tm.get_scrollback(terminal_id)
             if scrollback:
-                import base64
                 self.scrollback_b64 = base64.b64encode(scrollback).decode()
             tm.kill(terminal_id)
     self.status = "stopped"
@@ -428,6 +434,8 @@ class SessionManager:
         # 跨线程广播支持（Agent 线程创建 Session 时使用）
         self._event_loop: asyncio.AbstractEventLoop | None = None
         self._broadcast_fn: Any = None  # async callable(event_data: dict)
+        # Dirty sessions pending persistence (thread-safe: set.add is GIL-atomic)
+        self._dirty: set[str] = set()
 
     # --- Runtime 访问 ---
 
@@ -474,6 +482,21 @@ class SessionManager:
             if existing and "messages" in existing:
                 data["messages"] = existing["messages"]
         storage.save_session_metadata(data)
+
+    def mark_dirty(self, session_id: str) -> None:
+        """标记 session 需要持久化（线程安全，任何线程可调用）。"""
+        self._dirty.add(session_id)
+
+    async def persist_dirty_loop(self) -> None:
+        """定时持久化 dirty sessions（event loop 中运行）。"""
+        while True:
+            await asyncio.sleep(5)
+            # Atomic swap under GIL — no window for mark_dirty() to lose entries
+            dirty, self._dirty = self._dirty, set()
+            for sid in dirty:
+                session = self._sessions.get(sid)
+                if session:
+                    self._persist(session)
 
     def _load_agent_messages(self, session_id: str) -> list[Message]:
         """Load saved messages from session JSON on disk."""

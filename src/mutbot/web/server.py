@@ -249,6 +249,9 @@ async def lifespan(app: FastAPI):
     # --- Config file change watcher ---
     config_watcher_task = asyncio.create_task(_watch_config_changes(config))
 
+    # --- Dirty session persist loop ---
+    persist_dirty_task = asyncio.create_task(session_manager.persist_dirty_loop())
+
     # --- asyncio 未捕获异常兜底 ---
     def _asyncio_exception_handler(loop, context):
         exception = context.get("exception")
@@ -272,8 +275,13 @@ async def lifespan(app: FastAPI):
 
     # --- Cancel config watcher ---
     config_watcher_task.cancel()
+    persist_dirty_task.cancel()
     try:
         await config_watcher_task
+    except asyncio.CancelledError:
+        pass
+    try:
+        await persist_dirty_task
     except asyncio.CancelledError:
         pass
 

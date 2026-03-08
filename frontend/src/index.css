@@ -2203,6 +2203,13 @@ body,
   height: 100%;
 }
 
+/* xterm.js v6: .xterm-viewport is a legacy element that paints an unwanted
+   background over the terminal area.  Hide it — scrolling is handled by
+   .xterm-scrollable-element in v6. */
+.terminal-panel .xterm-viewport {
+  display: none !important;
+}
+
 .terminal-expired-overlay {
   position: absolute;
   inset: 0;

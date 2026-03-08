@@ -85,7 +85,12 @@ export default function TerminalPanel({ sessionId, terminalId: initialId, worksp
     let processExited = false;
     let ch = 0;
 
+    // Flag to suppress recursive sendResize when server-initiated pty_resize
+    // triggers xterm's onResize event
+    let serverResizing = false;
+
     function sendResize(r: number, c: number) {
+      if (serverResizing) return;
       if (ch > 0 && rpc) {
         rpc.sendToChannel(ch, { type: "resize", rows: r, cols: c });
       }
@@ -102,6 +107,30 @@ export default function TerminalPanel({ sessionId, terminalId: initialId, worksp
       if (!active) return;
       const msgType = msg.type as string;
 
+      if (msgType === "ready") {
+        const alive = msg.alive as boolean;
+        // Flush xterm's write buffer: callback fires after all queued
+        // scrollback data has been fully parsed, preventing terminal
+        // query responses from leaking as user input.
+        term.write("", () => {
+          if (!active) return;
+          inputMuted = false;
+          if (alive) {
+            processExited = false;
+            setExpired(false);
+            setConnected(true);
+            sendResize(
+              termRef.current?.rows ?? rows,
+              termRef.current?.cols ?? cols,
+            );
+          } else {
+            processExited = true;
+            setExpired(true);
+          }
+        });
+        return;
+      }
+
       if (msgType === "process_exit") {
         if (processExited) return;
         processExited = true;
@@ -115,17 +144,14 @@ export default function TerminalPanel({ sessionId, terminalId: initialId, worksp
         return;
       }
 
-      if (msgType === "scrollback_done") {
-        // Scrollback replay complete — use requestAnimationFrame to defer
-        // unmuting until after xterm.js has fully processed pending writes.
-        requestAnimationFrame(() => {
-          inputMuted = false;
-          setConnected(true);
-          sendResize(
-            termRef.current?.rows ?? rows,
-            termRef.current?.cols ?? cols,
-          );
-        });
+      if (msgType === "pty_resize") {
+        const ptyRows = msg.rows as number;
+        const ptyCols = msg.cols as number;
+        if (termRef.current && ptyRows > 0 && ptyCols > 0) {
+          serverResizing = true;
+          termRef.current.resize(ptyCols, ptyRows);
+          serverResizing = false;
+        }
         return;
       }
     }
@@ -156,7 +182,7 @@ export default function TerminalPanel({ sessionId, terminalId: initialId, worksp
       let termId = termIdRef.current;
       if (!termId) {
         if (sessionId) {
-          // Session-backed terminal: restart via session RPC to restore scrollback
+          // Session-backed terminal: restart via session RPC to create PTY
           const result = await rpc.call<{ terminal_id: string }>("session.restart", { session_id: sessionId });
           if (!active) return;
           termId = result.terminal_id;
@@ -166,14 +192,11 @@ export default function TerminalPanel({ sessionId, terminalId: initialId, worksp
           termId = result.id;
         }
         termIdRef.current = termId;
-        // Persist terminal ID into the flexlayout tab config
         if (nodeId && onTerminalCreated) {
           onTerminalCreated(nodeId, { sessionId, terminalId: termId, workspaceId });
         }
       }
-      // Open channel using the session_id that owns this terminal
-      // For session-backed terminals, use the session_id prop
-      // For standalone terminals, use the termId as a workaround (the channel target is "session")
+
       const channelSessionId = sessionId || termId!;
       await openTerminalChannel(channelSessionId);
     }
@@ -194,8 +217,7 @@ export default function TerminalPanel({ sessionId, terminalId: initialId, worksp
           rpc.call("terminal.delete", { term_id: oldTid }).catch(() => {});
         }
       }
-      // Clear terminal screen for fresh start
-      term.write("\x1b[2J\x1b[H");
+      // Server sends clear screen + scrollback on channel open, no need to clear here
       processExited = false;
       termIdRef.current = null;
       init();
@@ -210,9 +232,17 @@ export default function TerminalPanel({ sessionId, terminalId: initialId, worksp
       }
     });
 
+    // Terminal responses that xterm.js generates automatically (DA1, DA2, DSR,
+    // CPR).  These must never be forwarded as user input — they are always
+    // xterm's reply to a query from the PTY.  During live use the PTY handles
+    // the response correctly, but during scrollback replay or re-attach the
+    // response arrives at the PTY unexpectedly and appears as garbage text.
+    const termResponseRe = /^\x1b\[[\?>= ]?[\d;]*[cnR]$/;
+
     // Terminal input → channel binary (muted during scrollback replay)
     const inputDisposable = term.onData((data) => {
       if (inputMuted) return;
+      if (data.charCodeAt(0) === 0x1b && termResponseRe.test(data)) return;
       if (ch > 0 && rpc) {
         const encoder = new TextEncoder();
         const encoded = encoder.encode(data);
@@ -220,11 +250,14 @@ export default function TerminalPanel({ sessionId, terminalId: initialId, worksp
       }
     });
 
-    // Resize handling
+    // Resize handling — only calculate and report to server, don't resize term.
+    // Server will broadcast pty_resize with the actual PTY size (min of all clients).
     const resizeObserver = new ResizeObserver(() => {
-      if (fitRef.current && termRef.current) {
-        fitRef.current.fit();
-        sendResize(termRef.current.rows, termRef.current.cols);
+      if (fitRef.current) {
+        const dims = fitRef.current.proposeDimensions();
+        if (dims) {
+          sendResize(dims.rows, dims.cols);
+        }
       }
     });
     resizeObserver.observe(container);
