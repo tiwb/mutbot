@@ -62,9 +62,10 @@ function formatDurationMs(ms: number): string {
 }
 
 function formatTurnDuration(seconds: number): string {
-  if (seconds < 60) return `${seconds} seconds`;
-  const m = Math.floor(seconds / 60);
-  const s = seconds % 60;
+  const total = Math.round(seconds);
+  if (total < 60) return `${total} seconds`;
+  const m = Math.floor(total / 60);
+  const s = total % 60;
   if (s === 0) return m === 1 ? "1 minute" : `${m} minutes`;
   return m === 1 ? `1 minute ${s} seconds` : `${m} minutes ${s} seconds`;
 }
