@@ -24,7 +24,6 @@ from mutbot.runtime.workspace import WorkspaceManager, sanitize_workspace_name
 from mutbot.runtime import storage
 from mutbot.web.rpc import RpcContext
 from mutbot.web.routes import (
-    _check_ws_origin,
     handle_app_workspace_list,
     handle_app_workspace_create,
     handle_app_workspace_remove,
@@ -128,39 +127,6 @@ class TestWorkspaceManagerGetByName:
         ws = self.wm.create("My Project", "/tmp/test")
         assert self.wm.get_by_name("my-project") is not None
         assert self.wm.get_by_name("My Project") is None  # 原名称不匹配
-
-
-# ---------------------------------------------------------------------------
-# Origin 校验测试
-# ---------------------------------------------------------------------------
-
-class TestOriginValidation:
-    def test_no_origin(self):
-        assert _check_ws_origin(None) is True
-
-    def test_mutbot_ai_https(self):
-        assert _check_ws_origin("https://mutbot.ai") is True
-
-    def test_mutbot_ai_http(self):
-        assert _check_ws_origin("http://mutbot.ai") is True
-
-    def test_localhost(self):
-        assert _check_ws_origin("http://localhost:8741") is True
-
-    def test_localhost_no_port(self):
-        assert _check_ws_origin("http://localhost") is True
-
-    def test_127_0_0_1(self):
-        assert _check_ws_origin("http://127.0.0.1:8741") is True
-
-    def test_ipv6_localhost(self):
-        assert _check_ws_origin("http://[::1]:8741") is True
-
-    def test_random_origin_rejected(self):
-        assert _check_ws_origin("https://evil.com") is False
-
-    def test_subdomain_rejected(self):
-        assert _check_ws_origin("https://sub.mutbot.ai") is False
 
 
 # ---------------------------------------------------------------------------

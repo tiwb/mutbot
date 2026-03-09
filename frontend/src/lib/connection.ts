@@ -1,32 +1,31 @@
 /**
  * 后端连接工具 — 根据运行环境决定连接目标。
  *
- * 本地运行时使用当前 host，远程（mutbot.ai）时连接 localhost:8741。
+ * 本地运行时从 location 推导；mutbot.ai 通过 __MUTBOT_CONTEXT__ 注入配置。
  */
 
-/**
- * 获取 mutbot 后端 host。
- * 本地运行时用当前 host，远程（mutbot.ai）时连 localhost:8741。
- */
-export function getMutbotHost(): string {
-  const h = location.hostname;
-  if (h === "localhost" || h === "127.0.0.1" || h === "::1") {
-    return location.host;
-  }
-  return "localhost:8741";
+interface MutbotContext {
+  remote: boolean;
+  wsBase: string; // e.g. "ws://localhost:8741"
 }
+
+const ctx = (window as any).__MUTBOT_CONTEXT__ as
+  | MutbotContext
+  | undefined;
 
 /**
  * 构建 WebSocket URL。
- * 连接目标始终是本地 mutbot，使用 ws://（非 TLS）。
+ * 有注入时使用注入的 wsBase；否则从当前页面 location 推导。
  */
 export function getWsUrl(path: string): string {
-  const host = getMutbotHost();
-  return `ws://${host}${path}`;
+  if (ctx) {
+    return `${ctx.wsBase}${path}`;
+  }
+  const protocol = location.protocol === "https:" ? "wss:" : "ws:";
+  return `${protocol}//${location.host}${path}`;
 }
 
-/** 是否从远程（非 localhost）访问 */
+/** 是否从 mutbot.ai 远程加载 */
 export function isRemote(): boolean {
-  const h = location.hostname;
-  return h !== "localhost" && h !== "127.0.0.1" && h !== "::1";
+  return !!ctx?.remote;
 }

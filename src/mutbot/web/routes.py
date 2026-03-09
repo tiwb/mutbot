@@ -62,27 +62,6 @@ app_rpc = RpcDispatcher()
 
 
 # ---------------------------------------------------------------------------
-# Origin 校验
-# ---------------------------------------------------------------------------
-
-_ALLOWED_ORIGINS = {"https://mutbot.ai", "http://mutbot.ai"}
-
-
-def _check_ws_origin(origin: str | None) -> bool:
-    """校验 WebSocket Origin，接受 mutbot.ai 和 localhost。"""
-    if not origin:
-        return True
-    if origin in _ALLOWED_ORIGINS:
-        return True
-    from urllib.parse import urlparse
-    parsed = urlparse(origin)
-    hostname = parsed.hostname or ""
-    if hostname in ("localhost", "127.0.0.1", "::1"):
-        return True
-    return False
-
-
-# ---------------------------------------------------------------------------
 # Health check
 # ---------------------------------------------------------------------------
 
@@ -162,14 +141,9 @@ async def websocket_logs(websocket: WebSocket):
 @router.websocket("/ws/app")
 async def websocket_app(websocket: WebSocket):
     """全局 WebSocket：工作区列表、创建工作区、目录浏览。"""
-    origin = websocket.headers.get("origin")
-    if not _check_ws_origin(origin):
-        await websocket.close(code=4403, reason="origin not allowed")
-        return
-
     wm, sm = _get_managers()
     await websocket.accept()
-    logger.info("App WS connected (origin=%s)", origin or "none")
+    logger.info("App WS connected")
 
     import mutbot
     _cfg = websocket.app.state.config
