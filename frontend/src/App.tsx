@@ -32,13 +32,22 @@ import type { Workspace, Session } from "./lib/types";
 
 // ---------- Helpers ----------
 
-/** Exit workspace: remote mode → full page reload to landing; local → clear hash. */
+/** Exit workspace: go back in history, then reload to ensure clean state. */
 function exitWorkspace() {
-  if (isRemote()) {
-    location.href = location.origin + "/";
-  } else {
-    location.hash = "";
-  }
+  history.back();
+}
+
+/** Parse workspace name from URL hash, stripping optional `@serverLabel` suffix. */
+function parseWorkspaceHash(): string {
+  const raw = location.hash.replace(/^#\/?/, "");
+  const atIdx = raw.lastIndexOf("@");
+  return atIdx > 0 ? raw.slice(0, atIdx) : raw;
+}
+
+/** Get the workspace name: prefer __MUTBOT_CONTEXT__.workspace in remote mode, fallback to hash. */
+function getWorkspaceName(): string {
+  const ctx = (window as any).__MUTBOT_CONTEXT__;
+  return ctx?.workspace || parseWorkspaceHash();
 }
 
 /** Find the active tabset, or fall back to the first tabset in the model. */
@@ -145,7 +154,7 @@ export default function App() {
           .then((wss) => {
             setWorkspaces(wss);
 
-            const wsName = location.hash.replace(/^#\/?/, "");
+            const wsName = getWorkspaceName();
             if (wsName) {
               const target = wss.find((w) => w.name === wsName);
               if (target) {
@@ -161,8 +170,8 @@ export default function App() {
                   }
                 }
               } else {
-                // hash 指向不存在的 workspace，清空 hash
-                location.hash = "";
+                // workspace not found
+                exitWorkspace();
               }
             }
           })
@@ -197,7 +206,7 @@ export default function App() {
   // hash 变化监听
   useEffect(() => {
     const onHashChange = () => {
-      const wsName = location.hash.replace(/^#\/?/, "");
+      const wsName = parseWorkspaceHash();
       if (!wsName) {
         setWorkspace(null);
         return;
@@ -998,7 +1007,7 @@ export default function App() {
     }
 
     // Hash 指向 workspace 但尚未加载 → 全屏连接中状态
-    const pendingWsName = location.hash.replace(/^#\/?/, "");
+    const pendingWsName = getWorkspaceName();
     if (pendingWsName) {
       return (
         <div className="ws-connecting-fullscreen">
