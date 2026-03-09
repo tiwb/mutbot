@@ -314,7 +314,8 @@ class TerminalManager:
                 result = on_output(payload)
                 if result is not None:
                     # 异步回调 → run_coroutine_threadsafe
-                    asyncio.run_coroutine_threadsafe(result, loop)
+                    if asyncio.iscoroutine(result):
+                        asyncio.run_coroutine_threadsafe(result, loop)
             except Exception:
                 dead.append(client_id)
         for client_id in dead:

@@ -46,6 +46,6 @@ class ChannelContext:
     """
 
     workspace_id: str
-    session_manager: SessionManager
-    terminal_manager: TerminalManager
-    event_loop: asyncio.AbstractEventLoop
+    session_manager: SessionManager | None = None
+    terminal_manager: TerminalManager | None = None
+    event_loop: asyncio.AbstractEventLoop = None  # type: ignore[assignment]

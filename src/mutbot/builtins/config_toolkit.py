@@ -9,11 +9,11 @@ import asyncio
 import logging
 import re
 from collections import defaultdict
-from typing import Any, AsyncIterator
+from typing import Any, AsyncGenerator, AsyncIterator
 from uuid import uuid4
 
 from mutagent.config import Config
-from mutagent.messages import Message, Response, StreamEvent, TextBlock, ToolUseBlock
+from mutagent.messages import Message, Response, StreamEvent, TextBlock, ToolSchema, ToolUseBlock
 from mutagent.provider import LLMProvider
 from mutbot.ui.toolkit import UIToolkitBase
 
@@ -49,10 +49,10 @@ class NullProvider(LLMProvider):
         self,
         model: str,
         messages: list[Message],
-        tools: list,
+        tools: list[ToolSchema],
         prompts: list[Message] | None = None,
         stream: bool = True,
-    ) -> AsyncIterator[StreamEvent]:
+    ) -> AsyncGenerator[StreamEvent, None]:
         guide_text = (
             "欢迎使用 MutBot！当前尚未配置 LLM 服务，"
             "让我先帮你完成初始设置。"
@@ -169,6 +169,8 @@ class ConfigToolkit(UIToolkitBase):
     @property
     def _config(self) -> Config:
         """共享 Config 实例，通过 Agent 传递链获取。"""
+        assert self.owner is not None, "ConfigToolkit.owner not bound"
+        assert self.owner.agent is not None, "ConfigToolkit.owner.agent not bound"
         return self.owner.agent.config
 
     async def llm(self) -> str:
@@ -1001,6 +1003,8 @@ class ConfigToolkit(UIToolkitBase):
         config = self._config
         client = create_llm_client(config)
 
+        assert self.owner is not None, "ConfigToolkit.owner not bound"
+        assert self.owner.agent is not None, "ConfigToolkit.owner.agent not bound"
         agent = self.owner.agent
         agent.llm = client
 

@@ -370,6 +370,7 @@ def _agent_on_connect(self: AgentSession, channel: Channel, ctx: ChannelContext)
 async def _agent_on_message(self: AgentSession, channel: Channel, raw: dict, ctx: ChannelContext) -> None:
     """处理 message / cancel / run_tool / ui_event / log / stop。"""
     sm = ctx.session_manager
+    assert sm is not None, "ChannelContext.session_manager not set"
     msg_type = raw.get("type", "")
 
     if msg_type == "message":

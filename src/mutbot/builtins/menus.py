@@ -67,7 +67,7 @@ class AddSessionMenu(Menu):
         session_type = params.get("session_type", "")
         if not session_type:
             return MenuResult(action="error", data={"message": "session type is required"})
-        sm = context.managers.get("session_manager")
+        sm = context.session_manager
         if sm is None:
             return MenuResult(action="error", data={"message": "session_manager not available"})
 
@@ -79,7 +79,7 @@ class AddSessionMenu(Menu):
 
         # 将 cwd 写入 config，on_create 按需使用
         config: dict = {}
-        wm = context.managers.get("workspace_manager")
+        wm = context.workspace_manager
         ws = wm.get(context.workspace_id) if wm else None
         if ws:
             config["cwd"] = ws.project_path
@@ -91,8 +91,8 @@ class AddSessionMenu(Menu):
         )
 
         # 将 workspace 的 sessions 列表也更新
-        if context.managers.get("workspace_manager"):
-            wm = context.managers["workspace_manager"]
+        if context.workspace_manager:
+            wm = context.workspace_manager
             ws = wm.get(context.workspace_id)
             if ws:
                 ws.sessions.append(session.id)
@@ -198,7 +198,7 @@ class DeleteSessionMenu(Menu):
         )]
 
     def execute(self, params: dict, context: RpcContext) -> MenuResult:
-        sm = context.managers.get("session_manager")
+        sm = context.session_manager
         if not sm:
             return MenuResult(action="error", data={"message": "missing session_manager"})
         session_ids = params.get("session_ids", [])

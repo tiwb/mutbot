@@ -67,6 +67,8 @@ class UIToolkitBase(Toolkit):
     @property
     def session(self) -> Session:
         """当前 Session。"""
+        assert self.owner is not None, "UIToolkitBase.owner not bound"
+        assert self.owner.agent is not None, "UIToolkitBase.owner.agent not bound"
         return self.owner.agent.session
 
     def _resolve_broadcast(self):

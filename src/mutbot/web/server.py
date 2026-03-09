@@ -203,9 +203,10 @@ async def lifespan(app: FastAPI):
 
     # 1. LLM client 重建（所有活跃 session）
     def _on_provider_changed(event):
-        from mutbot.runtime.session_manager import create_llm_client
+        from mutbot.runtime.session_manager import create_llm_client, AgentSessionRuntime
+        assert session_manager is not None
         for _sid, rt in session_manager._runtimes.items():
-            if hasattr(rt, 'agent') and rt.agent:
+            if isinstance(rt, AgentSessionRuntime) and rt.agent:
                 try:
                     rt.agent.llm = create_llm_client(event.config)
                 except Exception:

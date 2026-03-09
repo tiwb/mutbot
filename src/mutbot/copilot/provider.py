@@ -7,7 +7,7 @@ Copilot API 使用 OpenAI Chat Completions 格式，因此复用 OpenAIProvider 
 from __future__ import annotations
 
 import logging
-from typing import Any, AsyncIterator
+from typing import Any, AsyncGenerator, AsyncIterator
 
 from mutagent.messages import (
     Message,
@@ -63,7 +63,7 @@ class CopilotProvider(LLMProvider):
         tools: list[ToolSchema],
         prompts: list[Message] | None = None,
         stream: bool = True,
-    ) -> AsyncIterator[StreamEvent]:
+    ) -> AsyncGenerator[StreamEvent, None]:
         """Send messages to Copilot API and yield streaming events."""
         openai_messages = _messages_to_openai(messages)
         if prompts:

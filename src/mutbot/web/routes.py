@@ -78,6 +78,8 @@ async def health():
 
 def _get_managers():
     from mutbot.web.server import workspace_manager, session_manager
+    assert workspace_manager is not None, "workspace_manager not initialized"
+    assert session_manager is not None, "session_manager not initialized"
     return workspace_manager, session_manager
 
 
@@ -282,6 +284,7 @@ async def websocket_workspace(websocket: WebSocket, workspace_id: str):
     # --- 发送 welcome ---
     welcome: dict[str, Any] = {"type": "welcome", "resumed": resumed}
     if resumed:
+        assert last_seq is not None
         welcome["last_seq"] = client.recv_count
         replay_msgs = client.get_replay_messages(last_seq)
         try:
@@ -289,7 +292,7 @@ async def websocket_workspace(websocket: WebSocket, workspace_id: str):
             for frame_type, data in replay_msgs:
                 if frame_type == "json":
                     await websocket.send_json(data)
-                else:
+                elif isinstance(data, bytes):
                     await websocket.send_bytes(data)
         except Exception:
             logger.exception("Failed to send welcome/replay")
