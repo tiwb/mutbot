@@ -241,23 +241,10 @@ export class WorkspaceRpc {
   // Channel API
   // -----------------------------------------------------------------------
 
-  /** 打开 Channel，返回 channel ID。 */
-  async openChannel(
-    target: string,
-    params: Record<string, unknown> = {},
-  ): Promise<number> {
-    const result = await this.call<{ ch: number }>("channel.open", {
-      target,
-      ...params,
-    });
-    return result.ch;
-  }
-
-  /** 关闭 Channel。 */
-  async closeChannel(ch: number): Promise<void> {
+  /** 清理 Channel 本地 handler（不发送 RPC）。 */
+  cleanupChannelHandlers(ch: number) {
     this.channelJsonHandlers.delete(ch);
     this.channelBinaryHandlers.delete(ch);
-    await this.call("channel.close", { ch });
   }
 
   /** 向 Channel 发送 JSON 消息（自动注入 ch 字段）。 */

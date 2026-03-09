@@ -23,7 +23,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Type alias for the async broadcast function
+# Type alias for the async broadcast function (kept for backward compat during transition)
 BroadcastFn = Callable[[str, dict[str, Any]], Awaitable[None]]
 
 
@@ -34,7 +34,7 @@ class AgentBridge:
     feeds to Agent → serializes StreamEvents → broadcasts to WebSocket.
 
     Lifecycle:
-        bridge = AgentBridge(session_id, agent, loop, broadcast_fn)
+        bridge = AgentBridge(session_id, agent, loop, session)
         bridge.start()           # launches agent task
         bridge.send_message(text) # feed user input
         await bridge.cancel()    # cancel current thinking (session stays)
@@ -46,7 +46,7 @@ class AgentBridge:
         session_id: str,
         agent,
         loop: asyncio.AbstractEventLoop,
-        broadcast_fn: BroadcastFn,
+        broadcast_fn: BroadcastFn | None,
         session: AgentSession,
         persist_fn: Callable[[], None],
         session_status_fn: Callable[[str], None] | None = None,
@@ -54,7 +54,6 @@ class AgentBridge:
         self.session_id = session_id
         self.agent = agent
         self.loop = loop
-        self.broadcast_fn = broadcast_fn
         self._session = session
         self._persist_fn = persist_fn
         self._session_status_fn = session_status_fn
@@ -78,7 +77,7 @@ class AgentBridge:
         self._agent_status = status
         data: dict[str, Any] = {"type": "agent_status", "status": status}
         data.update(extra)
-        await self.broadcast_fn(self.session_id, data)
+        self._session.broadcast_json(data)
         # 同步 session.status：working → "running"，idle → ""
         if self._session_status_fn is not None:
             if status == "idle":
@@ -111,7 +110,7 @@ class AgentBridge:
             "session_total_tokens": self._session_total_tokens,
             "model": getattr(self.agent.llm, "model", ""),
         }
-        await self.broadcast_fn(self.session_id, data)
+        self._session.broadcast_json(data)
 
     # --- Input stream ---
 
@@ -172,7 +171,7 @@ class AgentBridge:
             )
 
             # Broadcast turn start
-            await self.broadcast_fn(self.session_id, {
+            self._session.broadcast_json({
                 "type": "turn_start",
                 "turn_id": turn_id,
             })
@@ -185,7 +184,7 @@ class AgentBridge:
             start_data = serialize_stream_event(
                 StreamEvent(type="tool_exec_start", tool_call=block)
             )
-            await self.broadcast_fn(self.session_id, start_data)
+            self._session.broadcast_json(start_data)
             await self._broadcast_status("tool_calling", tool_name=name)
 
             # Execute tool
@@ -196,13 +195,13 @@ class AgentBridge:
             end_data = serialize_stream_event(
                 StreamEvent(type="tool_exec_end", tool_call=block)
             )
-            await self.broadcast_fn(self.session_id, end_data)
+            self._session.broadcast_json(end_data)
 
             # Persist
             self._persist_fn()
 
             # Turn done
-            await self.broadcast_fn(self.session_id, {
+            self._session.broadcast_json({
                 "type": "turn_done",
                 "turn_id": turn_id,
                 "duration_seconds": round(time.monotonic() - self._turn_start_time),
@@ -224,22 +223,22 @@ class AgentBridge:
                     data = serialize_stream_event(event)
 
                     if event.type == "error":
-                        await self.broadcast_fn(self.session_id, data)
+                        self._session.broadcast_json(data)
                     elif event.type == "tool_exec_start":
-                        await self.broadcast_fn(self.session_id, data)
+                        self._session.broadcast_json(data)
                         tool_name = event.tool_call.name if event.tool_call else ""
                         await self._broadcast_status("tool_calling", tool_name=tool_name)
                     elif event.type == "tool_exec_end":
-                        await self.broadcast_fn(self.session_id, data)
+                        self._session.broadcast_json(data)
                         await self._broadcast_status("thinking")
                     elif event.type == "turn_done":
                         # Enrich with bridge-level turn info
                         if self._turn_start_time:
                             data["duration_seconds"] = round(time.monotonic() - self._turn_start_time)
-                        await self.broadcast_fn(self.session_id, data)
+                        self._session.broadcast_json(data)
                         await self._broadcast_status("idle")
                     else:
-                        await self.broadcast_fn(self.session_id, data)
+                        self._session.broadcast_json(data)
 
                     # Token usage on response_done
                     if event.type == "response_done" and event.response:
@@ -250,22 +249,22 @@ class AgentBridge:
                         self._persist_fn()
 
                 await self._broadcast_status("idle")
-                await self.broadcast_fn(self.session_id, {"type": "agent_done"})
+                self._session.broadcast_json({"type": "agent_done"})
             except asyncio.CancelledError:
                 logger.info("Session %s: agent task cancelled", self.session_id)
                 # agent.run() finally 块已清理 context.messages，直接持久化
                 self._persist_fn()
                 try:
                     await self._broadcast_status("idle")
-                    await self.broadcast_fn(self.session_id, {"type": "agent_cancelled"})
+                    self._session.broadcast_json({"type": "agent_cancelled"})
                 except Exception:
                     pass
             except Exception as exc:
                 logger.exception("Agent error in session %s", self.session_id)
                 try:
-                    await self.broadcast_fn(self.session_id, {"type": "error", "error": str(exc)})
+                    self._session.broadcast_json({"type": "error", "error": str(exc)})
                     await self._broadcast_status("idle")
-                    await self.broadcast_fn(self.session_id, {"type": "agent_done"})
+                    self._session.broadcast_json({"type": "agent_done"})
                 except Exception:
                     pass
 
@@ -289,10 +288,10 @@ class AgentBridge:
                 self._turn_start_time = time.monotonic()
 
                 # 广播 turn_start 事件
-                asyncio.ensure_future(self.broadcast_fn(self.session_id, {
+                self._session.broadcast_json({
                     "type": "turn_start",
                     "turn_id": self._current_turn_id,
-                }))
+                })
 
             blocks.append(TurnStartBlock(turn_id=self._current_turn_id))
             blocks.append(TextBlock(text=text))
@@ -304,7 +303,7 @@ class AgentBridge:
                 "turn_id": self._current_turn_id,
                 "sender": "User",
             }
-            asyncio.ensure_future(self.broadcast_fn(self.session_id, user_event))
+            self._session.broadcast_json(user_event)
             asyncio.ensure_future(self._broadcast_status("thinking"))
         else:
             # Hidden message: 仍需 TurnStartBlock 触发 agent 处理
@@ -347,3 +346,72 @@ class AgentBridge:
                 await self._agent_task
             except asyncio.CancelledError:
                 pass
+
+
+# ---------------------------------------------------------------------------
+# AgentSession @impl — Channel 通信
+# ---------------------------------------------------------------------------
+
+from mutobj import impl
+from mutbot.session import AgentSession
+
+if TYPE_CHECKING:
+    from mutbot.channel import Channel, ChannelContext
+    from mutbot.runtime.session_manager import SessionManager
+
+
+@impl(AgentSession.on_connect)
+def _agent_on_connect(self: AgentSession, channel: Channel, ctx: ChannelContext) -> None:
+    """确保 bridge 已启动（如果有活跃对话）。"""
+    pass
+
+
+@impl(AgentSession.on_message)
+async def _agent_on_message(self: AgentSession, channel: Channel, raw: dict, ctx: ChannelContext) -> None:
+    """处理 message / cancel / run_tool / ui_event / log / stop。"""
+    sm = ctx.session_manager
+    msg_type = raw.get("type", "")
+
+    if msg_type == "message":
+        text = raw.get("text", "")
+        data = raw.get("data")
+        if text:
+            bridge = sm.get_bridge(self.id)
+            if bridge is None:
+                try:
+                    bridge = sm.start(self.id, ctx.event_loop)
+                except Exception as exc:
+                    logger.exception("Failed to start agent: session=%s", self.id)
+                    await sm.stop(self.id)
+                    channel.send_json({"type": "error", "error": str(exc)})
+                    return
+            bridge.send_message(text, data)
+    elif msg_type == "cancel":
+        bridge = sm.get_bridge(self.id)
+        if bridge:
+            await bridge.cancel()
+    elif msg_type == "run_tool":
+        tool_name = raw.get("tool", "")
+        bridge = sm.get_bridge(self.id)
+        if tool_name and bridge:
+            bridge.request_tool(tool_name, raw.get("input", {}))
+    elif msg_type == "ui_event":
+        from mutbot.ui import deliver_event
+        from mutbot.ui.events import UIEvent
+        context_id = raw.get("context_id", "")
+        if context_id:
+            event = UIEvent(
+                type=raw.get("event_type", ""),
+                data=raw.get("data", {}),
+                source=raw.get("source"),
+                context_id=context_id,
+            )
+            deliver_event(context_id, event)
+    elif msg_type == "log":
+        level = raw.get("level", "debug")
+        message = raw.get("message", "")
+        fe_logger = logging.getLogger("mutbot.frontend")
+        log_fn = getattr(fe_logger, level, fe_logger.debug)
+        log_fn("[%s] %s", self.id[:8], message)
+    elif msg_type == "stop":
+        await sm.stop(self.id)

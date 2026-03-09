@@ -72,22 +72,18 @@ class UIToolkitBase(Toolkit):
     def _resolve_broadcast(self):
         """从绑定链解析 broadcast 函数。
 
-        查找路径：ToolSet._broadcast_fn + ToolSet._session_id
-        broadcast_fn 由 SessionManager.start() 在创建 AgentBridge 后设置。
+        通过 Agent.session.broadcast_json 广播到所有 channel。
         """
-        owner = self.owner
-        broadcast_fn = getattr(owner, '_broadcast_fn', None)
-        session_id = getattr(owner, '_session_id', None)
-
-        if broadcast_fn is None or session_id is None:
+        session = getattr(self, 'session', None)
+        if session is None:
             logger.warning(
-                "UIToolkitBase._resolve_broadcast: broadcast_fn or session_id not set on ToolSet. "
+                "UIToolkitBase._resolve_broadcast: session not available. "
                 "UI events won't reach the frontend."
             )
             return None
 
         async def bound_broadcast(data: dict) -> None:
-            await broadcast_fn(session_id, data)
+            session.broadcast_json(data)
 
         return bound_broadcast
 

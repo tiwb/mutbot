@@ -156,21 +156,27 @@ export default function TerminalPanel({ sessionId, terminalId: initialId, worksp
       }
     }
 
+    // Track the session_id used for the current channel (needed for disconnect)
+    let channelSessionId = "";
+
     async function openTerminalChannel(termSessionId: string) {
       if (!active || !rpc) return;
       inputMuted = true;
 
       try {
-        ch = await rpc.openChannel("session", { session_id: termSessionId });
+        const result = await rpc.call<{ ch: number }>("session.connect", { session_id: termSessionId });
+        ch = result.ch;
+        channelSessionId = termSessionId;
         if (!active) {
-          rpc.closeChannel(ch).catch(() => {});
+          rpc.cleanupChannelHandlers(ch);
+          rpc.call("session.disconnect", { session_id: termSessionId, ch }).catch(() => {});
           return;
         }
         chRef.current = ch;
         rpc.onBinaryChannel(ch, handleBinaryData);
         rpc.onChannel(ch, handleJsonMessage);
       } catch {
-        // Channel open failed
+        // Session connect failed
         if (!processExited) {
           term.write("\r\n\x1b[31m[Failed to connect to terminal]\x1b[0m\r\n");
         }
@@ -205,7 +211,8 @@ export default function TerminalPanel({ sessionId, terminalId: initialId, worksp
     initRef.current = () => {
       // Close old channel
       if (ch > 0 && rpc) {
-        rpc.closeChannel(ch).catch(() => {});
+        rpc.cleanupChannelHandlers(ch);
+        rpc.call("session.disconnect", { session_id: channelSessionId, ch }).catch(() => {});
         ch = 0;
         chRef.current = 0;
       }
@@ -272,7 +279,8 @@ export default function TerminalPanel({ sessionId, terminalId: initialId, worksp
       unsubClosed();
       // Close channel on cleanup
       if (ch > 0 && rpc) {
-        rpc.closeChannel(ch).catch(() => {});
+        rpc.cleanupChannelHandlers(ch);
+        rpc.call("session.disconnect", { session_id: channelSessionId, ch }).catch(() => {});
       }
       term.dispose();
       termRef.current = null;

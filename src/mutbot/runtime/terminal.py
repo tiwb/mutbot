@@ -4,14 +4,14 @@ PTY processes survive client disconnects.  Clients attach/detach
 as I/O channels; the PTY is only killed by an explicit ``kill()`` call
 (DELETE API or server shutdown).
 
-Transport 无关：不依赖任何 Web 框架。客户端通过
-``on_output: Callable[[bytes], Awaitable[None]]`` 回调接收输出，
-具体的 WebSocket 绑定在 ``mutbot.web.routes`` 中完成。
+包含 TerminalSession 的所有 @impl：生命周期（on_create / on_stop / on_restart_cleanup）
++ Channel 通信（on_connect / on_disconnect / on_message / on_data）。
 """
 
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
 import os
 import re
@@ -23,7 +23,14 @@ import threading
 import uuid
 from collections.abc import Awaitable
 from dataclasses import dataclass, field
-from typing import Any, Callable
+from typing import Any, Callable, TYPE_CHECKING
+
+import mutobj
+from mutobj import impl
+
+if TYPE_CHECKING:
+    from mutbot.channel import Channel, ChannelContext
+    from mutbot.runtime.session_manager import SessionManager
 
 # 输出回调类型：接收原始 PTY 输出字节
 # 支持异步回调（旧模式：run_coroutine_threadsafe）和同步回调（新模式：直接调用）
@@ -45,7 +52,7 @@ _OSC_TITLE_RE = re.compile(rb"\x1b\][012];[^\x07\x1b]*(?:\x07|\x1b\\)")
 
 
 @dataclass
-class TerminalSession:
+class TerminalProcess:
     id: str
     workspace_id: str
     rows: int
@@ -75,7 +82,7 @@ class TerminalManager:
     """
 
     def __init__(self) -> None:
-        self._sessions: dict[str, TerminalSession] = {}
+        self._sessions: dict[str, TerminalProcess] = {}
         # Multi-client: term_id → {client_id: (on_output, on_exit, event_loop)}
         self._connections: dict[str, dict[str, tuple[OutputCallback, ExitCallback, asyncio.AbstractEventLoop]]] = {}
 
@@ -84,9 +91,9 @@ class TerminalManager:
     # ------------------------------------------------------------------
 
     def create(self, workspace_id: str, rows: int, cols: int, cwd: str | None = None,
-               on_dead: Callable[[str, bytes], None] | None = None) -> TerminalSession:
+               on_dead: Callable[[str, bytes], None] | None = None) -> TerminalProcess:
         term_id = uuid.uuid4().hex[:12]
-        session = TerminalSession(
+        session = TerminalProcess(
             id=term_id,
             workspace_id=workspace_id,
             rows=rows,
@@ -108,7 +115,7 @@ class TerminalManager:
         self._start_reader(session)
         return session
 
-    def _spawn_windows(self, session: TerminalSession, cwd: str) -> None:
+    def _spawn_windows(self, session: TerminalProcess, cwd: str) -> None:
         from winpty import PtyProcess  # type: ignore[import-untyped]
 
         shell = os.environ.get("COMSPEC", "cmd.exe")
@@ -119,7 +126,7 @@ class TerminalManager:
         )
         session.process = proc
 
-    def _spawn_unix(self, session: TerminalSession, cwd: str) -> None:
+    def _spawn_unix(self, session: TerminalProcess, cwd: str) -> None:
         import fcntl
         import pty
         import subprocess
@@ -211,7 +218,7 @@ class TerminalManager:
     # Reader thread (PTY output → scrollback + broadcast)
     # ------------------------------------------------------------------
 
-    def _start_reader(self, session: TerminalSession) -> None:
+    def _start_reader(self, session: TerminalProcess) -> None:
         """Start the background reader thread for a terminal session."""
         if session.reader_thread is not None:
             return
@@ -281,7 +288,7 @@ class TerminalManager:
         session.reader_thread = t
         t.start()
 
-    def _on_pty_output(self, session: TerminalSession, data: bytes) -> None:
+    def _on_pty_output(self, session: TerminalProcess, data: bytes) -> None:
         """Handle PTY output: strip title sequences, append to scrollback, broadcast."""
         # Strip OSC 0/1/2 title sequences before storing or forwarding
         data = _OSC_TITLE_RE.sub(b"", data)
@@ -350,10 +357,10 @@ class TerminalManager:
     def has(self, term_id: str) -> bool:
         return term_id in self._sessions
 
-    def get(self, term_id: str) -> TerminalSession | None:
+    def get(self, term_id: str) -> TerminalProcess | None:
         return self._sessions.get(term_id)
 
-    def list_by_workspace(self, workspace_id: str) -> list[TerminalSession]:
+    def list_by_workspace(self, workspace_id: str) -> list[TerminalProcess]:
         return [s for s in self._sessions.values() if s.workspace_id == workspace_id]
 
     # ------------------------------------------------------------------
@@ -401,7 +408,7 @@ class TerminalManager:
             self._set_pty_size(session, rows, cols)
             return (rows, cols)
 
-    def _apply_min_size(self, session: TerminalSession) -> tuple[int, int] | None:
+    def _apply_min_size(self, session: TerminalProcess) -> tuple[int, int] | None:
         """Recompute effective size as the minimum across all clients and apply."""
         if not session._client_sizes or not session.alive:
             return None
@@ -412,7 +419,7 @@ class TerminalManager:
         self._set_pty_size(session, eff_rows, eff_cols)
         return (eff_rows, eff_cols)
 
-    def _set_pty_size(self, session: TerminalSession, rows: int, cols: int) -> None:
+    def _set_pty_size(self, session: TerminalProcess, rows: int, cols: int) -> None:
         """Apply rows/cols to the underlying PTY device."""
         if IS_WINDOWS:
             try:
@@ -493,3 +500,166 @@ class TerminalManager:
             if len(combined) > SCROLLBACK_MAX:
                 combined = combined[-SCROLLBACK_MAX:]
             session._scrollback = combined
+
+
+# ---------------------------------------------------------------------------
+# TerminalSession @impl — 生命周期
+# ---------------------------------------------------------------------------
+
+from mutbot.session import TerminalSession
+
+_CSI_QUERY_RE = re.compile(rb"\x1b\[(?:[>=]?0?c|[56]n)")
+_CLEAR_SCREEN = b"\x1b[0m\x1b[2J\x1b[H"
+
+
+def _strip_replay_queries(data: bytes) -> bytes:
+    """Strip CSI query sequences from scrollback data before replay."""
+    return _CSI_QUERY_RE.sub(b"", data)
+
+
+@impl(TerminalSession.on_create)
+def _terminal_on_create(self: TerminalSession, sm: SessionManager) -> None:
+    """TerminalSession：创建 PTY，恢复历史 scrollback，设 running。"""
+    tm = sm.terminal_manager
+    if tm is None:
+        return
+    rows = self.config.get("rows", 24)
+    cols = self.config.get("cols", 80)
+    cwd = self.config.get("cwd", ".")
+
+    # on_dead: called from reader thread when PTY dies — copy scrollback + mark dirty
+    session_id = self.id
+    def on_dead(term_id: str, scrollback: bytes) -> None:
+        self.scrollback_b64 = base64.b64encode(scrollback).decode()
+        sm.mark_dirty(session_id)
+
+    term = tm.create(self.workspace_id, rows, cols, cwd=cwd, on_dead=on_dead)
+    self.config["terminal_id"] = term.id
+
+    # Restore persisted scrollback from previous session
+    if self.scrollback_b64:
+        try:
+            data = base64.b64decode(self.scrollback_b64)
+            tm.inject_scrollback(term.id, data)
+        except Exception:
+            pass
+        self.scrollback_b64 = ""
+
+    self.status = "running"
+
+
+@impl(TerminalSession.on_stop)
+def _terminal_on_stop(self: TerminalSession, sm: SessionManager) -> None:
+    """TerminalSession：persist scrollback, kill PTY, set stopped."""
+    tm = sm.terminal_manager
+    if tm is not None and self.config:
+        terminal_id = self.config.get("terminal_id")
+        if terminal_id and tm.has(terminal_id):
+            scrollback = tm.get_scrollback(terminal_id)
+            if scrollback:
+                self.scrollback_b64 = base64.b64encode(scrollback).decode()
+            tm.kill(terminal_id)
+    self.status = "stopped"
+
+
+@impl(TerminalSession.on_restart_cleanup)
+def _terminal_on_restart_cleanup(self: TerminalSession) -> None:
+    """TerminalSession：running → stopped。"""
+    if self.status == "running":
+        self.status = "stopped"
+
+
+# ---------------------------------------------------------------------------
+# TerminalSession @impl — Channel 通信
+# ---------------------------------------------------------------------------
+
+
+@impl(TerminalSession.on_connect)
+def _terminal_on_connect(self: TerminalSession, channel: Channel, ctx: ChannelContext) -> None:
+    """attach PTY + scrollback replay + 发送 ready。"""
+    term_id = self.config.get("terminal_id", "")
+    tm = ctx.terminal_manager
+    if not tm or not term_id:
+        return
+
+    # ---- 发送 scrollback（始终先清屏） ----
+    ts = tm.get(term_id)
+    if ts:
+        scrollback = tm.get_scrollback(term_id)
+        scrollback = _strip_replay_queries(scrollback) if scrollback else b""
+        channel.send_binary(_CLEAR_SCREEN + scrollback)
+    elif self.scrollback_b64:
+        try:
+            scrollback_data = base64.b64decode(self.scrollback_b64)
+            scrollback_data = _strip_replay_queries(scrollback_data) if scrollback_data else b""
+            channel.send_binary(_CLEAR_SCREEN + scrollback_data)
+        except Exception:
+            logger.warning("scrollback decode failed", exc_info=True)
+            channel.send_binary(_CLEAR_SCREEN)
+    else:
+        channel.send_binary(_CLEAR_SCREEN)
+
+    # ---- 判断终端状态，发送 ready ----
+    alive = ts is not None and ts.alive
+    if alive:
+        channel.send_json({"type": "ready", "alive": True})
+        # 获取 client_id 用于 attach（通过 ChannelTransport）
+        from mutbot.web.transport import ChannelTransport
+        ext = ChannelTransport.get(channel)
+        client_id = ext._client.client_id if ext and ext._client else ""
+
+        def on_output(data: bytes) -> None:
+            channel.send_binary(data)
+
+        def on_exit(exit_code: int | None) -> None:
+            event: dict = {"type": "process_exit"}
+            if exit_code is not None:
+                event["exit_code"] = exit_code
+            channel.send_json(event)
+
+        tm.attach(term_id, client_id, on_output, on_exit, ctx.event_loop)
+    else:
+        event: dict = {"type": "ready", "alive": False}
+        if ts and ts.exit_code is not None:
+            event["exit_code"] = ts.exit_code
+        channel.send_json(event)
+
+
+@impl(TerminalSession.on_disconnect)
+def _terminal_on_disconnect(self: TerminalSession, channel: Channel, ctx: ChannelContext) -> None:
+    """detach PTY。"""
+    term_id = self.config.get("terminal_id", "")
+    tm = ctx.terminal_manager
+    if not tm or not term_id:
+        return
+    from mutbot.web.transport import ChannelTransport
+    ext = ChannelTransport.get(channel)
+    client_id = ext._client.client_id if ext and ext._client else ""
+    if client_id:
+        new_size = tm.detach(term_id, client_id)
+        if new_size is not None:
+            self.broadcast_json({"type": "pty_resize", "rows": new_size[0], "cols": new_size[1]})
+
+
+@impl(TerminalSession.on_message)
+async def _terminal_on_message(self: TerminalSession, channel: Channel, raw: dict, ctx: ChannelContext) -> None:
+    """处理 resize。"""
+    if raw.get("type") == "resize":
+        tm = ctx.terminal_manager
+        term_id = self.config.get("terminal_id", "")
+        if tm and term_id and tm.has(term_id):
+            from mutbot.web.transport import ChannelTransport
+            ext = ChannelTransport.get(channel)
+            client_id = ext._client.client_id if ext and ext._client else ""
+            actual = tm.resize(term_id, raw.get("rows", 24), raw.get("cols", 80), client_id=client_id)
+            if actual is not None:
+                self.broadcast_json({"type": "pty_resize", "rows": actual[0], "cols": actual[1]})
+
+
+@impl(TerminalSession.on_data)
+async def _terminal_on_data(self: TerminalSession, channel: Channel, payload: bytes, ctx: ChannelContext) -> None:
+    """键盘输入转发到 PTY。"""
+    term_id = self.config.get("terminal_id", "")
+    tm = ctx.terminal_manager
+    if tm and term_id and tm.has(term_id) and len(payload) > 0:
+        tm.write(term_id, payload)

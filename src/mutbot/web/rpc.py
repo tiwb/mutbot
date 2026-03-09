@@ -12,9 +12,16 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from fastapi import WebSocket
+
+if TYPE_CHECKING:
+    from mutbot.channel import ChannelContext
+    from mutbot.runtime.session_manager import SessionManager
+    from mutbot.runtime.terminal import TerminalManager
+    from mutbot.runtime.workspace import WorkspaceManager
+    from mutbot.web.transport import ChannelManager
 
 logger = logging.getLogger(__name__)
 
@@ -34,12 +41,28 @@ class RpcContext:
     workspace_id: str
     # 广播到当前 workspace 所有客户端
     broadcast: Callable[[dict], Awaitable[None]]
-    # 管理器引用（由 routes.py 注入）
-    managers: dict[str, Any] = field(default_factory=dict)
     # 发送者 WebSocket，用于 broadcast 时排除自身
     sender_ws: WebSocket | None = None
     # dispatch 发送 rpc_result 后执行的回调（handler 可设置）
     _post_send: Callable[[], Any] | None = None
+
+    # 类型安全的 manager 访问（部分字段 Optional，app 级不注入全部 manager）
+    session_manager: SessionManager | None = None
+    workspace_manager: WorkspaceManager | None = None
+    terminal_manager: TerminalManager | None = None
+    channel_manager: ChannelManager | None = None
+    config: Any = None
+    event_loop: asyncio.AbstractEventLoop | None = None
+
+    def make_channel_context(self) -> ChannelContext:
+        """从 RpcContext 构造 ChannelContext。"""
+        from mutbot.channel import ChannelContext as _CC
+        return _CC(
+            workspace_id=self.workspace_id,
+            session_manager=self.session_manager,
+            terminal_manager=self.terminal_manager,
+            event_loop=self.event_loop or asyncio.get_running_loop(),
+        )
 
     async def broadcast_event(self, event: str, data: dict | None = None) -> None:
         """广播事件到当前 workspace 所有客户端（含发送者）"""

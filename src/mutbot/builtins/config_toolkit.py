@@ -996,7 +996,7 @@ class ConfigToolkit(UIToolkitBase):
 
     def _activate(self) -> str:
         """激活配置，切换到真实 LLM Provider。"""
-        from mutbot.runtime.session_impl import create_llm_client
+        from mutbot.runtime.session_manager import create_llm_client
 
         config = self._config
         client = create_llm_client(config)

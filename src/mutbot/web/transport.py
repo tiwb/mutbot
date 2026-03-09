@@ -13,6 +13,11 @@ import sys
 from collections import deque
 from typing import TYPE_CHECKING, Any, Literal
 
+import mutobj
+from mutobj import impl
+
+from mutbot.channel import Channel
+
 if TYPE_CHECKING:
     from fastapi import WebSocket
 
@@ -444,44 +449,29 @@ class Client:
 
 
 # ---------------------------------------------------------------------------
-# Channel — 多路复用单元
+# ChannelTransport — Channel 的 WebSocket 传输实现
 # ---------------------------------------------------------------------------
 
 
-class Channel:
-    """业务层与传输层的桥梁。
+class ChannelTransport(mutobj.Extension[Channel]):
+    """Channel 的 WebSocket 传输状态——对 Session 透明。"""
 
-    每个 Channel 有一个全局唯一的 ``ch`` ID，绑定到一个 ``Client``。
-    业务代码只调用 ``enqueue_json`` / ``enqueue_binary``，
-    不关心计数、ACK、断线等传输细节。
-    """
+    _client: Client | None = None
 
-    def __init__(
-        self,
-        ch: int,
-        client: Client,
-        target: str,
-        session_id: str | None = None,
-    ) -> None:
-        self.ch = ch
-        self.client = client
-        self.target = target
-        self.session_id = session_id
 
-    def enqueue_json(self, data: dict) -> None:
-        """发送 JSON 消息到此频道（线程安全）。
+@impl(Channel.send_json)
+def _channel_send_json(self: Channel, data: dict) -> None:
+    ext = ChannelTransport.get(self)
+    if ext and ext._client:
+        ext._client.enqueue("json", {"ch": self.ch, **data})
 
-        自动注入 ``ch`` 字段。
-        """
-        self.client.enqueue("json", {"ch": self.ch, **data})
 
-    def enqueue_binary(self, data: bytes) -> None:
-        """发送 binary 消息到此频道（线程安全）。
-
-        自动添加 varint channel_id 前缀。
-        """
+@impl(Channel.send_binary)
+def _channel_send_binary(self: Channel, data: bytes) -> None:
+    ext = ChannelTransport.get(self)
+    if ext and ext._client:
         prefix = encode_varint(self.ch)
-        self.client.enqueue("binary", prefix + data)
+        ext._client.enqueue("binary", prefix + data)
 
 
 # ---------------------------------------------------------------------------
@@ -507,7 +497,6 @@ class ChannelManager:
     def open(
         self,
         client: Client,
-        target: str,
         session_id: str | None = None,
     ) -> Channel:
         """打开频道，分配全局唯一 channel ID（复用最小可用自然数）。"""
@@ -519,7 +508,8 @@ class ChannelManager:
                 ch_id = self._next_id
                 self._next_id += 1
 
-            channel = Channel(ch_id, client, target, session_id)
+            channel = Channel(ch=ch_id, session_id=session_id or "")
+            ChannelTransport.get_or_create(channel)._client = client
             self._channels[ch_id] = channel
             if session_id:
                 self._session_channels.setdefault(session_id, set()).add(ch_id)
@@ -540,11 +530,14 @@ class ChannelManager:
                     s.discard(ch)
                     if not s:
                         del self._session_channels[channel.session_id]
-            c = self._client_channels.get(channel.client.client_id)
-            if c:
-                c.discard(ch)
-                if not c:
-                    del self._client_channels[channel.client.client_id]
+            ext = ChannelTransport.get(channel)
+            client_id = ext._client.client_id if ext and ext._client else None
+            if client_id:
+                c = self._client_channels.get(client_id)
+                if c:
+                    c.discard(ch)
+                    if not c:
+                        del self._client_channels[client_id]
             return channel
 
     def get_channel(self, ch: int) -> Channel | None:

@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 from mutagent.tools import Toolkit
 
 if TYPE_CHECKING:
-    from mutbot.runtime.session_impl import SessionManager
+    from mutbot.runtime.session_manager import SessionManager
 
 logger = logging.getLogger(__name__)
 

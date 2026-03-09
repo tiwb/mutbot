@@ -194,3 +194,84 @@ def serialize_stream_event(event: StreamEvent) -> dict[str, Any]:
         d["timestamp"] = event.timestamp
 
     return d
+
+
+# ---------------------------------------------------------------------------
+# Data dict 序列化（workspace / session / terminal）
+# ---------------------------------------------------------------------------
+
+def workspace_dict(ws) -> dict[str, Any]:
+    return {
+        "id": ws.id,
+        "name": ws.name,
+        "project_path": ws.project_path,
+        "sessions": ws.sessions,
+        "layout": ws.layout,
+        "created_at": ws.created_at,
+        "updated_at": ws.updated_at,
+        "last_accessed_at": ws.last_accessed_at,
+    }
+
+
+def session_dict(s) -> dict[str, Any]:
+    kind = session_kind(s.type)
+    icon = s.config.get("icon") or getattr(type(s), "display_icon", "") or ""
+    d: dict[str, Any] = {
+        "id": s.id,
+        "workspace_id": s.workspace_id,
+        "title": s.title,
+        "type": s.type,
+        "kind": kind,
+        "icon": icon,
+        "status": s.status,
+        "created_at": s.created_at,
+        "updated_at": s.updated_at,
+        "config": s.config,
+    }
+    from mutbot.session import AgentSession
+    if isinstance(s, AgentSession):
+        d["model"] = s.model
+    return d
+
+
+def session_kind(session_type: str) -> str:
+    """从全限定类型名推导短类型名。"""
+    parts = session_type.rsplit(".", 1)
+    name = parts[-1] if parts else session_type
+    if name.endswith("Session"):
+        name = name[:-7]
+    return name.lower()
+
+
+def session_type_display(qualified: str, cls: type) -> tuple[str, str]:
+    """获取 Session 类型的 (显示名, 图标)。"""
+    name = getattr(cls, "display_name", "") or ""
+    icon = getattr(cls, "display_icon", "") or ""
+    if not name:
+        raw = cls.__name__
+        if raw.endswith("Session"):
+            raw = raw[:-7]
+        name = raw
+    if not icon:
+        icon = session_kind(qualified)
+    return (name, icon)
+
+
+def terminal_dict(t) -> dict[str, Any]:
+    return {
+        "id": t.id,
+        "workspace_id": t.workspace_id,
+        "rows": t.rows,
+        "cols": t.cols,
+        "alive": t.alive,
+    }
+
+
+LANG_MAP = {
+    ".py": "python", ".js": "javascript", ".ts": "typescript", ".tsx": "typescriptreact",
+    ".jsx": "javascriptreact", ".json": "json", ".html": "html", ".css": "css",
+    ".md": "markdown", ".yaml": "yaml", ".yml": "yaml", ".toml": "toml",
+    ".sh": "shell", ".bash": "shell", ".sql": "sql", ".xml": "xml",
+    ".rs": "rust", ".go": "go", ".java": "java", ".c": "c", ".cpp": "cpp",
+    ".h": "c", ".hpp": "cpp", ".rb": "ruby", ".php": "php",
+}

@@ -343,8 +343,8 @@ export default function AgentPanel({ sessionId, rpc, onSessionLink }: Props) {
     const hadCache = !!cached && cached.length > 0;
     let ch = 0;
 
-    // Open channel for this session
-    rpc.openChannel("session", { session_id: sessionId }).then((channelId) => {
+    // Connect to session (replaces channel.open)
+    rpc.call<{ ch: number }>("session.connect", { session_id: sessionId }).then(({ ch: channelId }) => {
       ch = channelId;
       chRef.current = ch;
 
@@ -355,7 +355,7 @@ export default function AgentPanel({ sessionId, rpc, onSessionLink }: Props) {
       setLogChannel(rpc!, ch, sessionId);
 
       setConnected(true);
-      if (DEBUG) rlog.debug("Channel open:", ch);
+      if (DEBUG) rlog.debug("Session connected, ch:", ch);
 
       // If no cached messages, load history from server
       if (!hadCache && !replayedRef.current.has(sessionId)) {
@@ -401,7 +401,7 @@ export default function AgentPanel({ sessionId, rpc, onSessionLink }: Props) {
         });
       }
     }).catch((err) => {
-      if (DEBUG) rlog.error("Failed to open channel:", String(err));
+      if (DEBUG) rlog.error("Failed to connect session:", String(err));
       setConnected(false);
     });
 
@@ -422,7 +422,8 @@ export default function AgentPanel({ sessionId, rpc, onSessionLink }: Props) {
       setLogChannel(null);
       unsubClosed();
       if (ch > 0) {
-        rpc!.closeChannel(ch).catch(() => {});
+        rpc!.cleanupChannelHandlers(ch);
+        rpc!.call("session.disconnect", { session_id: sessionId, ch }).catch(() => {});
       }
     };
   }, [sessionId, rpc]);

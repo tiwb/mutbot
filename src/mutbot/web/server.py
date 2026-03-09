@@ -18,7 +18,7 @@ from fastapi.staticfiles import StaticFiles
 from mutagent.runtime.log_store import LogStore, LogStoreHandler, SingleLineFormatter
 
 from mutbot.runtime.workspace import WorkspaceManager
-from mutbot.runtime.session_impl import SessionManager
+from mutbot.runtime.session_manager import SessionManager
 from mutbot.runtime.terminal import TerminalManager
 from mutbot.runtime.config import MutbotConfig, load_mutbot_config
 
@@ -203,7 +203,7 @@ async def lifespan(app: FastAPI):
 
     # 1. LLM client 重建（所有活跃 session）
     def _on_provider_changed(event):
-        from mutbot.runtime.session_impl import create_llm_client
+        from mutbot.runtime.session_manager import create_llm_client
         for _sid, rt in session_manager._runtimes.items():
             if hasattr(rt, 'agent') and rt.agent:
                 try:

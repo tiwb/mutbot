@@ -10,12 +10,14 @@ from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
 import mutobj
+from mutobj import impl
 
 if TYPE_CHECKING:
     from mutagent.agent import Agent
     from mutagent.config import Config
     from mutagent.messages import Message
-    from mutbot.runtime.session_impl import SessionManager
+    from mutbot.channel import Channel, ChannelContext
+    from mutbot.runtime.session_manager import SessionManager
 
 
 # ---------------------------------------------------------------------------
@@ -47,11 +49,11 @@ class Session(mutobj.Declaration):
     @staticmethod
     def get_session_class(qualified_name: str) -> type[Session]:
         """通过全限定名查找 Session 子类，直接使用 mutobj 基础设施。"""
-        from mutbot.runtime.session_impl import get_session_class
+        from mutbot.runtime.session_manager import get_session_class
         return get_session_class(qualified_name)
 
     def serialize(self) -> dict:
-        from mutbot.runtime.session_impl import serialize_session
+        from mutbot.runtime.session_manager import serialize_session
         return serialize_session(self)
 
     @classmethod
@@ -77,6 +79,34 @@ class Session(mutobj.Declaration):
 
     def on_restart_cleanup(self) -> None:
         """服务器重启时清理残留状态（无需外部资源）。"""
+        ...
+
+    # --- 广播能力（Declaration 桩）---
+
+    def broadcast_json(self, data: dict) -> None:
+        """广播 JSON 到连接此 Session 的所有 channel。"""
+        ...
+
+    def broadcast_binary(self, data: bytes) -> None:
+        """广播 binary 到连接此 Session 的所有 channel。"""
+        ...
+
+    # --- Channel 生命周期回调（Declaration 桩）---
+
+    def on_connect(self, channel: Channel, ctx: ChannelContext) -> None:
+        """前端连接到此 Session 时调用。"""
+        ...
+
+    def on_disconnect(self, channel: Channel, ctx: ChannelContext) -> None:
+        """前端断开此 Session 的 channel 时调用。"""
+        ...
+
+    async def on_message(self, channel: Channel, raw: dict, ctx: ChannelContext) -> None:
+        """收到前端 JSON 消息。"""
+        ...
+
+    async def on_data(self, channel: Channel, payload: bytes, ctx: ChannelContext) -> None:
+        """收到前端二进制数据。"""
         ...
 
 
@@ -105,7 +135,7 @@ class AgentSession(Session):
         子类覆盖此方法以定制工具集和提示词。
         默认实现保持当前行为（ModuleToolkit + LogToolkit + auto_discover）。
         """
-        from mutbot.runtime.session_impl import build_default_agent
+        from mutbot.runtime.session_manager import build_default_agent
         return build_default_agent(self, config, log_dir, session_ts, messages)
 
 
@@ -126,3 +156,27 @@ class DocumentSession(Session):
 
     file_path: str = ""
     language: str = ""
+
+
+# ---------------------------------------------------------------------------
+# SessionChannels Extension — Session 的 channel 管理
+# ---------------------------------------------------------------------------
+
+class SessionChannels(mutobj.Extension[Session]):
+    """Session 的 channel 管理——框架自动维护，@impl 不需要关心。"""
+
+    _channels: list = mutobj.field(default_factory=list)  # list[Channel]
+
+
+@impl(Session.broadcast_json)
+def _session_broadcast_json(self: Session, data: dict) -> None:
+    ext = SessionChannels.get_or_create(self)
+    for ch in ext._channels:
+        ch.send_json(data)
+
+
+@impl(Session.broadcast_binary)
+def _session_broadcast_binary(self: Session, data: bytes) -> None:
+    ext = SessionChannels.get_or_create(self)
+    for ch in ext._channels:
+        ch.send_binary(data)

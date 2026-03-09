@@ -30,7 +30,7 @@ from mutbot.session import (
     DocumentSession,
 )
 from mutbot.runtime import storage
-from mutbot.web.agent_bridge import AgentBridge
+from mutbot.runtime.agent_bridge import AgentBridge
 from mutbot.web.serializers import serialize_message, deserialize_message
 
 logger = logging.getLogger(__name__)
@@ -191,35 +191,7 @@ def _deserialize_session(cls: type[Session], data: dict) -> Session:
 
 # -- on_create --
 
-@mutobj.impl(TerminalSession.on_create)
-def _terminal_on_create(self: TerminalSession, sm: SessionManager) -> None:
-    """TerminalSession：创建 PTY，恢复历史 scrollback，设 running。"""
-    tm = sm.terminal_manager
-    if tm is None:
-        return
-    rows = self.config.get("rows", 24)
-    cols = self.config.get("cols", 80)
-    cwd = self.config.get("cwd", ".")
-
-    # on_dead: called from reader thread when PTY dies — copy scrollback + mark dirty
-    session_id = self.id
-    def on_dead(term_id: str, scrollback: bytes) -> None:
-        self.scrollback_b64 = base64.b64encode(scrollback).decode()
-        sm.mark_dirty(session_id)
-
-    term = tm.create(self.workspace_id, rows, cols, cwd=cwd, on_dead=on_dead)
-    self.config["terminal_id"] = term.id
-
-    # Restore persisted scrollback from previous session
-    if self.scrollback_b64:
-        try:
-            data = base64.b64decode(self.scrollback_b64)
-            tm.inject_scrollback(term.id, data)
-        except Exception:
-            pass
-        self.scrollback_b64 = ""
-
-    self.status = "running"
+# TerminalSession.on_create → runtime/terminal.py
 
 
 @mutobj.impl(DocumentSession.on_create)
@@ -239,21 +211,7 @@ def _agent_on_stop(self: AgentSession, sm: SessionManager) -> None:
     """AgentSession：状态归位为空。"""
     self.status = ""
 
-
-@mutobj.impl(TerminalSession.on_stop)
-def _terminal_on_stop(self: TerminalSession, sm: SessionManager) -> None:
-    """TerminalSession：persist scrollback, kill PTY, set stopped."""
-    tm = sm.terminal_manager
-    if tm is not None and self.config:
-        terminal_id = self.config.get("terminal_id")
-        if terminal_id and tm.has(terminal_id):
-            # Persist scrollback before killing (SessionManager.stop() calls
-            # _persist(session) after on_stop returns, so this is written to disk)
-            scrollback = tm.get_scrollback(terminal_id)
-            if scrollback:
-                self.scrollback_b64 = base64.b64encode(scrollback).decode()
-            tm.kill(terminal_id)
-    self.status = "stopped"
+# TerminalSession.on_stop → runtime/terminal.py
 
 
 # -- on_restart_cleanup --
@@ -264,12 +222,7 @@ def _agent_on_restart_cleanup(self: AgentSession) -> None:
     if self.status == "running":
         self.status = ""
 
-
-@mutobj.impl(TerminalSession.on_restart_cleanup)
-def _terminal_on_restart_cleanup(self: TerminalSession) -> None:
-    """TerminalSession：running → stopped。"""
-    if self.status == "running":
-        self.status = "stopped"
+# TerminalSession.on_restart_cleanup → runtime/terminal.py
 
 
 def setup_environment(config: Config) -> None:
@@ -674,7 +627,7 @@ class SessionManager:
 
     # --- Agent 生命周期 ---
 
-    def start(self, session_id: str, loop: asyncio.AbstractEventLoop, broadcast_fn=None) -> AgentBridge:
+    def start(self, session_id: str, loop: asyncio.AbstractEventLoop) -> AgentBridge:
         """Assemble Agent + bridge and start the agent thread (agent sessions only).
 
         If the session has persisted messages, restore them into the new Agent.
@@ -719,15 +672,11 @@ class SessionManager:
             sm.set_session_status(session_id, status)
 
         bridge = AgentBridge(
-            session_id, agent, loop, broadcast_fn,
+            session_id, agent, loop, None,
             session=session,
             persist_fn=_persist_fn,
             session_status_fn=_session_status_fn,
         )
-
-        # 将 broadcast 能力注入 ToolSet，供 UIToolkit 使用
-        object.__setattr__(agent.tools, '_broadcast_fn', broadcast_fn)
-        object.__setattr__(agent.tools, '_session_id', session_id)
 
         # 将 session 引用注入 Agent，供绑定链使用
         if not hasattr(agent, 'session'):
