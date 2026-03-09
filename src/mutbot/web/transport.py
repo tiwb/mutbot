@@ -260,13 +260,10 @@ class Client:
 
     # -- 发送 ---------------------------------------------------------------
 
-    def send_json(self, data: dict) -> None:
-        """Workspace 级 JSON 消息入队（线程安全）。"""
-        self._send_queue.put_nowait(("json", data))
-
     def enqueue(self, frame_type: FrameType, data: Any) -> None:
-        """通用入队（供 Channel 调用，线程安全）。"""
-        self._send_queue.put_nowait((frame_type, data))
+        """线程安全入队，通过 call_soon_threadsafe 唤醒事件循环。"""
+        loop = self._get_loop()
+        loop.call_soon_threadsafe(self._send_queue.put_nowait, (frame_type, data))
 
     # -- 接收 ---------------------------------------------------------------
 

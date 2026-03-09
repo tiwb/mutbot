@@ -44,14 +44,14 @@ def _broadcast_to_workspace(
     for c in list(clients):
         if c is exclude_client:
             continue
-        c.send_json(data)
+        c.enqueue("json", data)
 
 
 def _broadcast_to_all_workspaces(data: dict) -> None:
     """广播到所有 workspace 的所有 Client。"""
     for clients in _workspace_clients.values():
         for c in list(clients):
-            c.send_json(data)
+            c.enqueue("json", data)
 
 
 # Workspace RPC dispatcher
@@ -332,11 +332,11 @@ async def websocket_workspace(websocket: WebSocket, workspace_id: str):
     _workspace_clients.setdefault(workspace_id, set()).add(client)
 
     if not resumed:
-        client.send_json(make_event("config_changed", {"reason": "connect"}))
+        client.enqueue("json", make_event("config_changed", {"reason": "connect"}))
 
     if not resumed:
         for event in _pop_pending_events(workspace_id):
-            client.send_json(event)
+            client.enqueue("json", event)
 
     # --- RPC context ---
     async def broadcast(data: dict) -> None:
@@ -391,7 +391,7 @@ async def websocket_workspace(websocket: WebSocket, workspace_id: str):
                         context._post_send = None
                         response = await workspace_rpc.dispatch(raw, context)
                         if response is not None:
-                            client.send_json(response)
+                            client.enqueue("json", response)
                         if context._post_send is not None:
                             context._post_send()
                     else:
@@ -477,7 +477,7 @@ def _close_channels_for_session(session_id: str, reason: str) -> None:
                     logger.debug("on_disconnect error during close_channels", exc_info=True)
         ext_t = ChannelTransport.get(channel)
         if ext_t and ext_t._client:
-            ext_t._client.send_json({
+            ext_t._client.enqueue("json", {
                 "type": "event",
                 "event": "channel.closed",
                 "closed_ch": channel.ch,
