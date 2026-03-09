@@ -44,10 +44,10 @@ class SessionToolkit(Toolkit):
         try:
             session_cls = Session.get_session_class(session_type)
         except ValueError:
-            return f"未知的 Session 类型：{session_type}"
+            return f"Unknown session type: {session_type}"
 
         if not issubclass(session_cls, AgentSession):
-            return f"{session_type} 不是 Agent Session 类型，无法创建。"
+            return f"{session_type} is not an Agent Session type."
 
         # 创建 Session
         session = self.session_manager.create(
@@ -69,7 +69,7 @@ class SessionToolkit(Toolkit):
             label = label[:-7]
 
         return (
-            f"已创建 {label} Session（ID: {session.id}，标题: {session.title}）。\n"
-            f"用户可以点击链接打开：[{session.title}](mutbot://session/{session.id})\n"
-            f"初始需求已传达：{initial_message[:200]}"
+            f"Created {label} Session (ID: {session.id}, title: {session.title}).\n"
+            f"User can open it via: [{session.title}](mutbot://session/{session.id})\n"
+            f"Initial request delivered: {initial_message[:200]}"
         )

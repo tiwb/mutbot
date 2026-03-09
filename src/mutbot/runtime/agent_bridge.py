@@ -131,7 +131,7 @@ class AgentBridge:
         # 推送触发消息唤醒 _input_stream
         trigger = Message(
             role="user",
-            blocks=[TurnStartBlock(turn_id="trigger"), TextBlock(text="[配置更新]")],
+            blocks=[TurnStartBlock(turn_id="trigger"), TextBlock(text="[config update]")],
         )
         self._input_queue.put_nowait(trigger)
 

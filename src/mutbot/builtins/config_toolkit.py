@@ -54,8 +54,8 @@ class NullProvider(LLMProvider):
         stream: bool = True,
     ) -> AsyncGenerator[StreamEvent, None]:
         guide_text = (
-            "欢迎使用 MutBot！当前尚未配置 LLM 服务，"
-            "让我先帮你完成初始设置。"
+            "Welcome to MutBot! No LLM provider is configured yet. "
+            "Let me help you set one up."
         )
         yield StreamEvent(type="text_delta", text=guide_text)
 
@@ -259,8 +259,8 @@ class ConfigToolkit(UIToolkitBase):
         # 默认 actions
         if "actions" not in view:
             view["actions"] = [
-                {"type": "cancel", "label": "取消"},
-                {"type": "submit", "label": "保存", "primary": True},
+                {"type": "cancel", "label": "Cancel"},
+                {"type": "submit", "label": "Save", "primary": True},
             ]
 
         data = await self.ui.show(view)

@@ -1,6 +1,6 @@
 """MutBot — 基于 mutagent 的 Web 应用。"""
 
-__version__ = "0.4.999"
+__version__ = "0.5.999"
 
 from mutbot.session import Session, AgentSession, TerminalSession, DocumentSession
 from mutbot.menu import Menu, MenuItem, MenuResult
