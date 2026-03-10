@@ -6,6 +6,7 @@ import asyncio
 import logging
 import os
 import signal
+import socket as _socket
 import sys
 from contextlib import asynccontextmanager
 from datetime import datetime
@@ -336,6 +337,81 @@ except ImportError:
 # ---------------------------------------------------------------------------
 
 
+_DEFAULT_HOST = "127.0.0.1"
+_DEFAULT_PORT = 8741
+
+
+def _parse_listen(value: str) -> tuple[str, int]:
+    """Parse a --listen / config listen value into (host, port).
+
+    Formats: 'host:port', pure digits → port, otherwise → host.
+    """
+    if ":" in value:
+        host, port_str = value.rsplit(":", 1)
+        return host, int(port_str)
+    if value.isdigit():
+        return _DEFAULT_HOST, int(value)
+    return value, _DEFAULT_PORT
+
+
+def _collect_listen_addresses(
+    cli_listen: list[str],
+    config_listen: list[str],
+) -> list[tuple[str, int]]:
+    """Merge CLI and config listen addresses, deduplicate."""
+    seen: set[tuple[str, int]] = set()
+    result: list[tuple[str, int]] = []
+    for value in cli_listen + config_listen:
+        addr = _parse_listen(value)
+        if addr not in seen:
+            seen.add(addr)
+            result.append(addr)
+    if not result:
+        result.append((_DEFAULT_HOST, _DEFAULT_PORT))
+    return result
+
+
+def _enumerate_ips() -> list[str]:
+    """Enumerate local IPv4 addresses (for 0.0.0.0 expansion)."""
+    try:
+        infos = _socket.getaddrinfo(
+            _socket.gethostname(), None, _socket.AF_INET,
+        )
+        ips = list(dict.fromkeys(info[4][0] for info in infos))
+        # Ensure 127.0.0.1 is included
+        if "127.0.0.1" not in ips:
+            ips.insert(0, "127.0.0.1")
+        return ips
+    except Exception:
+        return ["127.0.0.1"]
+
+
+def _build_banner_lines(
+    addresses: list[tuple[str, int]],
+) -> list[str]:
+    """Build banner display lines with via URLs."""
+    lines: list[str] = []
+    for host, port in addresses:
+        if host == "0.0.0.0":
+            # Expand to all local IPs
+            for ip in _enumerate_ips():
+                if (ip, port) in {(h, p) for h, p in addresses if h != "0.0.0.0"}:
+                    continue  # Already covered by an explicit bind
+                lines.append(_format_banner_line(ip, port))
+        else:
+            lines.append(_format_banner_line(host, port))
+    return lines
+
+
+def _format_banner_line(host: str, port: int) -> str:
+    local_url = f"http://{host}:{port}"
+    if host == "127.0.0.1" and port == _DEFAULT_PORT:
+        via_url = "https://mutbot.ai"
+    else:
+        via_url = f"https://mutbot.ai/connect/#{host}:{port}"
+    return f"  \u279c {local_url}  (via {via_url})"
+
+
 def main():
     """MutBot server entry point: config → logging → app.state → uvicorn."""
     import argparse
@@ -347,8 +423,10 @@ def main():
         "-V", "--version", action="version",
         version=f"mutbot {mutbot.__version__}",
     )
-    parser.add_argument("--host", default="127.0.0.1", help="Bind host (default: 127.0.0.1)")
-    parser.add_argument("--port", type=int, default=8741, help="Bind port (default: 8741)")
+    parser.add_argument(
+        "--listen", action="append", default=None, metavar="[HOST:]PORT",
+        help="Bind address (repeatable). Default: 127.0.0.1:8741",
+    )
     parser.add_argument("--debug", action="store_true", help="Enable debug logging to console")
     args = parser.parse_args()
 
@@ -396,24 +474,45 @@ def main():
     app.state.config = config
     app.state.log_store = _log_store
 
-    # 4. uvicorn（log_config=None 禁用 uvicorn 自带日志配置）
+    # 4. Listen 地址合并（CLI + config）
+    cli_listen = args.listen or []
+    config_listen = config.get("listen", default=[]) or []
+    addresses = _collect_listen_addresses(cli_listen, config_listen)
+
+    # 5. 创建 sockets
+    sockets: list[_socket.socket] = []
+    for host, port in addresses:
+        sock = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+        sock.setsockopt(_socket.SOL_SOCKET, _socket.SO_REUSEADDR, 1)
+        sock.bind((host, port))
+        sockets.append(sock)
+
+    # 6. uvicorn（log_config=None 禁用 uvicorn 自带日志配置）
     uvi_config = uvicorn.Config(
-        app, host=args.host, port=args.port, log_config=None,
+        app, log_config=None,
         timeout_graceful_shutdown=3,
     )
     server = uvicorn.Server(uvi_config)
 
-    # banner
+    # 7. Banner（防重复打印）
+    _banner_printed = False
     _original_startup = server.startup
 
     async def _startup_with_banner(sockets=None):
+        nonlocal _banner_printed
         await _original_startup(sockets=sockets)
-        print(f"\n  Open https://mutbot.ai to get started\n")
+        if not _banner_printed:
+            _banner_printed = True
+            banner_lines = _build_banner_lines(addresses)
+            print(f"\n  MutBot v{mutbot.__version__}\n")
+            for line in banner_lines:
+                print(line)
+            print()
 
     server.startup = _startup_with_banner
 
     try:
-        server.run()
+        server.run(sockets=sockets)
     except KeyboardInterrupt:
         pass
 

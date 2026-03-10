@@ -13,6 +13,8 @@ from typing import Any
 
 import httpx
 from fastapi import APIRouter, Request
+
+from mutagent.http import HttpClient
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
 from mutbot.proxy.translation import (
@@ -243,7 +245,7 @@ async def _proxy_no_stream(
     """非流式代理。"""
     body.pop("stream", None)
 
-    async with httpx.AsyncClient(timeout=120.0) as client:
+    async with HttpClient.create(timeout=120.0) as client:
         resp = await client.post(endpoint, headers=headers, json=body)
 
     duration_ms = int((time.monotonic() - t0) * 1000)
@@ -277,7 +279,7 @@ async def _proxy_stream(
         body["stream_options"] = {"include_usage": True}
 
     async def event_generator():
-        async with httpx.AsyncClient(timeout=120.0) as client:
+        async with HttpClient.create(timeout=120.0) as client:
             async with client.stream(
                 "POST", endpoint, headers=headers, json=body
             ) as resp:

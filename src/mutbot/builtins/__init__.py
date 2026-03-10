@@ -7,5 +7,6 @@
 import mutbot.builtins.menus as menus  # noqa: F401
 import mutbot.builtins.config_toolkit as config_toolkit  # noqa: F401
 import mutbot.builtins.web_jina_ext as web_jina_ext  # noqa: F401
+import mutbot.builtins.http_client as http_client  # noqa: F401
 import mutbot.runtime.terminal  # noqa: F401  ← 触发 TerminalSession @impl
 import mutbot.runtime.agent_bridge  # noqa: F401  ← 触发 AgentSession @impl
