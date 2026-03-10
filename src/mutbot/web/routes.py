@@ -105,6 +105,7 @@ async def websocket_app(websocket: WebSocket):
     logger.info("App WS connected")
 
     import mutbot
+    import os
     _cfg = websocket.app.state.config
     await websocket.send_json({
         "type": "event",
@@ -112,6 +113,7 @@ async def websocket_app(websocket: WebSocket):
         "data": {
             "version": mutbot.__version__,
             "setup_required": not bool(_cfg.get("providers")),
+            "cwd": os.getcwd(),
         },
     })
 

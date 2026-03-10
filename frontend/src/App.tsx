@@ -30,6 +30,7 @@ import { getSessionIcon } from "./components/SessionIcons";
 import IconPicker from "./components/IconPicker";
 import WelcomePage from "./components/WelcomePage";
 import WorkspaceSelector from "./components/WorkspaceSelector";
+import NewWorkspacePage from "./components/NewWorkspacePage";
 import type { Workspace, Session } from "./lib/types";
 
 // ---------- Helpers ----------
@@ -147,6 +148,10 @@ export default function App() {
   // Remote mode: connection status tracking
   const [remoteConnected, setRemoteConnected] = useState<boolean | null>(null);
 
+  // New workspace flow: hash points to non-existent workspace
+  const [newWorkspaceName, setNewWorkspaceName] = useState<string | null>(null);
+  const [cwd, setCwd] = useState("");
+
   // 连接 /ws/app 获取工作区列表 + hash 路由
   useEffect(() => {
     const rpcInst = new AppRpc({
@@ -173,8 +178,8 @@ export default function App() {
                   }
                 }
               } else {
-                // workspace not found
-                exitWorkspace();
+                // workspace not found → new workspace flow
+                setNewWorkspaceName(wsName);
               }
             }
           })
@@ -191,11 +196,18 @@ export default function App() {
     if (isRemote()) {
       const urlVersion = location.pathname.match(/^\/v([^/]+)\//)?.[1];
       rpcInst.on("welcome", (data) => {
-        const serverVersion = (data as { version?: string }).version;
+        const d = data as { version?: string; cwd?: string };
+        if (d.cwd) setCwd(d.cwd);
+        const serverVersion = d.version;
         if (urlVersion && serverVersion && serverVersion !== urlVersion) {
           // 版本不匹配，重定向到根路径让 Landing Page 重新匹配
           location.href = `/${location.hash}`;
         }
+      });
+    } else {
+      rpcInst.on("welcome", (data) => {
+        const d = data as { cwd?: string };
+        if (d.cwd) setCwd(d.cwd);
       });
     }
 
@@ -228,8 +240,8 @@ export default function App() {
           }
         }
       } else {
-        // hash 指向不存在的 workspace
-        exitWorkspace();
+        // hash 指向不存在的 workspace → new workspace flow
+        setNewWorkspaceName(wsName);
         setWorkspace(null);
       }
     };
@@ -1010,9 +1022,34 @@ export default function App() {
       );
     }
 
+    // Hash 指向不存在的 workspace → New Workspace 页面
+    if (newWorkspaceName && appRpc) {
+      return (
+        <NewWorkspacePage
+          appRpc={appRpc}
+          initialName={newWorkspaceName}
+          cwd={cwd}
+          onCreated={(ws) => {
+            setNewWorkspaceName(null);
+            setWorkspaces((prev) => [...prev, ws]);
+            setWorkspace(ws);
+            requestAnimationFrame(() => { location.hash = ws.name; });
+          }}
+          onCancel={() => {
+            if (isRemote()) {
+              location.href = location.pathname;
+            } else {
+              setNewWorkspaceName(null);
+              history.replaceState(null, "", location.pathname);
+            }
+          }}
+        />
+      );
+    }
+
     // Hash 指向 workspace 但尚未加载 → 全屏连接中状态
     const pendingWsName = getWorkspaceName();
-    if (pendingWsName) {
+    if (pendingWsName && !newWorkspaceName) {
       return (
         <div className="ws-connecting-fullscreen">
           <span className="ws-connecting-spinner" />
@@ -1029,10 +1066,12 @@ export default function App() {
           location.hash = ws.name;
           setWorkspace(ws);
         }}
-        onCreated={(ws) => {
-          setWorkspaces((prev) => [...prev, ws]);
-          setWorkspace(ws);
-          requestAnimationFrame(() => { location.hash = ws.name; });
+        onNewWorkspace={() => {
+          const taken = new Set(workspaces.map((w) => w.name));
+          let name = "new-project";
+          let i = 1;
+          while (taken.has(name)) name = `new-project${i++}`;
+          location.hash = name;
         }}
         onRemoved={(wsId) => {
           setWorkspaces((prev) => prev.filter((w) => w.id !== wsId));

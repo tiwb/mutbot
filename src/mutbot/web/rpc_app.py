@@ -44,7 +44,14 @@ def register_app_rpc(app_rpc) -> None:
         p = Path(project_path)
         if not p.is_absolute():
             return {"error": "project_path must be absolute"}
-        if not p.is_dir():
+
+        create_dir = bool(params.get("create_dir", False))
+        if create_dir:
+            try:
+                p.mkdir(parents=True, exist_ok=True)
+            except OSError as e:
+                return {"error": f"cannot create directory: {e}"}
+        elif not p.is_dir():
             return {"error": "project_path does not exist or is not a directory"}
 
         name = params.get("name") or p.name

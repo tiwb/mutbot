@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { AppRpc } from "../lib/app-rpc";
 import type { Workspace } from "../lib/types";
 import RpcMenu, { type MenuExecResult } from "./RpcMenu";
-import DirectoryPicker from "./DirectoryPicker";
+import { useMobileDetect } from "../lib/useMobileDetect";
 
 const MAX_VISIBLE = 5;
 
@@ -10,7 +10,7 @@ interface WorkspaceSelectorProps {
   workspaces: Workspace[];
   appRpc: AppRpc | null;
   onSelect: (ws: Workspace) => void;
-  onCreated: (ws: Workspace) => void;
+  onNewWorkspace: () => void;
   onRemoved: (wsId: string) => void;
 }
 
@@ -142,20 +142,15 @@ export default function WorkspaceSelector({
   workspaces,
   appRpc,
   onSelect,
-  onCreated,
+  onNewWorkspace,
   onRemoved,
 }: WorkspaceSelectorProps) {
-  const [showDirPicker, setShowDirPicker] = useState(false);
+  const isMobile = useMobileDetect();
   const [showSearch, setShowSearch] = useState(false);
   const [contextMenu, setContextMenu] = useState<{
     position: { x: number; y: number };
     ws: Workspace;
   } | null>(null);
-
-  const handleCreate = (ws: Workspace) => {
-    setShowDirPicker(false);
-    onCreated(ws);
-  };
 
   const handleMenuResult = (result: MenuExecResult) => {
     if (result.action === "workspace_removed") {
@@ -177,18 +172,25 @@ export default function WorkspaceSelector({
         <div className="ws-selector-heading-row">
           <h2 className="ws-selector-heading">Workspaces</h2>
           <button
-            className="ws-selector-new-btn"
-            onClick={() => setShowDirPicker(true)}
+            className={`ws-selector-new-btn${isMobile ? " ws-selector-new-btn-mobile" : ""}`}
+            onClick={onNewWorkspace}
             disabled={!appRpc}
             title="New Workspace"
           >
             <PlusIcon />
-            <span>New</span>
+            {isMobile && <span>New</span>}
           </button>
         </div>
         {workspaces.length === 0 ? (
           <p className="ws-selector-empty">
-            No workspaces yet — create one to get started
+            No workspaces yet —{" "}
+            <a
+              className="ws-selector-create-link"
+              href="#"
+              onClick={(e) => { e.preventDefault(); onNewWorkspace(); }}
+            >
+              create one
+            </a>
           </p>
         ) : (
           <>
@@ -222,14 +224,6 @@ export default function WorkspaceSelector({
           </>
         )}
       </div>
-
-      {showDirPicker && appRpc && (
-        <DirectoryPicker
-          appRpc={appRpc}
-          onSelect={handleCreate}
-          onCancel={() => setShowDirPicker(false)}
-        />
-      )}
 
       {showSearch && (
         <WorkspaceSearchDialog
