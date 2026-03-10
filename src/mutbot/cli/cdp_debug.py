@@ -5,6 +5,8 @@
     python -m mutbot.cli.cdp_debug eval "location.href"           # 执行 JS 表达式
     python -m mutbot.cli.cdp_debug console --reload --filter mutbot  # 监听 console
     python -m mutbot.cli.cdp_debug check --marker ensureLandingInHistory  # 一键诊断
+    python -m mutbot.cli.cdp_debug errors                         # 刷新页面并捕获异常/错误
+    python -m mutbot.cli.cdp_debug errors --no-reload             # 不刷新，仅监听异常
 
 前提：Chrome 需以 --remote-debugging-port=9222 启动：
     chrome.exe --remote-debugging-port=9222 --user-data-dir=C:/tmp/chrome-debug
@@ -546,6 +548,92 @@ def cmd_wait(args: argparse.Namespace) -> None:
                 print("  (unable to query)")
 
 
+def cmd_errors(args: argparse.Namespace) -> None:
+    """Reload page and capture runtime exceptions + error logs."""
+    pages = get_pages(args.port)
+    page = find_page(pages, index=args.page, url_pattern=args.url or "")
+    ws_url = page.get("webSocketDebuggerUrl")
+    if not ws_url:
+        print("Error: Page has no webSocketDebuggerUrl.", file=sys.stderr)
+        sys.exit(1)
+
+    print(f"Target: {page.get('url', '?')}", file=sys.stderr)
+
+    with SimpleWebSocket(ws_url) as ws:
+        # Enable domains for exception and log capture
+        cdp_call(ws, "Runtime.enable", msg_id=1)
+        cdp_call(ws, "Log.enable", msg_id=2)
+
+        reload = not args.no_reload
+        if reload:
+            print("Reloading page (ignoreCache=true)...", file=sys.stderr)
+            cdp_call(ws, "Page.reload", {"ignoreCache": True}, msg_id=3)
+
+        print("Listening for errors... (Ctrl+C to stop)", file=sys.stderr)
+
+        timeout = args.timeout
+        error_count = 0
+        try:
+            while True:
+                try:
+                    raw = ws.recv(timeout=timeout)
+                except socket.timeout:
+                    print(f"\nTimeout ({timeout}s) reached.", file=sys.stderr)
+                    break
+
+                msg = json.loads(raw)
+                method = msg.get("method", "")
+
+                if method == "Runtime.exceptionThrown":
+                    error_count += 1
+                    exc = msg["params"]["exceptionDetails"]
+                    text = exc.get("text", "")
+                    desc = exc.get("exception", {}).get("description", "")
+                    url = exc.get("url", "")
+                    line = exc.get("lineNumber", "?")
+                    col = exc.get("columnNumber", "?")
+                    print(f"\n[EXCEPTION] {text}")
+                    print(f"  at {url}:{line}:{col}")
+                    if desc:
+                        for dl in desc.split("\n")[:10]:
+                            print(f"  {dl}")
+
+                elif method == "Log.entryAdded":
+                    entry = msg["params"]["entry"]
+                    level = entry.get("level", "")
+                    text = entry.get("text", "")
+                    entry_url = entry.get("url", "")
+                    if level == "error":
+                        error_count += 1
+                        loc = f" ({entry_url})" if entry_url else ""
+                        print(f"[LOG.error] {text}{loc}")
+                    elif level == "warning" and args.warnings:
+                        loc = f" ({entry_url})" if entry_url else ""
+                        print(f"[LOG.warn]  {text}{loc}")
+
+                elif method == "Runtime.consoleAPICalled":
+                    ctype = msg["params"].get("type", "")
+                    if ctype in ("error", "warn" if args.warnings else "error"):
+                        call_args = msg["params"].get("args", [])
+                        parts = []
+                        for a in call_args:
+                            if "value" in a:
+                                parts.append(str(a["value"]))
+                            elif a.get("type") == "object" and "description" in a:
+                                parts.append(a["description"])
+                            else:
+                                parts.append(json.dumps(a))
+                        text = " ".join(parts)
+                        print(f"[console.{ctype}] {text}")
+                        if ctype == "error":
+                            error_count += 1
+
+        except KeyboardInterrupt:
+            print("\nStopped.", file=sys.stderr)
+
+        print(f"\n{error_count} error(s) captured.", file=sys.stderr)
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -593,6 +681,14 @@ def main() -> None:
     p_wait.add_argument("--url", default="", help="Select page by URL pattern")
     p_wait.add_argument("--timeout", type=float, default=120, help="Max wait time in seconds (default: 120)")
 
+    # errors
+    p_errors = subparsers.add_parser("errors", help="Reload page and capture exceptions/errors")
+    p_errors.add_argument("--page", type=int, default=None, help="Page index (default: 0)")
+    p_errors.add_argument("--url", default="", help="Select page by URL pattern")
+    p_errors.add_argument("--no-reload", action="store_true", help="Don't reload, just listen")
+    p_errors.add_argument("--warnings", action="store_true", help="Also capture warnings")
+    p_errors.add_argument("--timeout", type=float, default=10, help="Auto-exit after N seconds (default: 10)")
+
     args = parser.parse_args()
 
     commands = {
@@ -601,6 +697,7 @@ def main() -> None:
         "console": cmd_console,
         "check": cmd_check,
         "wait": cmd_wait,
+        "errors": cmd_errors,
     }
     commands[args.command](args)
 

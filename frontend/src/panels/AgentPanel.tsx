@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { WorkspaceRpc } from "../lib/workspace-rpc";
+import { uuid } from "../lib/uuid";
 import { rlog, setLogChannel } from "../lib/remote-log";
 import MessageList, { type ChatMessage, type AgentDisplay } from "../components/MessageList";
 import ChatInput from "../components/ChatInput";
@@ -97,7 +98,7 @@ export default function AgentPanel({ sessionId, rpc, onSessionLink }: Props) {
       setMessages((prev) => [
         ...prev,
         {
-          id: msgId ?? crypto.randomUUID(),
+          id: msgId ?? uuid(),
           role: "user" as const,
           type: "text" as const,
           content: text,
@@ -109,7 +110,7 @@ export default function AgentPanel({ sessionId, rpc, onSessionLink }: Props) {
       // response_start 创建 assistant 消息卡片（替代首个 text_delta 的角色）
       const resp = data.response as { message?: { id?: string; model?: string; timestamp?: number } } | undefined;
       if (resp?.message) {
-        const msgId = resp.message.id ?? crypto.randomUUID();
+        const msgId = resp.message.id ?? uuid();
         const model = resp.message.model;
         const timestamp = resp.message.timestamp
           ? new Date(resp.message.timestamp * 1000).toISOString()
@@ -168,7 +169,7 @@ export default function AgentPanel({ sessionId, rpc, onSessionLink }: Props) {
         | { id: string; name: string; input: Record<string, unknown> }
         | undefined;
       if (tc) {
-        const msgId = crypto.randomUUID();
+        const msgId = uuid();
         toolCallMapRef.current.set(tc.id, msgId);
         const toolData: ToolGroupData = {
           toolCallId: tc.id,
@@ -260,7 +261,7 @@ export default function AgentPanel({ sessionId, rpc, onSessionLink }: Props) {
       if (DEBUG) rlog.info("agent_done: agent thread finished");
     } else if (eventType === "error") {
       rlog.error("agent error:", data.error);
-      const msgId = (data.id as string) ?? crypto.randomUUID();
+      const msgId = (data.id as string) ?? uuid();
       const timestamp = data.timestamp as string | undefined;
       const model = data.model as string | undefined;
       setMessages((prev) => [
@@ -282,7 +283,7 @@ export default function AgentPanel({ sessionId, rpc, onSessionLink }: Props) {
         setMessages((prev) => [
           ...prev,
           {
-            id: crypto.randomUUID(),
+            id: uuid(),
             role: "assistant" as const,
             type: "text" as const,
             content: content.body,
@@ -533,7 +534,7 @@ function restoreChatMessages(msgs: {
       switch (block.type) {
         case "turn_start":
           restored.push({
-            id: msg.id ?? crypto.randomUUID(),
+            id: msg.id ?? uuid(),
             type: "turn_start",
             turnId: block.turn_id ?? "",
             timestamp: ts ?? "",
@@ -542,7 +543,7 @@ function restoreChatMessages(msgs: {
         case "text":
           if (msg.role === "user") {
             restored.push({
-              id: msg.id ?? crypto.randomUUID(),
+              id: msg.id ?? uuid(),
               role: "user",
               type: "text",
               content: block.text ?? "",
@@ -551,7 +552,7 @@ function restoreChatMessages(msgs: {
             });
           } else if (msg.role === "assistant") {
             restored.push({
-              id: msg.id ?? crypto.randomUUID(),
+              id: msg.id ?? uuid(),
               role: "assistant",
               type: "text",
               content: block.text ?? "",
@@ -563,7 +564,7 @@ function restoreChatMessages(msgs: {
           break;
         case "tool_use":
           restored.push({
-            id: crypto.randomUUID(),
+            id: uuid(),
             role: "assistant",
             type: "tool_group",
             timestamp: ts,
@@ -580,7 +581,7 @@ function restoreChatMessages(msgs: {
           break;
         case "turn_end":
           restored.push({
-            id: crypto.randomUUID(),
+            id: uuid(),
             type: "turn_done",
             turnId: block.turn_id ?? "",
             timestamp: ts ?? "",

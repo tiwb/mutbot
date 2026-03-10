@@ -12,6 +12,7 @@
  */
 
 import { getWsUrl } from "./connection";
+import { uuid } from "./uuid";
 
 /** RPC 调用默认超时 (ms) */
 const DEFAULT_TIMEOUT = 30_000;
@@ -106,7 +107,7 @@ export class WorkspaceRpc {
   private nextId = 1;
 
   // 可靠传输
-  private clientId = crypto.randomUUID();
+  private clientId = uuid();
   private recvCount = 0;
   private recvSinceLastAck = 0;
   private sendBuffer: BufferEntry[] = [];
