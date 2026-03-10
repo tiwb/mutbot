@@ -212,33 +212,6 @@ def register_workspace_rpc(workspace_rpc) -> None:
         language = LANG_MAP.get(ext, "plaintext")
         return {"path": str(target.relative_to(project)), "content": content, "language": language}
 
-    # --- Log ---
-
-    @workspace_rpc.method("log.query")
-    async def handle_log_query(params: dict, ctx: RpcContext) -> dict:
-        """查询内存日志"""
-        from mutbot.web.routes import _get_log_store
-        store = _get_log_store()
-        if store is None:
-            return {"entries": [], "total": 0}
-        pattern = params.get("pattern", "")
-        level = params.get("level", "DEBUG")
-        limit = params.get("limit", 50)
-        entries = store.query(pattern=pattern, level=level, limit=limit)
-        return {
-            "total": store.count(),
-            "returned": len(entries),
-            "entries": [
-                {
-                    "timestamp": e.timestamp,
-                    "level": e.level,
-                    "logger": e.logger_name,
-                    "message": e.message,
-                }
-                for e in entries
-            ],
-        }
-
     # --- Config ---
 
     @workspace_rpc.method("config.models")

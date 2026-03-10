@@ -83,11 +83,6 @@ def _get_managers():
     return workspace_manager, session_manager
 
 
-def _get_log_store():
-    from mutbot.web.server import log_store
-    return log_store
-
-
 def _get_terminal_manager():
     from mutbot.web.server import terminal_manager
     return terminal_manager
@@ -96,44 +91,6 @@ def _get_terminal_manager():
 def _get_channel_manager():
     from mutbot.web.server import channel_manager
     return channel_manager
-
-
-# ---------------------------------------------------------------------------
-# Log streaming WebSocket
-# ---------------------------------------------------------------------------
-
-@router.websocket("/ws/logs")
-async def websocket_logs(websocket: WebSocket):
-    """Stream new log entries to client in real-time."""
-    await websocket.accept()
-    logger.info("Log WS connected")
-
-    store = _get_log_store()
-    if store is None:
-        await websocket.close(code=4500, reason="log store not available")
-        return
-
-    cursor = store.count()
-
-    try:
-        while True:
-            await asyncio.sleep(0.2)
-            current_count = store.count()
-            if current_count > cursor:
-                new_entries = store.query(pattern="", level="DEBUG", limit=current_count - cursor)
-                for e in reversed(new_entries):
-                    await websocket.send_json({
-                        "type": "log",
-                        "timestamp": e.timestamp,
-                        "level": e.level,
-                        "logger": e.logger_name,
-                        "message": e.message,
-                    })
-                cursor = current_count
-    except WebSocketDisconnect:
-        logger.info("Log WS disconnected")
-    except Exception:
-        logger.exception("Log WS error")
 
 
 # ---------------------------------------------------------------------------

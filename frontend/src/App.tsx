@@ -24,6 +24,8 @@ import RpcMenu, { type MenuExecResult } from "./components/RpcMenu";
 import { WorkspaceRpc } from "./lib/workspace-rpc";
 import { AppRpc } from "./lib/app-rpc";
 import { isRemote } from "./lib/connection";
+import { useMobileDetect } from "./lib/useMobileDetect";
+import MobileLayout from "./mobile/MobileLayout";
 import { getSessionIcon } from "./components/SessionIcons";
 import IconPicker from "./components/IconPicker";
 import WelcomePage from "./components/WelcomePage";
@@ -85,6 +87,7 @@ function resolveSessionId(
 // ---------------------------------------------------------------------------
 
 export default function App() {
+  const isMobile = useMobileDetect();
   const [workspace, setWorkspace] = useState<Workspace | null>(null);
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [sessions, setSessions] = useState<Session[]>([]);
@@ -428,15 +431,6 @@ export default function App() {
   // Header menu actions (SessionList/Header)
   // ------------------------------------------------------------------
 
-  const handleHeaderAction = useCallback(
-    async (action: string, _data: Record<string, unknown>) => {
-      if (action === "close_workspace") {
-        exitWorkspace();
-      }
-    },
-    [workspace, addTabForSession],
-  );
-
   // ------------------------------------------------------------------
   // Welcome page: create session directly (bypasses menu system)
   // ------------------------------------------------------------------
@@ -453,6 +447,15 @@ export default function App() {
       } catch { /* silent */ }
     },
     [workspace, addTabForSession],
+  );
+
+  const handleHeaderAction = useCallback(
+    async (action: string, _data: Record<string, unknown>) => {
+      if (action === "close_workspace") {
+        exitWorkspace();
+      }
+    },
+    [],
   );
 
   // ------------------------------------------------------------------
@@ -598,6 +601,7 @@ export default function App() {
 
   useEffect(() => {
     const handleBlur = () => {
+      if (isMobile) return;
       setActiveSessionId(null);
     };
     const handleFocus = () => {
@@ -618,7 +622,7 @@ export default function App() {
       window.removeEventListener("blur", handleBlur);
       window.removeEventListener("focus", handleFocus);
     };
-  }, [sessions]);
+  }, [sessions, isMobile]);
 
   // ------------------------------------------------------------------
   // Layout callbacks
@@ -1039,6 +1043,42 @@ export default function App() {
 
   const model = modelRef.current;
 
+  // Mobile layout: full-screen single panel + drawer navigation
+  if (isMobile) {
+    return (
+      <div className="app-root">
+        <MobileLayout
+          sessions={sessions}
+          activeSessionId={activeSessionId}
+          workspaceId={workspace?.id ?? null}
+          rpc={rpc}
+          connected={wsConnected}
+          onSelectSession={handleSelectSession}
+          onCreateSession={handleCreateSession}
+          onDeleteSessions={handleDeleteSessions}
+          onRenameSession={handleRenameSession}
+          onHeaderAction={handleHeaderAction}
+          onChangeIcon={(sessionId, position) => setIconPicker({ sessionId, position })}
+          onMenuResult={handleMenuResult}
+        />
+        {iconPicker && (
+          <IconPicker
+            position={iconPicker.position}
+            onSelect={handleIconSelect}
+            onReset={handleIconReset}
+            onClose={handleIconPickerClose}
+          />
+        )}
+        {toast && (
+          <div className="toast-notification" onClick={() => setToast(null)}>
+            {toast}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // Desktop layout: sidebar + flexlayout panels
   return (
     <div className="app-root">
       <div className="app-layout">

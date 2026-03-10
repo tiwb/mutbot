@@ -4,14 +4,12 @@ import {
   PANEL_AGENT_CHAT,
   PANEL_TERMINAL,
   PANEL_CODE_EDITOR,
-  PANEL_LOG,
 } from "../lib/layout";
 import type { WorkspaceRpc } from "../lib/workspace-rpc";
 import AgentPanel from "./AgentPanel";
 
 const TerminalPanel = React.lazy(() => import("./TerminalPanel"));
 const CodeEditorPanel = React.lazy(() => import("./CodeEditorPanel"));
-const LogPanel = React.lazy(() => import("./LogPanel"));
 
 export interface PanelContext {
   sessions: { id: string; title: string; type: string; kind: string; status: string; config?: Record<string, unknown> | null }[];
@@ -71,13 +69,6 @@ export function panelFactory(node: TabNode, ctx: PanelContext) {
         </Suspense>
       );
     }
-
-    case PANEL_LOG:
-      return (
-        <Suspense fallback={<Loading />}>
-          <LogPanel rpc={ctx.rpc} />
-        </Suspense>
-      );
 
     default:
       return <div className="empty-state"><p>Unknown panel: {component}</p></div>;

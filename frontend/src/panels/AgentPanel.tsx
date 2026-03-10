@@ -480,8 +480,8 @@ export default function AgentPanel({ sessionId, rpc, onSessionLink }: Props) {
   return (
     <div className="agent-panel">
       <div className="agent-header">
-        <span className={`status-dot ${connected ? "connected" : ""}`} />
-        <span>Session {sessionId.slice(0, 8)}</span>
+        <span className="session-id-label">Session </span>
+        <span className="session-id-value">{sessionId.slice(0, 8)}</span>
         {connectionCount > 1 && (
           <span
             style={{ marginLeft: 8, opacity: 0.6, fontSize: "0.8em" }}
@@ -612,13 +612,13 @@ function TokenUsageDisplay({ usage }: { usage: TokenUsage }) {
   return (
     <span className="token-usage">
       <span title={`${usage.contextUsed.toLocaleString()} / ${usage.contextWindow?.toLocaleString() ?? "?"} tokens`}>
-        Context: {sizeText}
+        <span className="token-usage-label">Context: </span>{sizeText}
         {usage.contextPercent != null && (
           <span style={percentColor ? { color: percentColor } : undefined}> ({usage.contextPercent}%)</span>
         )}
       </span>
       <span className="token-usage-sep">|</span>
-      <span title={`Session total: ${usage.sessionTotalTokens.toLocaleString()} tokens`}>
+      <span className="token-usage-session" title={`Session total: ${usage.sessionTotalTokens.toLocaleString()} tokens`}>
         Session: {formatTokenCount(usage.sessionTotalTokens)}
       </span>
     </span>

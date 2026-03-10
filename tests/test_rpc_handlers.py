@@ -388,22 +388,6 @@ class TestTerminalHandlers:
 
 
 # ---------------------------------------------------------------------------
-# log.query handler 测试
-# ---------------------------------------------------------------------------
-
-class TestLogHandlers:
-
-    @pytest.mark.asyncio
-    async def test_log_query(self):
-        """log.query 在 store 不可用时返回空"""
-        ctx = _make_context()
-        resp = await _dispatch("log.query", {"pattern": "", "level": "DEBUG", "limit": 10}, ctx)
-        result = resp["result"]
-        assert result["entries"] == []
-        assert result["total"] == 0
-
-
-# ---------------------------------------------------------------------------
 # RPC method 注册验证
 # ---------------------------------------------------------------------------
 
@@ -418,7 +402,7 @@ class TestMethodRegistration:
             "session.update", "session.messages",
             "workspace.get", "workspace.update", "workspace.reorder_sessions",
             "terminal.create", "terminal.list", "terminal.delete",
-            "file.read", "log.query",
+            "file.read",
         ]
         for method in expected:
             assert method in workspace_rpc.methods, f"Missing handler: {method}"

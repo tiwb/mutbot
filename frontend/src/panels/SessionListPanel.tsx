@@ -35,6 +35,8 @@ interface Props {
   onChangeIcon?: (sessionId: string, position: { x: number; y: number }) => void;
   onHeaderAction?: (action: string, data: Record<string, unknown>) => void;
   onMenuResult?: (result: MenuExecResult) => void;
+  forceExpanded?: boolean;
+  onToggleOverride?: () => void;
 }
 
 const STORAGE_KEY = "mutbot-sidebar-collapsed";
@@ -51,6 +53,8 @@ export default function SessionListPanel({
   onChangeIcon,
   onHeaderAction,
   onMenuResult,
+  forceExpanded,
+  onToggleOverride,
 }: Props) {
   const [collapsed, setCollapsed] = useState(() => {
     try {
@@ -270,7 +274,7 @@ export default function SessionListPanel({
   const sorted = sessions;
 
   // Compact mode: show all sessions as icons
-  if (collapsed) {
+  if (collapsed && !forceExpanded) {
     return (
       <div className="session-list-container compact">
         <div className="sidebar-header compact">
@@ -351,8 +355,8 @@ export default function SessionListPanel({
       <div className="sidebar-header">
         <button
           className="sidebar-toggle-btn"
-          onClick={toggleMode}
-          title="Collapse sidebar"
+          onClick={onToggleOverride ?? toggleMode}
+          title={onToggleOverride ? "Close" : "Collapse sidebar"}
         >
           <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
             <path d="M11 2L5 8l6 6V2z" />
@@ -362,6 +366,18 @@ export default function SessionListPanel({
         {connected === false && (
           <span className="sidebar-disconnected-dot" title="Disconnected" />
         )}
+        <RpcMenu
+          rpc={rpc}
+          category="SessionPanel/Add"
+          trigger={
+            <button className="sidebar-add-btn" title="New session">
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                <path d="M8 2v12M2 8h12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" fill="none" />
+              </svg>
+            </button>
+          }
+          onResult={onMenuResult}
+        />
         <RpcMenu
           rpc={rpc}
           category="SessionList/Header"
