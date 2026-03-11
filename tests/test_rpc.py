@@ -35,7 +35,6 @@ def _make_context(**kwargs) -> RpcContext:
     return RpcContext(
         workspace_id=kwargs.get("workspace_id", "ws_test"),
         broadcast=kwargs.get("broadcast", noop_broadcast),
-        managers=kwargs.get("managers", {}),
     )
 
 
@@ -188,10 +187,11 @@ class TestRpcContext:
 
         @d.method("get_mgr")
         async def get_mgr(params, ctx: RpcContext):
-            return {"has_sm": "session_manager" in ctx.managers}
+            return {"has_sm": ctx.session_manager is not None}
 
         msg = {"type": "rpc", "id": "r2", "method": "get_mgr", "params": {}}
-        ctx = _make_context(managers={"session_manager": object()})
+        ctx = _make_context()
+        ctx.session_manager = object()  # type: ignore[assignment]
         resp = await d.dispatch(msg, ctx)
 
         assert resp["result"]["has_sm"] is True
@@ -253,8 +253,3 @@ class TestWorkspaceRpcInstance:
     def test_workspace_rpc_importable(self):
         from mutbot.web.routes import workspace_rpc
         assert isinstance(workspace_rpc, RpcDispatcher)
-
-    def test_workspace_connection_manager_importable(self):
-        from mutbot.web.routes import workspace_connection_manager
-        from mutbot.web.connection import ConnectionManager
-        assert isinstance(workspace_connection_manager, ConnectionManager)

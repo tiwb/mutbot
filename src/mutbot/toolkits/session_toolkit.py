@@ -28,7 +28,7 @@ class SessionToolkit(Toolkit):
     session_manager: SessionManager
     workspace_id: str
 
-    def create(self, session_type: str, initial_message: str) -> str:
+    async def create(self, session_type: str, initial_message: str) -> str:
         """创建一个新的专业 Agent Session。
 
         Args:
@@ -50,7 +50,7 @@ class SessionToolkit(Toolkit):
             return f"{session_type} is not an Agent Session type."
 
         # 创建 Session
-        session = self.session_manager.create(
+        session = await self.session_manager.create(
             workspace_id=self.workspace_id,
             session_type=session_type,
         )

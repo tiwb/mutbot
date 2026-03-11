@@ -329,7 +329,7 @@ async def websocket_workspace(websocket: WebSocket, workspace_id: str):
                         if response is not None:
                             client.enqueue("json", response)
                         if context._post_send is not None:
-                            context._post_send()
+                            await context._post_send()
                     else:
                         # Channel 消息 → session.on_message
                         channel = cm.get_channel(ch)

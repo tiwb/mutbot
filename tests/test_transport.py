@@ -11,6 +11,7 @@ from mutbot.web.transport import (
     BufferOverflow,
     Channel,
     ChannelManager,
+    ChannelTransport,
     Client,
     SendBuffer,
     decode_varint,
@@ -310,7 +311,7 @@ class TestClientStateTransitions:
         client.start()
 
         # 发送一条消息让 send_buffer 有内容
-        client.send_json({"type": "test"})
+        client.enqueue("json", {"type": "test"})
         await asyncio.sleep(0.05)
 
         client.enter_buffering()
@@ -361,7 +362,7 @@ class TestClientSendWorker:
         client = Client("c1", "w1", ws)
         client.start()
 
-        client.send_json({"type": "hello"})
+        client.enqueue("json",{"type": "hello"})
         await asyncio.sleep(0.05)
 
         ws.send_json.assert_called_with({"type": "hello"})
@@ -384,7 +385,7 @@ class TestClientSendWorker:
         ws.send_json = capture_send
 
         for i in range(5):
-            client.send_json({"n": i})
+            client.enqueue("json",{"n": i})
 
         await asyncio.sleep(0.1)
         assert [m["n"] for m in sent_order] == [0, 1, 2, 3, 4]
@@ -397,7 +398,7 @@ class TestClientSendWorker:
         client.start()
 
         client.enter_buffering()
-        client.send_json({"type": "queued"})
+        client.enqueue("json",{"type": "queued"})
         await asyncio.sleep(0.05)
 
         # 消息在 send_buffer 中但不会发送到 ws（ws 已为 None）
@@ -415,7 +416,7 @@ class TestClientSendWorker:
         client.on_expire(lambda c: expired.append(c))
 
         for i in range(5):
-            client.send_json({"n": i})
+            client.enqueue("json",{"n": i})
         await asyncio.sleep(0.1)
 
         assert client.state == "expired"
@@ -502,8 +503,8 @@ class TestClientAck:
         client = Client("c1", "w1", ws)
         client.start()
 
-        client.send_json({"n": 1})
-        client.send_json({"n": 2})
+        client.enqueue("json",{"n": 1})
+        client.enqueue("json",{"n": 2})
         await asyncio.sleep(0.05)
         assert client.send_buffer.pending_count == 2
 
@@ -552,9 +553,9 @@ class TestClientReplayOnResume:
         client = Client("c1", "w1", ws)
         client.start()
 
-        client.send_json({"n": 1})
-        client.send_json({"n": 2})
-        client.send_json({"n": 3})
+        client.enqueue("json",{"n": 1})
+        client.enqueue("json",{"n": 2})
+        client.enqueue("json",{"n": 3})
         await asyncio.sleep(0.05)
 
         client.enter_buffering()
@@ -576,7 +577,7 @@ class TestClientReplayOnResume:
         client = Client("c1", "w1", ws)
         client.start()
 
-        client.send_json({"n": 1})
+        client.enqueue("json",{"n": 1})
         client.on_content_received()
         await asyncio.sleep(0.05)
 
@@ -621,14 +622,19 @@ class TestClientExpireCallback:
 class TestChannel:
     """Channel 消息入队。"""
 
+    def _make_channel(self, ch_id: int, client: Client, session_id: str = "") -> Channel:
+        ch = Channel(ch=ch_id, session_id=session_id)
+        ChannelTransport.get_or_create(ch)._client = client
+        return ch
+
     @pytest.mark.asyncio
     async def test_enqueue_json_injects_ch(self) -> None:
         ws = _make_mock_ws()
         client = Client("c1", "w1", ws)
         client.start()
 
-        ch = Channel(3, client, "session", "s1")
-        ch.enqueue_json({"type": "text_delta", "delta": "hi"})
+        ch = self._make_channel(3, client, "s1")
+        ch.send_json({"type": "text_delta", "delta": "hi"})
 
         await asyncio.sleep(0.05)
 
@@ -641,9 +647,9 @@ class TestChannel:
         client = Client("c1", "w1", ws)
         client.start()
 
-        ch = Channel(1, client, "session", "t1")
+        ch = self._make_channel(1, client, "t1")
         payload = bytes([0x01]) + b"terminal output"
-        ch.enqueue_binary(payload)
+        ch.send_binary(payload)
 
         await asyncio.sleep(0.05)
 
@@ -657,8 +663,8 @@ class TestChannel:
         client = Client("c1", "w1", ws)
         client.start()
 
-        ch = Channel(300, client, "session", "t1")
-        ch.enqueue_binary(b"\x01data")
+        ch = self._make_channel(300, client, "t1")
+        ch.send_binary(b"\x01data")
 
         await asyncio.sleep(0.05)
 
@@ -668,18 +674,19 @@ class TestChannel:
 
     @pytest.mark.asyncio
     async def test_enqueue_json_thread_safe(self) -> None:
-        """从多个线程调用 enqueue_json 不应报错。"""
+        """从多个线程调用 send_json 不应报错。"""
         import threading
 
         ws = _make_mock_ws()
-        client = Client("c1", "w1", ws)
-        ch = Channel(1, client, "session", "s1")
+        loop = asyncio.get_running_loop()
+        client = Client("c1", "w1", ws, loop=loop)
+        ch = self._make_channel(1, client, "s1")
         errors: list[Exception] = []
 
         def enqueue_many() -> None:
             try:
                 for i in range(100):
-                    ch.enqueue_json({"n": i})
+                    ch.send_json({"n": i})
             except Exception as e:
                 errors.append(e)
 
@@ -690,6 +697,8 @@ class TestChannel:
             t.join()
 
         assert errors == []
+        # call_soon_threadsafe 需要让事件循环执行已调度的回调
+        await asyncio.sleep(0.05)
         assert client._send_queue.qsize() == 400
 
 
@@ -707,9 +716,9 @@ class TestChannelManager:
         client = Client("c1", "w1", ws)
         cm = ChannelManager()
 
-        ch1 = cm.open(client, "session", "s1")
-        ch2 = cm.open(client, "session", "s2")
-        ch3 = cm.open(client, "session", "s3")
+        ch1 = cm.open(client, "s1")
+        ch2 = cm.open(client, "s2")
+        ch3 = cm.open(client, "s3")
 
         assert ch1.ch == 1
         assert ch2.ch == 2
@@ -721,11 +730,11 @@ class TestChannelManager:
         client = Client("c1", "w1", ws)
         cm = ChannelManager()
 
-        ch1 = cm.open(client, "session", "s1")
-        cm.open(client, "session", "s2")
+        ch1 = cm.open(client, "s1")
+        cm.open(client, "s2")
         cm.close(ch1.ch)
 
-        ch3 = cm.open(client, "session", "s3")
+        ch3 = cm.open(client, "s3")
         assert ch3.ch == 1
 
     @pytest.mark.asyncio
@@ -734,7 +743,7 @@ class TestChannelManager:
         client = Client("c1", "w1", ws)
         cm = ChannelManager()
 
-        ch = cm.open(client, "session", "s1")
+        ch = cm.open(client, "s1")
         assert cm.get_channel(ch.ch) is ch
         assert cm.get_channel(999) is None
 
@@ -746,9 +755,9 @@ class TestChannelManager:
         c2 = Client("c2", "w1", ws2)
         cm = ChannelManager()
 
-        cm.open(c1, "session", "s1")
-        cm.open(c2, "session", "s1")
-        cm.open(c1, "session", "s2")
+        cm.open(c1, "s1")
+        cm.open(c2, "s1")
+        cm.open(c1, "s2")
 
         s1_channels = cm.get_channels_for_session("s1")
         assert len(s1_channels) == 2
@@ -765,8 +774,8 @@ class TestChannelManager:
         client = Client("c1", "w1", ws)
         cm = ChannelManager()
 
-        cm.open(client, "session", "s1")
-        cm.open(client, "session", "s2")
+        cm.open(client, "s1")
+        cm.open(client, "s2")
 
         channels = cm.get_channels_for_client("c1")
         assert len(channels) == 2
@@ -780,9 +789,9 @@ class TestChannelManager:
         c2 = Client("c2", "w1", ws2)
         cm = ChannelManager()
 
-        cm.open(c1, "session", "s1")
-        cm.open(c1, "session", "s2")
-        cm.open(c2, "session", "s1")
+        cm.open(c1, "s1")
+        cm.open(c1, "s2")
+        cm.open(c2, "s1")
 
         closed = cm.close_all_for_client(c1)
         assert len(closed) == 2
@@ -802,13 +811,13 @@ class TestChannelManager:
         client = Client("c1", "w1", ws)
         cm = ChannelManager()
 
-        cm.open(client, "session", "s1")
-        cm.open(client, "session", "s2")
+        cm.open(client, "s1")
+        cm.open(client, "s2")
         cm.close_all_for_client(client)
 
         ws2 = _make_mock_ws()
         c2 = Client("c2", "w1", ws2)
-        ch = cm.open(c2, "session", "s3")
+        ch = cm.open(c2, "s3")
         assert ch.ch == 1
 
     @pytest.mark.asyncio
@@ -819,8 +828,8 @@ class TestChannelManager:
         c2 = Client("c2", "w1", ws2)
         cm = ChannelManager()
 
-        ch1 = cm.open(c1, "session", "s1")
-        ch2 = cm.open(c2, "session", "s1")
+        ch1 = cm.open(c1, "s1")
+        ch2 = cm.open(c2, "s1")
 
         assert ch1.ch != ch2.ch
         assert len(cm.get_channels_for_session("s1")) == 2
@@ -840,7 +849,7 @@ class TestChannelManager:
                 client = Client(client_id, "w1", ws, loop=loop)
                 channels = []
                 for i in range(50):
-                    ch = cm.open(client, "session", f"s{i}")
+                    ch = cm.open(client, f"s{i}")
                     channels.append(ch)
                 for ch in channels:
                     cm.close(ch.ch)
@@ -874,15 +883,15 @@ class TestPassiveClose:
         client.start()
         cm = ChannelManager()
 
-        ch1 = cm.open(client, "session", session_id="s1")
-        ch2 = cm.open(client, "session", session_id="s1")
-        ch3 = cm.open(client, "session", session_id="s2")  # different session
+        ch1 = cm.open(client, session_id="s1")
+        ch2 = cm.open(client, session_id="s1")
+        ch3 = cm.open(client, session_id="s2")  # different session
 
         # Simulate _close_channels_for_session logic
         channels = cm.get_channels_for_session("s1")
         for channel in channels:
             cm.close(channel.ch)
-            client.send_json({
+            client.enqueue("json",{
                 "type": "event",
                 "event": "channel.closed",
                 "closed_ch": channel.ch,
@@ -919,8 +928,8 @@ class TestPassiveClose:
         client.start()
         cm = ChannelManager()
 
-        ch1 = cm.open(client, "session", session_id="s1")
-        ch2 = cm.open(client, "terminal", session_id="s2")
+        ch1 = cm.open(client, session_id="s1")
+        ch2 = cm.open(client, session_id="s2")
 
         def on_expire(c: Client) -> None:
             cm.close_all_for_client(c)
@@ -944,12 +953,12 @@ class TestPassiveClose:
         client.start()
         cm = ChannelManager()
 
-        ch = cm.open(client, "session", session_id="s1")
+        ch = cm.open(client, session_id="s1")
 
         channels = cm.get_channels_for_session("s1")
         for channel in channels:
             cm.close(channel.ch)
-            client.send_json({
+            client.enqueue("json",{
                 "type": "event",
                 "event": "channel.closed",
                 "closed_ch": channel.ch,

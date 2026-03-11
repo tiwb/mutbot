@@ -47,6 +47,16 @@ class Server:
         self._lifespan_startup_failed = False
         self._app_state: dict[str, Any] = {}
 
+    @property
+    def ports(self) -> list[int]:
+        """返回所有 TCP server 实际绑定的端口。"""
+        result: list[int] = []
+        for server in self._servers:
+            if server.sockets:
+                for sock in server.sockets:
+                    result.append(sock.getsockname()[1])
+        return result
+
     def run(
         self,
         *,

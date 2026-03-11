@@ -37,10 +37,13 @@ from mutbot.web.rpc import RpcContext, RpcDispatcher
 def _make_context(**kwargs) -> RpcContext:
     async def noop_broadcast(data: dict) -> None:
         pass
+    managers = kwargs.get("managers", {})
     return RpcContext(
         workspace_id=kwargs.get("workspace_id", "ws_test"),
         broadcast=kwargs.get("broadcast", noop_broadcast),
-        managers=kwargs.get("managers", {}),
+        session_manager=managers.get("session_manager"),
+        workspace_manager=managers.get("workspace_manager"),
+        terminal_manager=managers.get("terminal_manager"),
     )
 
 
@@ -226,14 +229,15 @@ class TestAddSessionMenu:
             assert item.name  # 非空
             assert item.order.startswith("0new:")
 
-    def test_execute_creates_agent_session(self):
+    @pytest.mark.asyncio
+    async def test_execute_creates_agent_session(self):
         """execute 应该通过 session_manager 创建 agent session"""
 
         class FakeSessionManager:
             def __init__(self):
                 self.created = []
 
-            def create(self, workspace_id, session_type, config=None):
+            async def create(self, workspace_id, session_type, config=None):
                 class FakeSession:
                     id = "fake_id"
                     title = "Agent 1"
@@ -247,7 +251,7 @@ class TestAddSessionMenu:
         )
 
         menu = AddSessionMenu()
-        result = menu.execute({"session_type": "mutbot.session.AgentSession"}, ctx)
+        result = await menu.execute({"session_type": "mutbot.session.AgentSession"}, ctx)
 
         assert isinstance(result, MenuResult)
         assert result.action == "session_created"
@@ -256,7 +260,8 @@ class TestAddSessionMenu:
         assert result.data["title"] == "Agent 1"
         assert fake_sm.created == [("ws_1", "mutbot.session.AgentSession")]
 
-    def test_execute_creates_terminal_session(self):
+    @pytest.mark.asyncio
+    async def test_execute_creates_terminal_session(self):
         """terminal session 创建时 cwd 写入 config，on_create 中创建 PTY"""
 
         class FakeWorkspace:
@@ -270,7 +275,7 @@ class TestAddSessionMenu:
                 pass
 
         class FakeSessionManager:
-            def create(self, workspace_id, session_type, config=None):
+            async def create(self, workspace_id, session_type, config=None):
                 self.last_config = config
                 class FakeSession:
                     id = "s_term"
@@ -287,17 +292,18 @@ class TestAddSessionMenu:
         )
 
         menu = AddSessionMenu()
-        result = menu.execute({"session_type": "mutbot.session.TerminalSession"}, ctx)
+        result = await menu.execute({"session_type": "mutbot.session.TerminalSession"}, ctx)
 
         assert result.action == "session_created"
         assert result.data["session_type"] == "mutbot.session.TerminalSession"
         assert fake_sm.last_config["cwd"] == "/test"
 
-    def test_execute_terminal_without_workspace_manager(self):
+    @pytest.mark.asyncio
+    async def test_execute_terminal_without_workspace_manager(self):
         """缺少 workspace_manager 时 cwd 不设置，仍能创建 session"""
 
         class FakeSessionManager:
-            def create(self, workspace_id, session_type, config=None):
+            async def create(self, workspace_id, session_type, config=None):
                 self.last_config = config
                 class FakeSession:
                     id = "s1"
@@ -307,18 +313,20 @@ class TestAddSessionMenu:
         fake_sm = FakeSessionManager()
         ctx = _make_context(managers={"session_manager": fake_sm})
         menu = AddSessionMenu()
-        result = menu.execute({"session_type": "mutbot.session.TerminalSession"}, ctx)
+        result = await menu.execute({"session_type": "mutbot.session.TerminalSession"}, ctx)
         assert result.action == "session_created"
 
-    def test_execute_without_session_manager(self):
+    @pytest.mark.asyncio
+    async def test_execute_without_session_manager(self):
         ctx = _make_context(managers={})
         menu = AddSessionMenu()
-        result = menu.execute({"session_type": "mutbot.session.AgentSession"}, ctx)
+        result = await menu.execute({"session_type": "mutbot.session.AgentSession"}, ctx)
         assert result.action == "error"
 
-    def test_execute_no_type_returns_error(self):
+    @pytest.mark.asyncio
+    async def test_execute_no_type_returns_error(self):
         class FakeSessionManager:
-            def create(self, workspace_id, session_type, config=None):
+            async def create(self, workspace_id, session_type, config=None):
                 class FakeSession:
                     id = "s1"
                     title = "Guide 1"
@@ -327,7 +335,7 @@ class TestAddSessionMenu:
         fake_sm = FakeSessionManager()
         ctx = _make_context(managers={"session_manager": fake_sm})
         menu = AddSessionMenu()
-        result = menu.execute({}, ctx)  # 不传 session_type
+        result = await menu.execute({}, ctx)  # 不传 session_type
         assert result.action == "error"
 
 
@@ -336,6 +344,14 @@ class TestAddSessionMenu:
 # ---------------------------------------------------------------------------
 
 class TestMenuRpcHandlers:
+
+    @classmethod
+    def setup_class(cls):
+        from mutbot.web.routes import workspace_rpc
+        from mutbot.web.rpc_session import register_session_rpc
+        from mutbot.web.rpc_workspace import register_workspace_rpc
+        register_session_rpc(workspace_rpc)
+        register_workspace_rpc(workspace_rpc)
 
     @pytest.mark.asyncio
     async def test_menu_query_handler(self):
@@ -387,7 +403,7 @@ class TestMenuRpcHandlers:
             config = {}
 
         class FakeSessionManager:
-            def create(self, workspace_id, session_type, config=None):
+            async def create(self, workspace_id, session_type, config=None):
                 return FakeSession()
 
             def get(self, session_id):

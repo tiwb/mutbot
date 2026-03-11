@@ -195,7 +195,7 @@ def _deserialize_session(cls: type[Session], data: dict) -> Session:
 
 
 @mutobj.impl(DocumentSession.on_create)
-def _document_on_create(self: DocumentSession, sm: SessionManager) -> None:
+async def _document_on_create(self: DocumentSession, sm: SessionManager) -> None:
     """DocumentSession：设默认 file_path。"""
     import time
     if not self.file_path:
@@ -509,7 +509,7 @@ class SessionManager:
         self._runtimes.pop(session_id, None)
         return True
 
-    def create(
+    async def create(
         self,
         workspace_id: str,
         session_type: str,
@@ -537,7 +537,7 @@ class SessionManager:
             config=config or {},
         )
         self._sessions[session.id] = session
-        session.on_create(self)
+        await session.on_create(self)
         self._persist(session)
         self._maybe_broadcast_created(session)
         return session

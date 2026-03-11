@@ -73,23 +73,35 @@ def _install_double_ctrlc_handler():
 
 
 async def _shutdown_cleanup():
-    """Stop all sessions cleanly (saves scrollback, cleans up PTYs), then kill orphan terminals."""
-    # Stop ALL sessions: on_stop() saves TerminalSession scrollback and kills their PTYs;
-    # for AgentSessions it stops the bridge. _runtimes only holds AgentSessions so we
-    # must iterate _sessions to reach TerminalSessions.
+    """Stop non-terminal sessions, close ptyhost connection (terminals survive restart)."""
     if session_manager is not None:
+        from mutbot.session import TerminalSession
         sids = list(session_manager._sessions)
-        logger.info("Stopping %d sessions: %s", len(sids), sids)
+        # 只停止非 Terminal 的 Session（Agent 等）；Terminal 留给 ptyhost 持久化
+        non_terminal_sids = []
+        terminal_sids = []
         for sid in sids:
-            await session_manager.stop(sid)
+            s = session_manager._sessions.get(sid)
+            if s and isinstance(s, TerminalSession):
+                terminal_sids.append(sid)
+            else:
+                non_terminal_sids.append(sid)
+
+        if non_terminal_sids:
+            logger.info("Stopping %d non-terminal sessions: %s", len(non_terminal_sids), non_terminal_sids)
+            for sid in non_terminal_sids:
+                await session_manager.stop(sid)
+
+        if terminal_sids:
+            logger.info("Preserving %d terminal sessions (ptyhost keeps PTYs alive)", len(terminal_sids))
 
     # Stop all WebSocket clients — cancel _send_worker tasks that would otherwise
     # block the event loop and prevent uvicorn from shutting down.
     _stop_all_clients()
 
-    # Kill any remaining terminals not owned by a session (safety net)
+    # 关闭 ptyhost 连接（不 kill 任何终端，PTY 进程由 ptyhost 持久化）
     if terminal_manager is not None:
-        terminal_manager.kill_all()
+        await terminal_manager.close()
 
 
 async def _watch_config_changes(config: MutbotConfig) -> None:
@@ -131,6 +143,15 @@ async def lifespan(app: FastAPI):
     from mutbot.web.transport import ChannelManager as _ChannelManager
     channel_manager = _ChannelManager()
 
+    # --- ptyhost: 发现 / 启动 / 连接 ---
+    from mutbot.ptyhost._bootstrap import ensure_ptyhost
+    try:
+        ptyhost_port = await ensure_ptyhost()
+        await terminal_manager.connect("127.0.0.1", ptyhost_port)
+        logger.info("Connected to ptyhost on port %d", ptyhost_port)
+    except Exception:
+        logger.exception("Failed to connect to ptyhost — terminal sessions will not work")
+
     # --- Load persisted state ---
     workspace_manager.load_from_disk()
 
@@ -140,7 +161,7 @@ async def lifespan(app: FastAPI):
         all_session_ids.update(ws.sessions)
     session_manager.load_from_disk(all_session_ids)
 
-    # 服务器重启：清除残留的运行时状态（各 Session 子类自行处理状态归位）
+    # 服务器重启：非终端 Session 清状态；终端 Session 由 ptyhost 同步确认
     _cleared = 0
     for session in session_manager._sessions.values():
         old_status = session.status
@@ -150,6 +171,30 @@ async def lifespan(app: FastAPI):
             _cleared += 1
     if _cleared:
         logger.info("Cleared %d stale 'running' session(s) on restart", _cleared)
+
+    # 终端 Session: 与 ptyhost 同步，确认哪些 PTY 还活着
+    if terminal_manager.connected:
+        from mutbot.session import TerminalSession
+        alive_terms = await terminal_manager.sync_from_ptyhost()
+        _synced = 0
+        for session in session_manager._sessions.values():
+            if not isinstance(session, TerminalSession):
+                continue
+            term_id = session.config.get("terminal_id", "")
+            if not term_id:
+                continue
+            if term_id in alive_terms:
+                if session.status != "running":
+                    session.status = "running"
+                    session_manager._persist(session)
+                    _synced += 1
+            else:
+                if session.status == "running":
+                    session.status = "stopped"
+                    session_manager._persist(session)
+                    _synced += 1
+        if _synced:
+            logger.info("Synced %d terminal session(s) with ptyhost", _synced)
 
     # --- Setup 模式：推迟到 workspace.create RPC 中处理 ---
 

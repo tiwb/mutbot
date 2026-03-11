@@ -69,7 +69,7 @@ def register_app_rpc(app_rpc) -> None:
                     None,
                 )
                 if agent_session is None:
-                    agent_session = sm.create(ws.id, session_type=agent_type)
+                    agent_session = await sm.create(ws.id, session_type=agent_type)
                     ws.sessions.append(agent_session.id)
                     wm.update(ws)
                 # 前端连接后自动打开 tab
@@ -147,7 +147,7 @@ def register_app_rpc(app_rpc) -> None:
 
         menu_instance = menu_cls()
         execute_params = params.get("params", {})
-        result = menu_instance.execute(execute_params, ctx)
+        result = await menu_instance.execute(execute_params, ctx)
 
         if not isinstance(result, MenuResult):
             return result if isinstance(result, dict) else {}

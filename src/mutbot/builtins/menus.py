@@ -55,7 +55,7 @@ class AddSessionMenu(Menu):
             idx += 1
         return items
 
-    def execute(self, params: dict, context: RpcContext) -> MenuResult:
+    async def execute(self, params: dict, context: RpcContext) -> MenuResult:
         """创建指定类型的 Session。
 
         处理特殊逻辑：
@@ -84,7 +84,7 @@ class AddSessionMenu(Menu):
         if ws:
             config["cwd"] = ws.project_path
 
-        session = sm.create(
+        session = await sm.create(
             workspace_id=context.workspace_id,
             session_type=session_type,
             config=config if config else None,
@@ -197,7 +197,7 @@ class DeleteSessionMenu(Menu):
             order="2danger:0",
         )]
 
-    def execute(self, params: dict, context: RpcContext) -> MenuResult:
+    async def execute(self, params: dict, context: RpcContext) -> MenuResult:
         sm = context.session_manager
         if not sm:
             return MenuResult(action="error", data={"message": "missing session_manager"})
@@ -326,7 +326,7 @@ class RemoveWorkspaceMenu(Menu):
     display_category = "WorkspaceSelector/Context"
     display_order = "0manage:0"
 
-    def execute(self, params: dict, context: RpcContext) -> MenuResult:
+    async def execute(self, params: dict, context: RpcContext) -> MenuResult:
         workspace_id = params.get("workspace_id", "")
         if not workspace_id:
             return MenuResult(action="error", data={"message": "missing workspace_id"})

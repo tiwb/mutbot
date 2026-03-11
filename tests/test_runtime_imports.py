@@ -62,9 +62,9 @@ def test_import_runtime_workspace():
     assert hasattr(wm, "list_all")
 
 
-def test_import_runtime_session_impl():
-    """runtime.session_impl 模块可导入且包含 SessionManager"""
-    from mutbot.runtime.session_impl import (
+def test_import_runtime_session_manager():
+    """runtime.session_manager 模块可导入且包含 SessionManager"""
+    from mutbot.runtime.session_manager import (
         SessionManager, SessionRuntime, AgentSessionRuntime,
     )
     assert hasattr(SessionManager, "create")
@@ -102,7 +102,7 @@ def test_old_runtime_menu_removed():
 def test_import_runtime_terminal():
     """runtime.terminal 模块可导入且包含 TerminalManager"""
     from mutbot.runtime.terminal import (
-        TerminalManager, TerminalSession, OutputCallback,
+        TerminalManager, OutputCallback,
     )
     tm = TerminalManager()
     assert hasattr(tm, "attach")

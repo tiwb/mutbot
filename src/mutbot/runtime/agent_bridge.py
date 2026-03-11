@@ -361,7 +361,7 @@ if TYPE_CHECKING:
 
 
 @impl(AgentSession.on_connect)
-def _agent_on_connect(self: AgentSession, channel: Channel, ctx: ChannelContext) -> None:
+async def _agent_on_connect(self: AgentSession, channel: Channel, ctx: ChannelContext) -> None:
     """确保 bridge 已启动（如果有活跃对话）。"""
     pass
 

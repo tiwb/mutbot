@@ -76,7 +76,7 @@ class Menu(mutobj.Declaration):
     # 非空时，此菜单项作为子菜单父项，子菜单内容为该 category
     display_submenu_category: str = ""
 
-    def execute(self, params: dict, context: RpcContext) -> MenuResult:
+    async def execute(self, params: dict, context: RpcContext) -> MenuResult:
         """执行菜单动作，由子类实现"""
         ...
 

@@ -42,7 +42,7 @@ class FakeSessionManager:
         self.events: dict[str, list] = {}
         self.stopped: list[str] = []
 
-    def create(self, workspace_id, session_type="agent", config=None):
+    async def create(self, workspace_id, session_type="agent", config=None):
         s = FakeSession(id=f"s_{len(self.sessions)+1}", workspace_id=workspace_id,
                         type=session_type, config=config or {})
         self.sessions[s.id] = s
@@ -158,17 +158,19 @@ def _make_context(broadcasted=None, **kwargs) -> RpcContext:
     return RpcContext(
         workspace_id=kwargs.get("workspace_id", "ws_test"),
         broadcast=capture_broadcast,
-        managers={
-            "workspace_manager": wm,
-            "session_manager": sm,
-            "terminal_manager": tm,
-        },
+        session_manager=sm,
+        workspace_manager=wm,
+        terminal_manager=tm,
     )
 
 
 async def _dispatch(method, params, ctx):
     """通过全局 workspace_rpc 分发 RPC 消息"""
     from mutbot.web.routes import workspace_rpc
+    from mutbot.web.rpc_session import register_session_rpc
+    from mutbot.web.rpc_workspace import register_workspace_rpc
+    register_session_rpc(workspace_rpc)
+    register_workspace_rpc(workspace_rpc)
     msg = {"type": "rpc", "id": "test_1", "method": method, "params": params}
     return await workspace_rpc.dispatch(msg, ctx)
 

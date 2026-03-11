@@ -51,8 +51,8 @@ def register_session_rpc(workspace_rpc) -> None:
         SessionChannels.get_or_create(session)._channels.append(channel)
         ch_ctx = ctx.make_channel_context()
 
-        def _post_connect():
-            session.on_connect(channel, ch_ctx)
+        async def _post_connect():
+            await session.on_connect(channel, ch_ctx)
         ctx._post_send = _post_connect
 
         return {"ch": channel.ch}
@@ -120,7 +120,7 @@ def register_session_rpc(workspace_rpc) -> None:
             config["cols"] = params["cols"]
         config.setdefault("cwd", ws.project_path)
 
-        session = sm.create(ctx.workspace_id, session_type=session_type, config=config)
+        session = await sm.create(ctx.workspace_id, session_type=session_type, config=config)
         ws.sessions.append(session.id)
         wm.update(ws)
 
@@ -327,17 +327,15 @@ def register_session_rpc(workspace_rpc) -> None:
         # Idempotent
         existing_term_id = session.config.get("terminal_id")
         if existing_term_id and tm and tm.has(existing_term_id):
-            ts = tm.get(existing_term_id)
-            if ts and ts.alive:
-                return {"session_id": session_id, "terminal_id": existing_term_id}
+            return {"session_id": session_id, "terminal_id": existing_term_id}
 
         if tm:
             old_term_id = session.config.get("terminal_id")
             if old_term_id and tm.has(old_term_id):
-                await tm.async_notify_exit(old_term_id)
+                await tm.notify_exit(old_term_id)
                 tm.kill(old_term_id)
         session.scrollback_b64 = ""
-        session.on_create(sm)
+        await session.on_create(sm)
         sm._persist(session)
         new_term_id = session.config.get("terminal_id", "")
 
@@ -353,7 +351,7 @@ def register_session_rpc(workspace_rpc) -> None:
                 event_loop=asyncio.get_running_loop(),
             )
             for channel in channels:
-                session.on_connect(channel, ch_ctx)
+                await session.on_connect(channel, ch_ctx)
 
         data = session_dict(session)
         await ctx.broadcast_event("session_updated", data)

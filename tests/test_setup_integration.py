@@ -88,12 +88,14 @@ class TestAgentBridgeHidden:
     """测试 AgentBridge.send_message 的 hidden 标记行为。"""
 
     def _make_bridge(self, loop):
-        from mutbot.web.agent_bridge import AgentBridge
+        from mutbot.runtime.agent_bridge import AgentBridge
         from mutbot.session import AgentSession
 
         agent = MagicMock()
         broadcast_calls = []
         session = AgentSession(id="test-session", workspace_id="ws1", title="Test")
+        # broadcast_json 现在直接在 session 上调用
+        session.broadcast_json = lambda data: broadcast_calls.append(data)
 
         async def mock_broadcast(session_id, data):
             broadcast_calls.append(data)
@@ -163,7 +165,7 @@ class TestAgentBridgeRequestTool:
     """测试 AgentBridge.request_tool 运行时注入逻辑。"""
 
     def _make_bridge(self, loop):
-        from mutbot.web.agent_bridge import AgentBridge
+        from mutbot.runtime.agent_bridge import AgentBridge
         from mutbot.session import AgentSession
 
         agent = MagicMock()
@@ -171,6 +173,7 @@ class TestAgentBridgeRequestTool:
         agent.tools.query.return_value = True
         broadcast_calls = []
         session = AgentSession(id="test-session", workspace_id="ws1", title="Test")
+        session.broadcast_json = lambda data: broadcast_calls.append(data)
 
         async def mock_broadcast(session_id, data):
             broadcast_calls.append(data)
@@ -224,7 +227,7 @@ class TestAgentBridgeCancelClearsPending:
     """测试 cancel() 会清空 _pending_tool_calls。"""
 
     def _make_bridge(self, loop):
-        from mutbot.web.agent_bridge import AgentBridge
+        from mutbot.runtime.agent_bridge import AgentBridge
         from mutbot.session import AgentSession
 
         agent = MagicMock()
@@ -234,6 +237,7 @@ class TestAgentBridgeCancelClearsPending:
             pass
 
         session = AgentSession(id="test-session", workspace_id="ws1", title="Test")
+        session.broadcast_json = lambda data: None
         bridge = AgentBridge(
             session_id="test-session",
             agent=agent,
@@ -282,7 +286,7 @@ class TestInputStreamPendingCheck:
     """测试 _input_stream 在 yield 前执行 pending tools。"""
 
     def _make_bridge(self, loop):
-        from mutbot.web.agent_bridge import AgentBridge
+        from mutbot.runtime.agent_bridge import AgentBridge
         from mutbot.session import AgentSession
 
         agent = MagicMock()
@@ -293,6 +297,7 @@ class TestInputStreamPendingCheck:
         broadcast_calls = []
         persist_calls = []
         session = AgentSession(id="test-session", workspace_id="ws1", title="Test")
+        session.broadcast_json = lambda data: broadcast_calls.append(data)
 
         async def mock_broadcast(session_id, data):
             broadcast_calls.append(data)
@@ -363,7 +368,7 @@ class TestExecutePendingTools:
     """测试 _execute_pending_tools 的事件广播和 context 追加。"""
 
     def _make_bridge(self, loop):
-        from mutbot.web.agent_bridge import AgentBridge
+        from mutbot.runtime.agent_bridge import AgentBridge
         from mutbot.session import AgentSession
 
         agent = MagicMock()
@@ -372,6 +377,7 @@ class TestExecutePendingTools:
         broadcast_calls = []
         persist_calls = []
         session = AgentSession(id="test-session", workspace_id="ws1", title="Test")
+        session.broadcast_json = lambda data: broadcast_calls.append(data)
 
         async def mock_broadcast(session_id, data):
             broadcast_calls.append(data)

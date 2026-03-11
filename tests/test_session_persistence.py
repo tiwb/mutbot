@@ -17,7 +17,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from mutbot.session import AgentSession, Session
-from mutbot.runtime.session_impl import (
+from mutbot.runtime.session_manager import (
     SessionManager,
     AgentSessionRuntime,
 )
@@ -118,9 +118,10 @@ class TestTotalTokensSerialization:
 class TestPersistBasic:
     """_persist 在有/无 runtime 时的行为"""
 
-    def test_persist_with_runtime_saves_messages(self, sm: SessionManager, storage_dir: Path):
+    @pytest.mark.asyncio
+    async def test_persist_with_runtime_saves_messages(self, sm: SessionManager, storage_dir: Path):
         """有 runtime 时 messages 应写入 JSON"""
-        session = sm.create("ws1", session_type="mutbot.session.AgentSession")
+        session = await sm.create("ws1", session_type="mutbot.session.AgentSession")
         messages = _make_messages()
 
         agent = _mock_agent(messages)
@@ -134,11 +135,12 @@ class TestPersistBasic:
         assert data["messages"][0]["role"] == "user"
         assert data["messages"][0]["blocks"][0]["text"] == "hello"
 
-    def test_persist_without_runtime_preserves_existing_messages(
+    @pytest.mark.asyncio
+    async def test_persist_without_runtime_preserves_existing_messages(
         self, sm: SessionManager, storage_dir: Path,
     ):
         """无 runtime 时不应丢失磁盘上已有的 messages"""
-        session = sm.create("ws1", session_type="mutbot.session.AgentSession")
+        session = await sm.create("ws1", session_type="mutbot.session.AgentSession")
         messages = _make_messages()
 
         agent = _mock_agent(messages)
@@ -156,19 +158,21 @@ class TestPersistBasic:
         assert data["title"] == "Updated Title"
         assert len(data["messages"]) == 3, "messages 不应丢失"
 
-    def test_persist_without_runtime_no_prior_messages(
+    @pytest.mark.asyncio
+    async def test_persist_without_runtime_no_prior_messages(
         self, sm: SessionManager, storage_dir: Path,
     ):
         """无 runtime 且磁盘上也无 messages 时不应报错"""
-        session = sm.create("ws1", session_type="mutbot.session.AgentSession")
+        session = await sm.create("ws1", session_type="mutbot.session.AgentSession")
         sm._persist(session)
 
         data = _read_session_json(storage_dir, session.id)
         assert "messages" not in data or data.get("messages") == []
 
-    def test_persist_saves_total_tokens(self, sm: SessionManager, storage_dir: Path):
+    @pytest.mark.asyncio
+    async def test_persist_saves_total_tokens(self, sm: SessionManager, storage_dir: Path):
         """total_tokens 应随 persist 保存"""
-        session = sm.create("ws1", session_type="mutbot.session.AgentSession")
+        session = await sm.create("ws1", session_type="mutbot.session.AgentSession")
         assert isinstance(session, AgentSession)
         session.total_tokens = 5000
         sm._persist(session)
@@ -184,8 +188,9 @@ class TestPersistBasic:
 class TestMessageRoundTrip:
     """消息序列化后从磁盘加载应完全一致"""
 
-    def test_text_message_roundtrip(self, sm: SessionManager, storage_dir: Path):
-        session = sm.create("ws1", session_type="mutbot.session.AgentSession")
+    @pytest.mark.asyncio
+    async def test_text_message_roundtrip(self, sm: SessionManager, storage_dir: Path):
+        session = await sm.create("ws1", session_type="mutbot.session.AgentSession")
         messages = [
             Message(role="user", blocks=[TextBlock(text="Hello")]),
             Message(role="assistant", blocks=[TextBlock(text="Hi there!")]),
@@ -205,8 +210,9 @@ class TestMessageRoundTrip:
         assert isinstance(loaded[1].blocks[0], TextBlock)
         assert loaded[1].blocks[0].text == "Hi there!"
 
-    def test_tool_use_roundtrip(self, sm: SessionManager, storage_dir: Path):
-        session = sm.create("ws1", session_type="mutbot.session.AgentSession")
+    @pytest.mark.asyncio
+    async def test_tool_use_roundtrip(self, sm: SessionManager, storage_dir: Path):
+        session = await sm.create("ws1", session_type="mutbot.session.AgentSession")
         messages = [
             Message(
                 role="assistant",
@@ -235,8 +241,9 @@ class TestMessageRoundTrip:
         assert tool_block.result == "found it"
         assert tool_block.is_error is False
 
-    def test_error_tool_use_roundtrip(self, sm: SessionManager, storage_dir: Path):
-        session = sm.create("ws1", session_type="mutbot.session.AgentSession")
+    @pytest.mark.asyncio
+    async def test_error_tool_use_roundtrip(self, sm: SessionManager, storage_dir: Path):
+        session = await sm.create("ws1", session_type="mutbot.session.AgentSession")
         messages = [
             Message(
                 role="assistant",
@@ -265,10 +272,11 @@ class TestMessageRoundTrip:
 class TestServerRestartCycle:
     """模拟 server 多次重启的场景：messages 不应丢失"""
 
-    def test_restart_preserves_messages(self, storage_dir: Path):
+    @pytest.mark.asyncio
+    async def test_restart_preserves_messages(self, storage_dir: Path):
         """重启周期：create → persist with messages → new SM load → persist again"""
         sm1 = SessionManager()
-        session1 = sm1.create("ws1", session_type="mutbot.session.AgentSession")
+        session1 = await sm1.create("ws1", session_type="mutbot.session.AgentSession")
         session_id = session1.id
 
         agent = _mock_agent(_make_messages())
@@ -288,10 +296,11 @@ class TestServerRestartCycle:
         assert data["title"] == "New Title"
         assert len(data["messages"]) == 3, "重启后 messages 不应丢失"
 
-    def test_multiple_restarts_preserve_messages(self, storage_dir: Path):
+    @pytest.mark.asyncio
+    async def test_multiple_restarts_preserve_messages(self, storage_dir: Path):
         """多次重启仍保留 messages"""
         sm1 = SessionManager()
-        session = sm1.create("ws1", session_type="mutbot.session.AgentSession")
+        session = await sm1.create("ws1", session_type="mutbot.session.AgentSession")
         sid = session.id
 
         agent = _mock_agent(_make_messages())
@@ -311,10 +320,11 @@ class TestServerRestartCycle:
         assert data["title"] == "Restart 2"
         assert len(data["messages"]) == 3
 
-    def test_restart_preserves_total_tokens(self, storage_dir: Path):
+    @pytest.mark.asyncio
+    async def test_restart_preserves_total_tokens(self, storage_dir: Path):
         """重启后 total_tokens 正确恢复"""
         sm1 = SessionManager()
-        session = sm1.create("ws1", session_type="mutbot.session.AgentSession")
+        session = await sm1.create("ws1", session_type="mutbot.session.AgentSession")
         assert isinstance(session, AgentSession)
         session.total_tokens = 42000
         sm1._persist(session)
@@ -338,7 +348,7 @@ class TestStopPreservesMessages:
         self, sm: SessionManager, storage_dir: Path,
     ):
         """stop() 在清除 runtime 前应先 persist messages"""
-        session = sm.create("ws1", session_type="mutbot.session.AgentSession")
+        session = await sm.create("ws1", session_type="mutbot.session.AgentSession")
 
         agent = _mock_agent(_make_messages())
         bridge = MagicMock()
@@ -364,7 +374,7 @@ class TestStopPreservesMessages:
         self, sm: SessionManager, storage_dir: Path,
     ):
         """没有 runtime 的 session（如 ended 后重启），stop 不应丢 messages"""
-        session = sm.create("ws1", session_type="mutbot.session.AgentSession")
+        session = await sm.create("ws1", session_type="mutbot.session.AgentSession")
 
         # 先写入 messages
         agent = _mock_agent(_make_messages())

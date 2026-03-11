@@ -50,6 +50,9 @@ def register_workspace_rpc(workspace_rpc) -> None:
         menu_instance = menu_cls()
         execute_params = params.get("params", {})
         result = menu_instance.execute(execute_params, ctx)
+        # execute 可能是 async 方法，需要 await
+        if hasattr(result, "__await__"):
+            result = await result
 
         if not isinstance(result, MenuResult):
             return result if isinstance(result, dict) else {}

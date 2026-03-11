@@ -61,7 +61,7 @@ class Session(mutobj.Declaration):
         """从 dict 重建 Session 实例。默认实现基于 __annotations__ 自动提取字段。"""
         ...
 
-    def on_create(self, sm: SessionManager) -> None:
+    async def on_create(self, sm: SessionManager) -> None:
         """创建后的初始化（设状态、创建关联资源等）。
 
         sm 提供 terminal_manager、config 等运行时资源。
@@ -93,7 +93,7 @@ class Session(mutobj.Declaration):
 
     # --- Channel 生命周期回调（Declaration 桩）---
 
-    def on_connect(self, channel: Channel, ctx: ChannelContext) -> None:
+    async def on_connect(self, channel: Channel, ctx: ChannelContext) -> None:
         """前端连接到此 Session 时调用。"""
         ...
 
