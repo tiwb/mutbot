@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import signal
 import socket as _socket
 import sys
 from contextlib import asynccontextmanager
@@ -54,8 +53,6 @@ def _force_exit_flush():
             pass
 
 
-_sigint_count = 0
-
 
 def _stop_all_clients():
     """Stop all WebSocket clients, cancelling their _send_worker tasks."""
@@ -71,39 +68,8 @@ def _stop_all_clients():
 
 
 def _install_double_ctrlc_handler():
-    """Install a chained SIGINT handler: 1st Ctrl+C → uvicorn graceful, 2nd → os._exit.
-
-    Must be called AFTER uvicorn has installed its own handler (i.e. during
-    lifespan startup), so we can capture and chain uvicorn's handler.
-    """
-    global _sigint_count
-    _sigint_count = 0
-
-    try:
-        prev_handler = signal.getsignal(signal.SIGINT)
-    except (OSError, ValueError):
-        return
-
-    def _chained_sigint(signum, frame):
-        global _sigint_count
-        _sigint_count += 1
-        if _sigint_count >= 2:
-            print("\nForce shutting down...", flush=True)
-            _force_exit_flush()
-            os._exit(0)
-        # 第一次 Ctrl+C：交给 uvicorn 优雅退出。
-        # uvicorn 的 timeout_graceful_shutdown 会在超时后进入 lifespan exit，
-        # 我们的 _shutdown_cleanup() 在 lifespan exit 中处理 session/client 清理。
-        print("\nShutting down gracefully... Press Ctrl+C again to force exit",
-              flush=True)
-        if callable(prev_handler):
-            prev_handler(signum, frame)
-
-    try:
-        signal.signal(signal.SIGINT, _chained_sigint)
-        logger.info("Double Ctrl+C handler installed (chained with %s)", prev_handler)
-    except (OSError, ValueError) as exc:
-        logger.warning("Cannot install SIGINT handler: %s", exc)
+    """No-op — mutbot.server.Server handles SIGINT directly (double Ctrl+C built-in)."""
+    pass
 
 
 async def _shutdown_cleanup():
@@ -196,8 +162,7 @@ async def lifespan(app: FastAPI):
     session_manager.terminal_manager = terminal_manager
 
     # --- Double Ctrl+C handler ---
-    # Install AFTER uvicorn has set up its own SIGINT handler, so we can chain.
-    # Lifespan startup runs during Server.startup(), after uvicorn's handler.
+    # Server handles first SIGINT; this is a safety net only.
     _install_double_ctrlc_handler()
 
     # --- on_change 回调统一注册 ---
@@ -413,10 +378,10 @@ def _format_banner_line(host: str, port: int) -> str:
 
 
 def main():
-    """MutBot server entry point: config → logging → app.state → uvicorn."""
+    """MutBot server entry point: config → logging → app.state → server."""
     import argparse
 
-    import uvicorn
+    from mutbot.server import Server
 
     parser = argparse.ArgumentParser(description="MutBot Web UI")
     parser.add_argument(
@@ -487,32 +452,18 @@ def main():
         sock.bind((host, port))
         sockets.append(sock)
 
-    # 6. uvicorn（log_config=None 禁用 uvicorn 自带日志配置）
-    uvi_config = uvicorn.Config(
-        app, log_config=None,
-        timeout_graceful_shutdown=3,
-    )
-    server = uvicorn.Server(uvi_config)
+    # 6. 启动 server
+    server = Server(app)
 
-    # 7. Banner（防重复打印）
-    _banner_printed = False
-    _original_startup = server.startup
-
-    async def _startup_with_banner(sockets=None):
-        nonlocal _banner_printed
-        await _original_startup(sockets=sockets)
-        if not _banner_printed:
-            _banner_printed = True
-            banner_lines = _build_banner_lines(addresses)
-            print(f"\n  MutBot v{mutbot.__version__}\n")
-            for line in banner_lines:
-                print(line)
-            print()
-
-    server.startup = _startup_with_banner
+    async def _on_startup():
+        banner_lines = _build_banner_lines(addresses)
+        print(f"\n  MutBot v{mutbot.__version__}\n")
+        for line in banner_lines:
+            print(line)
+        print()
 
     try:
-        server.run(sockets=sockets)
+        server.run(sockets=sockets, on_startup=_on_startup)
     except KeyboardInterrupt:
         pass
 
