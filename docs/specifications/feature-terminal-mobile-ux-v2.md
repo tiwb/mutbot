@@ -144,12 +144,13 @@
 ## 关键参考
 
 ### 源码
-- `frontend/src/mobile/TerminalInput.tsx` — 输入栏组件（输入框 + ↵ + ▼/▲），63 行
-- `frontend/src/mobile/ShortcutGrid.tsx` — 4x4 快捷键网格（⚙ 编辑按钮 + 编辑模式），130 行
+- `frontend/src/mobile/TerminalInput.tsx` — 输入栏（统一 textarea + 单行/多行模式 + 长按菜单）
+- `frontend/src/mobile/ShortcutGrid.tsx` — 动态网格（可变行列 + Settings 图标 + 拖动交换预览）
 - `frontend/src/mobile/ShortcutEditDialog.tsx` — 快捷键编辑弹窗
-- `frontend/src/mobile/MobileLayout.tsx` — 移动端布局（集成输入栏 + 快捷键面板）
-- `frontend/src/components/SessionIcons.tsx` — 图标系统（`renderLucideIcon` + `KIND_FALLBACK`）
+- `frontend/src/mobile/MobileLayout.tsx` — 移动端布局（设置菜单 + 网格大小弹窗 + GridSizeDialog）
+- `frontend/src/components/SessionIcons.tsx` — 图标系统（terminal → square-terminal）
 - `frontend/src/index.css:3788+` — 移动端终端相关样式
+- `src/mutbot/session.py:146` — 后端 TerminalSession.display_icon
 
 ### 图标库
 - lucide-react ^0.575.0 — 已确认可用图标：`SquareTerminal`、`Send`、`SendHorizontal`、`CornerDownLeft`、`ChevronUp`、`ChevronDown`、`Settings`、`GripVertical`
@@ -213,6 +214,35 @@
   - `npm --prefix frontend run build` 编译通过
   - 状态：✅ 已完成
 
+### Phase 7: 测试修复 [✅ 已完成]
+
+- [x] **Task 7.1**: 后端 terminal 图标未生效
+  - `session.py` 中 `TerminalSession.display_icon` 也需改为 `"square-terminal"`（后端声明优先级高于前端 KIND_FALLBACK）
+  - 状态：✅ 已完成
+
+- [x] **Task 7.2**: 设置菜单点击无效
+  - `.mobile-terminal-input-panel` 缺少 `position: relative`，绝对定位菜单飘出屏幕
+  - 状态：✅ 已完成
+
+- [x] **Task 7.3**: 多行 textarea 自适应不生效
+  - 加 `box-sizing: border-box` + `min-height`，高度重置用 `"0"` 替代 `"auto"`
+  - 状态：✅ 已完成
+
+- [x] **Task 7.4**: 单行/多行输入框统一为 textarea
+  - 两种模式外观一致（都自动增高），仅 Enter 行为不同（单行=发送，多行=换行）
+  - 状态：✅ 已完成
+
+- [x] **Task 7.5**: 按钮高度与输入框不对齐
+  - 发送和展开按钮加 `min-height` + `box-sizing: border-box` + `font-size: 16px` 匹配 textarea 单行高度
+  - 状态：✅ 已完成
+
+- [x] **Task 7.6**: 拖动快捷键时触发页面滚动 + 松手不执行交换 + 无拖动预览
+  - `touch-action: none` 移到所有 `.shortcut-grid-btn`（始终阻止滚动）
+  - 拖动目标改用 ref 跟踪（避免 stale closure），松手正确执行交换
+  - 拖动中实时预览交换效果（`displayLayout` 渲染交换后的布局）
+  - 状态：✅ 已完成
+
 ## 测试验证
 
 - 前端构建通过（tsc + vite build）
+- 手机端测试发现 6 个问题，全部修复

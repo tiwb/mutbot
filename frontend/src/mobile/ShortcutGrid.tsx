@@ -148,7 +148,8 @@ export default function ShortcutGrid({
   const editIdx = editButtonIndex(rows, cols);
   const gridRef = useRef<HTMLDivElement>(null);
   const dragTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const dragSource = useRef<number | null>(null);
+  const dragSourceRef = useRef<number | null>(null);
+  const dragTargetRef = useRef<number | null>(null);
   const [dragSourceIdx, setDragSourceIdx] = useState<number | null>(null);
   const [dragTargetIdx, setDragTargetIdx] = useState<number | null>(null);
   const dragActive = useRef(false);
@@ -176,57 +177,22 @@ export default function ShortcutGrid({
 
   // --- Drag to swap (editing mode only) ---
 
-  const getSlotIndexFromPoint = useCallback((x: number, y: number): number | null => {
-    const grid = gridRef.current;
-    if (!grid) return null;
-    const btns = grid.querySelectorAll<HTMLElement>(".shortcut-grid-btn");
-    for (let i = 0; i < btns.length; i++) {
-      const rect = btns[i]!.getBoundingClientRect();
-      if (x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom) {
-        return i;
-      }
-    }
-    return null;
-  }, []);
-
-  const handleDragStart = useCallback((index: number) => {
-    if (index === editIdx) return;
-    dragActive.current = true;
-    dragSource.current = index;
-    setDragSourceIdx(index);
-    setDragTargetIdx(null);
-    navigator.vibrate?.(30);
-  }, [editIdx]);
-
-  const handleDragMove = useCallback((x: number, y: number) => {
-    if (!dragActive.current) return;
-    const idx = getSlotIndexFromPoint(x, y);
-    setDragTargetIdx(idx !== null && idx !== editIdx && idx !== dragSource.current ? idx : null);
-  }, [editIdx, getSlotIndexFromPoint]);
-
-  const handleDragEnd = useCallback(() => {
-    if (!dragActive.current) return;
-    dragActive.current = false;
-    const src = dragSource.current;
-    const tgt = dragTargetIdx;
-    dragSource.current = null;
-    setDragSourceIdx(null);
-    setDragTargetIdx(null);
-    if (src !== null && tgt !== null && src !== tgt) {
-      onSwapSlots?.(src, tgt);
-    }
-  }, [dragTargetIdx, onSwapSlots]);
-
-  // Touch handlers for drag
+  // Touch handlers for drag — all logic inline to avoid stale closures
   const handlePointerDown = useCallback((index: number, e: React.PointerEvent) => {
     if (!editing || index === editIdx) return;
     const startX = e.clientX;
     const startY = e.clientY;
+
     dragTimer.current = setTimeout(() => {
-      handleDragStart(index);
+      // Activate drag
+      dragActive.current = true;
+      dragSourceRef.current = index;
+      dragTargetRef.current = null;
+      setDragSourceIdx(index);
+      setDragTargetIdx(null);
+      navigator.vibrate?.(30);
     }, 300);
 
-    // Cancel drag if moved too far before timer
     const onMove = (ev: PointerEvent) => {
       const dx = ev.clientX - startX;
       const dy = ev.clientY - startY;
@@ -235,28 +201,64 @@ export default function ShortcutGrid({
         dragTimer.current = null;
       }
       if (dragActive.current) {
-        handleDragMove(ev.clientX, ev.clientY);
+        const grid = gridRef.current;
+        if (!grid) return;
+        const btns = grid.querySelectorAll<HTMLElement>(".shortcut-grid-btn");
+        let idx: number | null = null;
+        for (let i = 0; i < btns.length; i++) {
+          const rect = btns[i]!.getBoundingClientRect();
+          if (ev.clientX >= rect.left && ev.clientX <= rect.right && ev.clientY >= rect.top && ev.clientY <= rect.bottom) {
+            idx = i;
+            break;
+          }
+        }
+        const editBtnIdx = editButtonIndex(rows, cols);
+        const validTarget = idx !== null && idx !== editBtnIdx && idx !== dragSourceRef.current ? idx : null;
+        dragTargetRef.current = validTarget;
+        setDragTargetIdx(validTarget);
       }
     };
+
     const onUp = () => {
       if (dragTimer.current) {
         clearTimeout(dragTimer.current);
         dragTimer.current = null;
       }
-      handleDragEnd();
+      if (dragActive.current) {
+        dragActive.current = false;
+        const src = dragSourceRef.current;
+        const tgt = dragTargetRef.current;
+        dragSourceRef.current = null;
+        dragTargetRef.current = null;
+        setDragSourceIdx(null);
+        setDragTargetIdx(null);
+        if (src !== null && tgt !== null && src !== tgt) {
+          onSwapSlots?.(src, tgt);
+        }
+      }
       document.removeEventListener("pointermove", onMove);
       document.removeEventListener("pointerup", onUp);
       document.removeEventListener("pointercancel", onUp);
     };
+
     document.addEventListener("pointermove", onMove);
     document.addEventListener("pointerup", onUp);
     document.addEventListener("pointercancel", onUp);
-  }, [editing, editIdx, handleDragStart, handleDragMove, handleDragEnd]);
+  }, [editing, editIdx, rows, cols, onSwapSlots]);
 
   const handleClick = useCallback((slot: ShortcutSlot | null, index: number) => {
-    if (dragActive.current) return; // suppress click after drag
+    if (dragActive.current) return;
     handlePress(slot, index);
   }, [handlePress]);
+
+  // Build preview layout: swap source and target visually during drag
+  const displayLayout = (dragSourceIdx !== null && dragTargetIdx !== null && dragSourceIdx !== dragTargetIdx)
+    ? layout.map((slot, i) => {
+        if (i === dragSourceIdx) return layout[dragTargetIdx] ?? null;
+        if (i === dragTargetIdx) return layout[dragSourceIdx] ?? null;
+        return slot;
+      })
+    : layout;
 
   return (
     <div
@@ -264,7 +266,7 @@ export default function ShortcutGrid({
       className={`shortcut-grid ${editing ? "editing" : ""}`}
       style={{ gridTemplateColumns: `repeat(${cols}, 1fr)` }}
     >
-      {layout.map((slot, i) => {
+      {displayLayout.map((slot, i) => {
         const isDragSource = editing && dragSourceIdx === i;
         const isDragTarget = editing && dragTargetIdx === i;
 

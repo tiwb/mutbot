@@ -3805,6 +3805,7 @@ body,
   flex-shrink: 0;
   background: var(--bg-sidebar);
   border-top: 1px solid var(--border);
+  position: relative;
 }
 
 /* ----------------------------------------------------------------
@@ -3837,6 +3838,8 @@ body,
   overflow-y: auto;
   max-height: calc(1.4em * 4 + 16px + 2px); /* 4 lines * line-height + padding + border */
   line-height: 1.4;
+  box-sizing: border-box;
+  min-height: calc(1.4em + 16px + 2px); /* 1 line minimum */
 }
 
 .terminal-input-field:focus {
@@ -3866,6 +3869,9 @@ body,
   display: flex;
   align-items: center;
   justify-content: center;
+  box-sizing: border-box;
+  min-height: calc(1.4em * 1 + 16px + 2px); /* match textarea single-line height */
+  font-size: 16px;
 }
 
 .terminal-input-enter:active,
@@ -3933,6 +3939,7 @@ body,
   -webkit-user-select: none;
   transition: background 0.1s;
   min-height: 38px;
+  touch-action: none;
 }
 
 .shortcut-grid-btn:active {

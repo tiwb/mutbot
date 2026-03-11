@@ -25,7 +25,6 @@ export default function TerminalInput({ onSend, shortcutsOpen, onToggleShortcuts
   const [value, setValue] = useState("");
   const [mode, setMode] = useState<InputMode>(loadInputMode);
   const [menuOpen, setMenuOpen] = useState(false);
-  const inputRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const longPressFired = useRef(false);
@@ -34,12 +33,8 @@ export default function TerminalInput({ onSend, shortcutsOpen, onToggleShortcuts
   const handleSend = useCallback(() => {
     onSend(value + "\r");
     setValue("");
-    if (mode === "single") {
-      inputRef.current?.focus();
-    } else {
-      textareaRef.current?.focus();
-    }
-  }, [value, onSend, mode]);
+    textareaRef.current?.focus();
+  }, [value, onSend]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
@@ -55,19 +50,22 @@ export default function TerminalInput({ onSend, shortcutsOpen, onToggleShortcuts
   );
 
   // Auto-grow textarea
-  const handleTextareaChange = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    setValue(e.target.value);
-    const ta = e.target;
-    ta.style.height = "auto";
+  const autoGrow = useCallback((ta: HTMLTextAreaElement) => {
+    ta.style.height = "0";
     ta.style.height = ta.scrollHeight + "px";
   }, []);
 
-  // Reset textarea height when value is cleared
+  const handleChange = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    setValue(e.target.value);
+    autoGrow(e.target);
+  }, [autoGrow]);
+
+  // Reset textarea height when value is cleared (after send)
   useEffect(() => {
-    if (mode === "multi" && textareaRef.current && value === "") {
+    if (textareaRef.current && value === "") {
       textareaRef.current.style.height = "auto";
     }
-  }, [value, mode]);
+  }, [value]);
 
   // Switch mode
   const switchMode = useCallback((newMode: InputMode) => {
@@ -119,35 +117,19 @@ export default function TerminalInput({ onSend, shortcutsOpen, onToggleShortcuts
 
   return (
     <div className="terminal-input-bar">
-      {mode === "single" ? (
-        <input
-          ref={inputRef}
-          className="terminal-input-field"
-          type="text"
-          value={value}
-          onChange={(e) => setValue(e.target.value)}
-          onKeyDown={handleKeyDown}
-          placeholder="Enter command..."
-          autoComplete="off"
-          autoCapitalize="off"
-          autoCorrect="off"
-          spellCheck={false}
-        />
-      ) : (
-        <textarea
-          ref={textareaRef}
-          className="terminal-input-field terminal-input-textarea"
-          value={value}
-          onChange={handleTextareaChange}
-          onKeyDown={handleKeyDown}
-          placeholder="Enter command..."
-          autoComplete="off"
-          autoCapitalize="off"
-          autoCorrect="off"
-          spellCheck={false}
-          rows={1}
-        />
-      )}
+      <textarea
+        ref={textareaRef}
+        className="terminal-input-field terminal-input-textarea"
+        value={value}
+        onChange={handleChange}
+        onKeyDown={handleKeyDown}
+        placeholder="Enter command..."
+        autoComplete="off"
+        autoCapitalize="off"
+        autoCorrect="off"
+        spellCheck={false}
+        rows={1}
+      />
       <div className="terminal-input-send-wrapper">
         <button
           className="terminal-input-enter"

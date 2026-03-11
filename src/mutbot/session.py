@@ -143,7 +143,7 @@ class TerminalSession(Session):
     """终端 Session"""
 
     display_name = "Terminal"
-    display_icon = "terminal"
+    display_icon = "square-terminal"
 
     scrollback_b64: str = ""  # persisted scrollback, base64-encoded
 
