@@ -26,6 +26,18 @@ export interface TerminalPanelHandle {
   scrollToBottom: () => void;
 }
 
+/** execCommand('copy') fallback for non-secure contexts */
+function execCopy(text: string) {
+  const ta = document.createElement("textarea");
+  ta.value = text;
+  ta.style.position = "fixed";
+  ta.style.left = "-9999px";
+  document.body.appendChild(ta);
+  ta.select();
+  document.execCommand("copy");
+  document.body.removeChild(ta);
+}
+
 const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPanel({ sessionId, terminalId: initialId, workspaceId, nodeId, rpc, onTerminalCreated, onTerminalExited }, ref) {
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
@@ -35,6 +47,11 @@ const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPa
 
   const [expired, setExpired] = useState(false);
   const [connected, setConnected] = useState(false);
+  const [ctrlVPaste, setCtrlVPaste] = useState(true);
+
+  // Ref so the effect's key handler can read current toggle state
+  const ctrlVPasteRef = useRef(ctrlVPaste);
+  ctrlVPasteRef.current = ctrlVPaste;
 
   // Expose init() via ref so handleRecreate can call it
   const initRef = useRef<(() => void) | null>(null);
@@ -278,6 +295,15 @@ const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPa
     // response arrives at the PTY unexpectedly and appears as garbage text.
     const termResponseRe = /^\x1b\[[\?>= ]?[\d;]*[cnR]$/;
 
+    // Clipboard helper: writeText with execCommand fallback for non-secure contexts
+    function copyToClipboard(text: string) {
+      if (navigator.clipboard?.writeText) {
+        navigator.clipboard.writeText(text).catch(() => execCopy(text));
+      } else {
+        execCopy(text);
+      }
+    }
+
     // Terminal input → channel binary (muted during scrollback replay)
     const inputDisposable = term.onData((data) => {
       if (inputMuted) return;
@@ -288,6 +314,39 @@ const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPa
         rpc.sendBinaryToChannel(ch, encoded);
       }
     });
+
+    // Intercept Ctrl+C (copy when selection) and Ctrl+V (paste toggle)
+    term.attachCustomKeyEventHandler((e: KeyboardEvent) => {
+      if (e.type !== "keydown") return true;
+      const mod = e.ctrlKey || e.metaKey;
+      if (mod && e.key === "c") {
+        const sel = term.getSelection();
+        if (sel) {
+          copyToClipboard(sel);
+          term.clearSelection();
+          return false; // consumed — don't send \x03
+        }
+        return true; // no selection → send SIGINT
+      }
+      if (mod && e.key === "v") {
+        if (ctrlVPasteRef.current) {
+          return false; // let browser fire paste event
+        }
+        return true; // send raw Ctrl+V to terminal
+      }
+      return true;
+    });
+
+    // Handle paste via browser event (clipboardData works without Secure Context)
+    const onPaste = (e: ClipboardEvent) => {
+      const text = e.clipboardData?.getData("text/plain");
+      if (text && ch > 0 && rpc) {
+        const encoder = new TextEncoder();
+        rpc.sendBinaryToChannel(ch, encoder.encode(text));
+      }
+      e.preventDefault();
+    };
+    container.addEventListener("paste", onPaste);
 
     // Resize handling — fit the terminal to container, then report to server.
     // Server will broadcast pty_resize with the actual PTY size (min of all clients).
@@ -406,6 +465,7 @@ const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPa
       resizeDisposable.dispose();
       resizeObserver.disconnect();
       stopInertia();
+      container.removeEventListener("paste", onPaste);
       container.removeEventListener("touchstart", onTouchStart);
       container.removeEventListener("touchmove", onTouchMove);
       container.removeEventListener("touchend", onTouchEnd);
@@ -439,33 +499,48 @@ const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPa
     setContextMenu({ position: { x: e.clientX, y: e.clientY } });
   }, []);
 
+  // Clipboard helper (same logic as in effect, but for menu clicks)
+  const copyTermSelection = useCallback(() => {
+    const term = termRef.current;
+    if (!term) return;
+    const selection = term.getSelection();
+    if (!selection) return;
+    if (navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(selection).catch(() => execCopy(selection));
+    } else {
+      execCopy(selection);
+    }
+    term.clearSelection();
+  }, []);
+
+  const pasteToTerminal = useCallback((text: string) => {
+    const ch = chRef.current;
+    if (ch > 0 && rpc && text) {
+      const encoder = new TextEncoder();
+      rpc.sendBinaryToChannel(ch, encoder.encode(text));
+    }
+  }, [rpc]);
+
   const menuItems: ContextMenuItem[] = [
     {
       label: "Copy",
       shortcut: "Ctrl+C",
-      onClick: () => {
-        const term = termRef.current;
-        if (term) {
-          const selection = term.getSelection();
-          if (selection) {
-            navigator.clipboard.writeText(selection);
-          }
-        }
-      },
+      onClick: copyTermSelection,
     },
     {
       label: "Paste",
       shortcut: "Ctrl+V",
       onClick: () => {
-        navigator.clipboard.readText().then((text) => {
-          const ch = chRef.current;
-          if (ch > 0 && rpc && text) {
-            const encoder = new TextEncoder();
-            const encoded = encoder.encode(text);
-            rpc.sendBinaryToChannel(ch, encoded);
-          }
-        });
+        if (navigator.clipboard?.readText) {
+          navigator.clipboard.readText().then(pasteToTerminal).catch(() => {});
+        }
       },
+    },
+    { label: "", separator: true },
+    {
+      label: "Ctrl+V Paste",
+      checked: ctrlVPaste,
+      onClick: () => setCtrlVPaste((v) => !v),
     },
     { label: "", separator: true },
     {

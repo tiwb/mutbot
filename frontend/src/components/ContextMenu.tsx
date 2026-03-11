@@ -7,6 +7,7 @@ export interface ContextMenuItem {
   shortcut?: string;
   disabled?: boolean;
   separator?: boolean;
+  checked?: boolean;
   onClick?: () => void;
 }
 
@@ -18,6 +19,8 @@ interface ContextMenuProps {
 
 export default function ContextMenu({ items, position, onClose }: ContextMenuProps) {
   const menuRef = useRef<HTMLDivElement>(null);
+  const hasIcon = items.some((it) => !it.separator && it.icon !== undefined);
+  const hasCheck = items.some((it) => !it.separator && it.checked !== undefined);
 
   useEffect(() => {
     const handlePointerDown = (e: PointerEvent) => {
@@ -75,7 +78,10 @@ export default function ContextMenu({ items, position, onClose }: ContextMenuPro
               }
             }}
           >
-            {item.icon && <span className="context-menu-icon">{item.icon}</span>}
+            {hasIcon && <span className="context-menu-icon">{item.icon}</span>}
+            {hasCheck && (
+              <span className="context-menu-check">{item.checked === true ? "\u2713" : "\u00A0"}</span>
+            )}
             <span className="context-menu-label">{item.label}</span>
             {item.shortcut && (
               <span className="context-menu-shortcut">{item.shortcut}</span>
