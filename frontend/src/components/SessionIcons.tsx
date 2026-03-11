@@ -14,7 +14,7 @@ function kebabToPascal(name: string): string {
 /** kind → 默认 Lucide 图标名（kebab-case） */
 const KIND_FALLBACK: Record<string, string> = {
   agent: "message-square",
-  terminal: "terminal",
+  terminal: "square-terminal",
   document: "file-text",
   guide: "circle-question-mark",
   researcher: "search",

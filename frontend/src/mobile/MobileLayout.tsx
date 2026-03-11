@@ -1,6 +1,9 @@
 import { useState, useCallback, useEffect, useRef, Suspense, lazy } from "react";
 import MobileDrawer from "./MobileDrawer";
-import ShortcutGrid, { loadShortcutLayout, saveShortcutLayout, type ShortcutLayout } from "./ShortcutGrid";
+import ShortcutGrid, {
+  loadShortcutConfig, saveShortcutConfig, defaultConfig, resizeGrid,
+  type ShortcutConfig,
+} from "./ShortcutGrid";
 import ShortcutEditDialog from "./ShortcutEditDialog";
 import TerminalInput from "./TerminalInput";
 import AgentPanel from "../panels/AgentPanel";
@@ -46,9 +49,12 @@ export default function MobileLayout({
 
   // Mobile terminal state
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
-  const [shortcutLayout, setShortcutLayout] = useState<ShortcutLayout>(loadShortcutLayout);
+  const [shortcutConfig, setShortcutConfig] = useState<ShortcutConfig>(loadShortcutConfig);
   const [shortcutEditing, setShortcutEditing] = useState(false);
   const [editingSlotIndex, setEditingSlotIndex] = useState<number | null>(null);
+  const [settingsMenuOpen, setSettingsMenuOpen] = useState(false);
+  const [gridSizeDialogOpen, setGridSizeDialogOpen] = useState(false);
+  const settingsMenuRef = useRef<HTMLDivElement>(null);
   const termWrapperRef = useRef<HTMLDivElement>(null);
   const termPanelRef = useRef<TerminalPanelHandle>(null);
 
@@ -204,29 +210,81 @@ export default function MobileLayout({
     setShortcutsOpen((v) => !v);
   }, []);
 
-  // Shortcut editing — ⚙ button toggles edit/save
-  const handleEditToggle = useCallback(() => {
-    if (shortcutEditing) {
-      // Save and exit edit mode
-      setShortcutEditing(false);
-      setEditingSlotIndex(null);
-      saveShortcutLayout(shortcutLayout);
-    } else {
-      // Enter edit mode, ensure shortcuts are visible
-      setShortcutEditing(true);
-      setShortcutsOpen(true);
+  // Shortcut editing — ⚙ button shows settings menu (non-edit) or saves (edit)
+  const handleSettingsClick = useCallback(() => {
+    setSettingsMenuOpen(true);
+  }, []);
+
+  const handleSaveClick = useCallback(() => {
+    setShortcutEditing(false);
+    setEditingSlotIndex(null);
+    saveShortcutConfig(shortcutConfig);
+  }, [shortcutConfig]);
+
+  // Close settings menu on outside click
+  useEffect(() => {
+    if (!settingsMenuOpen) return;
+    const handler = (e: MouseEvent | TouchEvent) => {
+      if (settingsMenuRef.current && !settingsMenuRef.current.contains(e.target as Node)) {
+        setSettingsMenuOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    document.addEventListener("touchstart", handler);
+    return () => {
+      document.removeEventListener("mousedown", handler);
+      document.removeEventListener("touchstart", handler);
+    };
+  }, [settingsMenuOpen]);
+
+  const handleStartEdit = useCallback(() => {
+    setSettingsMenuOpen(false);
+    setShortcutEditing(true);
+    setShortcutsOpen(true);
+  }, []);
+
+  const handleResetDefault = useCallback(() => {
+    setSettingsMenuOpen(false);
+    if (confirm("确定恢复默认快捷键布局？")) {
+      const cfg = defaultConfig();
+      setShortcutConfig(cfg);
+      saveShortcutConfig(cfg);
     }
-  }, [shortcutEditing, shortcutLayout]);
+  }, []);
+
+  const handleOpenGridSize = useCallback(() => {
+    setSettingsMenuOpen(false);
+    setGridSizeDialogOpen(true);
+  }, []);
+
+  const handleGridSizeChange = useCallback((newRows: number, newCols: number) => {
+    setShortcutConfig((prev) => {
+      const cfg = resizeGrid(prev, newRows, newCols);
+      saveShortcutConfig(cfg);
+      return cfg;
+    });
+    setGridSizeDialogOpen(false);
+  }, []);
 
   const handleEditSlot = useCallback((index: number) => {
     setEditingSlotIndex(index);
   }, []);
 
+  const handleSwapSlots = useCallback((a: number, b: number) => {
+    setShortcutConfig((prev) => {
+      const next = { ...prev, slots: [...prev.slots] };
+      const tmp = next.slots[a] ?? null;
+      next.slots[a] = next.slots[b] ?? null;
+      next.slots[b] = tmp;
+      return next;
+    });
+  }, []);
+
   const handleEditSlotSelect = useCallback((slot: import("./ShortcutGrid").ShortcutSlot | null) => {
     if (editingSlotIndex === null) return;
-    setShortcutLayout((prev) => {
-      const next = [...prev];
-      next[editingSlotIndex] = slot;
+    setShortcutConfig((prev) => {
+      const next = { ...prev, slots: [...prev.slots] };
+      next.slots[editingSlotIndex] = slot;
       return next;
     });
     setEditingSlotIndex(null);
@@ -320,19 +378,44 @@ export default function MobileLayout({
             {shortcutsOpen && (
               <div className="mobile-terminal-input-panel">
                 <ShortcutGrid
-                  layout={shortcutLayout}
+                  layout={shortcutConfig.slots}
+                  rows={shortcutConfig.rows}
+                  cols={shortcutConfig.cols}
                   editing={shortcutEditing}
                   onKey={handleShortcutKey}
                   onEditSlot={handleEditSlot}
-                  onEditToggle={handleEditToggle}
+                  onSettingsClick={handleSettingsClick}
+                  onSaveClick={handleSaveClick}
+                  onSwapSlots={handleSwapSlots}
                 />
+                {settingsMenuOpen && (
+                  <div ref={settingsMenuRef} className="shortcut-settings-menu">
+                    <button className="shortcut-settings-option" onClick={handleStartEdit}>
+                      编辑快捷键
+                    </button>
+                    <button className="shortcut-settings-option" onClick={handleOpenGridSize}>
+                      网格大小
+                    </button>
+                    <button className="shortcut-settings-option" onClick={handleResetDefault}>
+                      恢复默认
+                    </button>
+                  </div>
+                )}
               </div>
             )}
             {editingSlotIndex !== null && (
               <ShortcutEditDialog
-                current={shortcutLayout[editingSlotIndex] ?? null}
+                current={shortcutConfig.slots[editingSlotIndex] ?? null}
                 onSelect={handleEditSlotSelect}
                 onClose={() => setEditingSlotIndex(null)}
+              />
+            )}
+            {gridSizeDialogOpen && (
+              <GridSizeDialog
+                rows={shortcutConfig.rows}
+                cols={shortcutConfig.cols}
+                onConfirm={handleGridSizeChange}
+                onClose={() => setGridSizeDialogOpen(false)}
               />
             )}
           </div>
@@ -379,6 +462,49 @@ export default function MobileLayout({
           onClientAction={handleTabMenuClientAction}
         />
       )}
+    </div>
+  );
+}
+
+/** Grid size configuration dialog. */
+function GridSizeDialog({ rows, cols, onConfirm, onClose }: {
+  rows: number;
+  cols: number;
+  onConfirm: (rows: number, cols: number) => void;
+  onClose: () => void;
+}) {
+  const [r, setR] = useState(rows);
+  const [c, setC] = useState(cols);
+
+  return (
+    <div className="shortcut-edit-overlay" onClick={onClose}>
+      <div className="shortcut-edit-dialog grid-size-dialog" onClick={(e) => e.stopPropagation()}>
+        <div className="shortcut-edit-header">
+          <span>网格大小</span>
+        </div>
+        <div className="grid-size-controls">
+          <label>
+            <span>行数</span>
+            <div className="grid-size-stepper">
+              <button onClick={() => setR((v) => Math.max(1, v - 1))} disabled={r <= 1}>−</button>
+              <span>{r}</span>
+              <button onClick={() => setR((v) => v + 1)}>+</button>
+            </div>
+          </label>
+          <label>
+            <span>列数</span>
+            <div className="grid-size-stepper">
+              <button onClick={() => setC((v) => Math.max(1, v - 1))} disabled={c <= 1}>−</button>
+              <span>{c}</span>
+              <button onClick={() => setC((v) => v + 1)}>+</button>
+            </div>
+          </label>
+        </div>
+        <div className="shortcut-edit-footer">
+          <button onClick={onClose}>取消</button>
+          <button className="primary" onClick={() => onConfirm(r, c)}>确定</button>
+        </div>
+      </div>
     </div>
   );
 }

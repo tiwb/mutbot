@@ -3812,7 +3812,7 @@ body,
    ---------------------------------------------------------------- */
 .terminal-input-bar {
   display: flex;
-  align-items: center;
+  align-items: flex-end;
   gap: 4px;
   padding: 6px 8px;
   background: var(--bg-sidebar);
@@ -3832,6 +3832,13 @@ body,
   outline: none;
 }
 
+.terminal-input-textarea {
+  resize: none;
+  overflow-y: auto;
+  max-height: calc(1.4em * 4 + 16px + 2px); /* 4 lines * line-height + padding + border */
+  line-height: 1.4;
+}
+
 .terminal-input-field:focus {
   border-color: var(--accent);
 }
@@ -3841,17 +3848,24 @@ body,
   opacity: 0.5;
 }
 
+.terminal-input-send-wrapper {
+  position: relative;
+  flex-shrink: 0;
+}
+
 .terminal-input-enter,
 .terminal-input-toggle {
   background: none;
   border: 1px solid rgba(255, 255, 255, 0.15);
   color: var(--text);
-  font-size: 18px;
-  padding: 6px 10px;
+  padding: 7px 10px;
   border-radius: 4px;
   cursor: pointer;
   line-height: 1;
   flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .terminal-input-enter:active,
@@ -3859,12 +3873,49 @@ body,
   background: rgba(255, 255, 255, 0.1);
 }
 
+/* Long-press mode menu (popover above send button) */
+.terminal-input-mode-menu {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  right: 0;
+  background: var(--bg-sidebar);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  z-index: 100;
+  box-shadow: 0 -4px 12px rgba(0, 0, 0, 0.3);
+  white-space: nowrap;
+}
+
+.terminal-input-mode-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: none;
+  border: none;
+  color: var(--text);
+  font-size: 13px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.terminal-input-mode-option:active {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.terminal-input-mode-option.active {
+  color: var(--accent);
+}
+
 /* ----------------------------------------------------------------
-   Shortcut Grid (4x4)
+   Shortcut Grid (dynamic rows x cols)
    ---------------------------------------------------------------- */
 .shortcut-grid {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
   gap: 4px;
   padding: 6px 8px;
 }
@@ -3919,6 +3970,112 @@ body,
 
 .shortcut-grid.editing .shortcut-grid-btn.edit-btn {
   border-style: solid;
+}
+
+.shortcut-grid.editing .shortcut-grid-btn.drag-source {
+  opacity: 0.4;
+}
+
+.shortcut-grid.editing .shortcut-grid-btn.drag-target {
+  border-color: var(--accent);
+  border-width: 2px;
+  background: rgba(255, 255, 255, 0.1);
+}
+
+/* Settings menu (popover above ⚙ button) */
+.shortcut-settings-menu {
+  position: absolute;
+  bottom: calc(100% + 4px);
+  left: 8px;
+  background: var(--bg-sidebar);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  z-index: 100;
+  box-shadow: 0 -4px 12px rgba(0, 0, 0, 0.3);
+  white-space: nowrap;
+}
+
+.shortcut-settings-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  background: none;
+  border: none;
+  color: var(--text);
+  font-size: 13px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.shortcut-settings-option:active {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+/* Grid size dialog */
+.grid-size-dialog {
+  max-width: 260px;
+}
+
+.grid-size-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+}
+
+.grid-size-controls label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: var(--text);
+  font-size: 14px;
+}
+
+.grid-size-stepper {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.grid-size-stepper button {
+  width: 32px;
+  height: 32px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  color: var(--text);
+  font-size: 18px;
+  border-radius: 4px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.grid-size-stepper button:active {
+  background: rgba(255, 255, 255, 0.15);
+}
+
+.grid-size-stepper button:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+.grid-size-stepper > span {
+  min-width: 28px;
+  text-align: center;
+  font-size: 16px;
+  color: var(--text);
+}
+
+.shortcut-edit-footer button.primary {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
 }
 
 /* ----------------------------------------------------------------
