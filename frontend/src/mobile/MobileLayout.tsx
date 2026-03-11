@@ -1,9 +1,13 @@
 import { useState, useCallback, useEffect, useRef, Suspense, lazy } from "react";
 import MobileDrawer from "./MobileDrawer";
+import ShortcutGrid, { loadShortcutLayout, saveShortcutLayout, type ShortcutLayout } from "./ShortcutGrid";
+import ShortcutEditDialog from "./ShortcutEditDialog";
+import TerminalInput from "./TerminalInput";
 import AgentPanel from "../panels/AgentPanel";
 import RpcMenu, { type MenuExecResult } from "../components/RpcMenu";
 import type { WorkspaceRpc } from "../lib/workspace-rpc";
 import type { Session } from "../lib/types";
+import type { TerminalPanelHandle } from "../panels/TerminalPanel";
 import WelcomePage from "../components/WelcomePage";
 import { getSessionIcon } from "../components/SessionIcons";
 
@@ -39,6 +43,14 @@ export default function MobileLayout({
   onMenuResult,
 }: Props) {
   const [drawerOpen, setDrawerOpen] = useState(false);
+
+  // Mobile terminal state
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const [shortcutLayout, setShortcutLayout] = useState<ShortcutLayout>(loadShortcutLayout);
+  const [shortcutEditing, setShortcutEditing] = useState(false);
+  const [editingSlotIndex, setEditingSlotIndex] = useState<number | null>(null);
+  const termWrapperRef = useRef<HTMLDivElement>(null);
+  const termPanelRef = useRef<TerminalPanelHandle>(null);
 
   const STORAGE_KEY = "mutbot-mobile-active-session";
 
@@ -177,6 +189,49 @@ export default function MobileLayout({
     ? sessions.find((s) => s.id === tabContextMenu.sessionId)
     : null;
 
+  // Send shortcut key sequence to terminal
+  const handleShortcutKey = useCallback((sequence: string) => {
+    termPanelRef.current?.writeInput(sequence);
+  }, []);
+
+  // Send text from input bar to terminal
+  const handleTerminalInput = useCallback((text: string) => {
+    termPanelRef.current?.writeInput(text);
+  }, []);
+
+  // Toggle shortcuts panel
+  const handleToggleShortcuts = useCallback(() => {
+    setShortcutsOpen((v) => !v);
+  }, []);
+
+  // Shortcut editing — ⚙ button toggles edit/save
+  const handleEditToggle = useCallback(() => {
+    if (shortcutEditing) {
+      // Save and exit edit mode
+      setShortcutEditing(false);
+      setEditingSlotIndex(null);
+      saveShortcutLayout(shortcutLayout);
+    } else {
+      // Enter edit mode, ensure shortcuts are visible
+      setShortcutEditing(true);
+      setShortcutsOpen(true);
+    }
+  }, [shortcutEditing, shortcutLayout]);
+
+  const handleEditSlot = useCallback((index: number) => {
+    setEditingSlotIndex(index);
+  }, []);
+
+  const handleEditSlotSelect = useCallback((slot: import("./ShortcutGrid").ShortcutSlot | null) => {
+    if (editingSlotIndex === null) return;
+    setShortcutLayout((prev) => {
+      const next = [...prev];
+      next[editingSlotIndex] = slot;
+      return next;
+    });
+    setEditingSlotIndex(null);
+  }, [editingSlotIndex]);
+
   return (
     <div className="mobile-root">
       {/* Top bar */}
@@ -244,14 +299,43 @@ export default function MobileLayout({
             onSessionLink={onSelectSession}
           />
         ) : activeSession && activeSession.kind === "terminal" ? (
-          <Suspense fallback={<div className="panel-loading">Loading...</div>}>
-            <TerminalPanel
-              sessionId={activeSession.id}
-              terminalId={activeSession.config?.terminal_id as string | undefined}
-              workspaceId={workspaceId ?? ""}
-              rpc={rpc}
+          <div
+            ref={termWrapperRef}
+            className="mobile-terminal-wrapper"
+          >
+            <Suspense fallback={<div className="panel-loading">Loading...</div>}>
+              <TerminalPanel
+                ref={termPanelRef}
+                sessionId={activeSession.id}
+                terminalId={activeSession.config?.terminal_id as string | undefined}
+                workspaceId={workspaceId ?? ""}
+                rpc={rpc}
+              />
+            </Suspense>
+            <TerminalInput
+              onSend={handleTerminalInput}
+              shortcutsOpen={shortcutsOpen}
+              onToggleShortcuts={handleToggleShortcuts}
             />
-          </Suspense>
+            {shortcutsOpen && (
+              <div className="mobile-terminal-input-panel">
+                <ShortcutGrid
+                  layout={shortcutLayout}
+                  editing={shortcutEditing}
+                  onKey={handleShortcutKey}
+                  onEditSlot={handleEditSlot}
+                  onEditToggle={handleEditToggle}
+                />
+              </div>
+            )}
+            {editingSlotIndex !== null && (
+              <ShortcutEditDialog
+                current={shortcutLayout[editingSlotIndex] ?? null}
+                onSelect={handleEditSlotSelect}
+                onClose={() => setEditingSlotIndex(null)}
+              />
+            )}
+          </div>
         ) : activeSession ? (
           <div className="mobile-unsupported-panel">
             <p>该面板类型暂不支持移动端显示</p>

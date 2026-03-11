@@ -2106,6 +2106,17 @@ body,
   display: none !important;
 }
 
+/* Narrow xterm scrollbar to match app-wide style */
+.terminal-panel .xterm .xterm-scrollable-element > .scrollbar.vertical {
+  width: 8px !important;
+}
+
+.terminal-panel .xterm .xterm-scrollable-element > .scrollbar.vertical > .slider {
+  width: 8px !important;
+  border-radius: 4px;
+  left: 0 !important;
+}
+
 .terminal-expired-overlay {
   position: absolute;
   inset: 0;
@@ -3773,4 +3784,296 @@ body,
 /* Chat input: prevent iOS auto-zoom on focus */
 .mobile-panel-container .chat-input-container textarea {
   font-size: 16px;
+}
+
+/* ----------------------------------------------------------------
+   Mobile Terminal Wrapper
+   ---------------------------------------------------------------- */
+.mobile-terminal-wrapper {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.mobile-terminal-wrapper .terminal-panel {
+  flex: 1;
+  min-height: 0;
+}
+
+/* Shortcut panel area below input bar */
+.mobile-terminal-input-panel {
+  flex-shrink: 0;
+  background: var(--bg-sidebar);
+  border-top: 1px solid var(--border);
+}
+
+/* ----------------------------------------------------------------
+   Terminal Input Bar (always visible)
+   ---------------------------------------------------------------- */
+.terminal-input-bar {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 8px;
+  background: var(--bg-sidebar);
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.terminal-input-field {
+  flex: 1;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  color: var(--text);
+  font-family: "SF Mono", "Cascadia Code", Consolas, monospace;
+  font-size: 16px;  /* >= 16px prevents iOS auto-zoom on focus */
+  padding: 8px 10px;
+  border-radius: 4px;
+  outline: none;
+}
+
+.terminal-input-field:focus {
+  border-color: var(--accent);
+}
+
+.terminal-input-field::placeholder {
+  color: var(--text-dim);
+  opacity: 0.5;
+}
+
+.terminal-input-enter,
+.terminal-input-toggle {
+  background: none;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  color: var(--text);
+  font-size: 18px;
+  padding: 6px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.terminal-input-enter:active,
+.terminal-input-toggle:active {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+/* ----------------------------------------------------------------
+   Shortcut Grid (4x4)
+   ---------------------------------------------------------------- */
+.shortcut-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 4px;
+  padding: 6px 8px;
+}
+
+.shortcut-grid-btn {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: var(--text);
+  font-size: 13px;
+  font-family: inherit;
+  padding: 10px 0;
+  border-radius: 4px;
+  cursor: pointer;
+  user-select: none;
+  -webkit-user-select: none;
+  transition: background 0.1s;
+  min-height: 38px;
+}
+
+.shortcut-grid-btn:active {
+  background: rgba(255, 255, 255, 0.15);
+}
+
+.shortcut-grid-btn.empty {
+  background: transparent;
+  border-color: transparent;
+}
+
+.shortcut-grid-btn.edit-btn {
+  font-size: 16px;
+  color: var(--text-dim);
+}
+
+.shortcut-grid-btn.edit-btn.save-mode {
+  font-size: 13px;
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.shortcut-grid.editing .shortcut-grid-btn {
+  border-style: dashed;
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+.shortcut-grid.editing .shortcut-grid-btn.empty {
+  border-color: rgba(255, 255, 255, 0.15);
+}
+
+.shortcut-grid.editing .shortcut-grid-btn:active {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.shortcut-grid.editing .shortcut-grid-btn.edit-btn {
+  border-style: solid;
+}
+
+/* ----------------------------------------------------------------
+   Shortcut Edit Dialog
+   ---------------------------------------------------------------- */
+.shortcut-edit-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  z-index: 1000;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+}
+
+.shortcut-edit-dialog {
+  background: var(--bg-sidebar);
+  border-top: 1px solid var(--border);
+  border-radius: 12px 12px 0 0;
+  width: 100%;
+  max-width: 420px;
+  max-height: 70vh;
+  overflow-y: auto;
+  padding: 16px;
+}
+
+.shortcut-edit-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--text);
+  margin-bottom: 12px;
+}
+
+.shortcut-edit-current {
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.shortcut-edit-group {
+  margin-bottom: 10px;
+}
+
+.shortcut-edit-group-label {
+  font-size: 11px;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 6px;
+}
+
+.shortcut-edit-group-items {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.shortcut-edit-preset-btn {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: var(--text);
+  font-size: 13px;
+  padding: 6px 12px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.shortcut-edit-preset-btn:active {
+  background: rgba(255, 255, 255, 0.15);
+}
+
+.shortcut-edit-preset-btn.custom-btn {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.shortcut-edit-custom {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.shortcut-edit-custom label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.shortcut-edit-custom input {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  color: var(--text);
+  font-size: 16px;
+  padding: 6px 8px;
+  border-radius: 4px;
+  outline: none;
+}
+
+.shortcut-edit-custom input:focus {
+  border-color: var(--accent);
+}
+
+.shortcut-edit-hint {
+  font-size: 11px;
+  color: var(--text-dim);
+  opacity: 0.7;
+}
+
+.shortcut-edit-custom-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.shortcut-edit-custom-actions button {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: var(--text);
+  font-size: 13px;
+  padding: 6px 14px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.shortcut-edit-custom-actions button.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: white;
+}
+
+.shortcut-edit-custom-actions button:disabled {
+  opacity: 0.4;
+}
+
+.shortcut-edit-footer {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+.shortcut-edit-footer button {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  font-size: 13px;
+  padding: 6px 12px;
+  cursor: pointer;
+}
+
+.shortcut-edit-footer .shortcut-edit-clear {
+  color: #e06c75;
 }

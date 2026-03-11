@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
@@ -16,7 +16,17 @@ interface Props {
   onTerminalExited?: (sessionId: string) => void;
 }
 
-export default function TerminalPanel({ sessionId, terminalId: initialId, workspaceId, nodeId, rpc, onTerminalCreated, onTerminalExited }: Props) {
+/** Methods exposed via ref for external terminal interaction (mobile input panels, etc.). */
+export interface TerminalPanelHandle {
+  /** Write raw data (key sequences, text) to the terminal's PTY channel. Auto-scrolls to bottom. */
+  writeInput: (data: string) => void;
+  /** Focus the underlying xterm textarea (triggers system keyboard on mobile). */
+  focusTerminal: () => void;
+  /** Scroll terminal to the bottom. */
+  scrollToBottom: () => void;
+}
+
+const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPanel({ sessionId, terminalId: initialId, workspaceId, nodeId, rpc, onTerminalCreated, onTerminalExited }, ref) {
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
@@ -28,6 +38,25 @@ export default function TerminalPanel({ sessionId, terminalId: initialId, worksp
 
   // Expose init() via ref so handleRecreate can call it
   const initRef = useRef<(() => void) | null>(null);
+
+  // Expose writeInput / focusTerminal / scrollToBottom to parent via ref
+  useImperativeHandle(ref, () => ({
+    writeInput(data: string) {
+      const ch = chRef.current;
+      if (ch > 0 && rpc) {
+        const encoder = new TextEncoder();
+        rpc.sendBinaryToChannel(ch, encoder.encode(data));
+      }
+      // Auto-scroll to bottom when sending input
+      termRef.current?.scrollToBottom();
+    },
+    focusTerminal() {
+      termRef.current?.focus();
+    },
+    scrollToBottom() {
+      termRef.current?.scrollToBottom();
+    },
+  }), [rpc]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -59,6 +88,9 @@ export default function TerminalPanel({ sessionId, terminalId: initialId, worksp
         brightMagenta: "#d670d6",
         brightCyan: "#29b8db",
         brightWhite: "#e5e5e5",
+        scrollbarSliderBackground: "rgba(121, 121, 121, 0.4)",
+        scrollbarSliderHoverBackground: "rgba(121, 121, 121, 0.7)",
+        scrollbarSliderActiveBackground: "rgba(121, 121, 121, 0.7)",
       },
       fontFamily: '"SF Mono", "Cascadia Code", Consolas, monospace',
       fontSize: 13,
@@ -257,17 +289,113 @@ export default function TerminalPanel({ sessionId, terminalId: initialId, worksp
       }
     });
 
-    // Resize handling — only calculate and report to server, don't resize term.
+    // Resize handling — fit the terminal to container, then report to server.
     // Server will broadcast pty_resize with the actual PTY size (min of all clients).
     const resizeObserver = new ResizeObserver(() => {
       if (fitRef.current) {
-        const dims = fitRef.current.proposeDimensions();
-        if (dims) {
-          sendResize(dims.rows, dims.cols);
-        }
+        fitRef.current.fit();
       }
     });
+
+    // After fitAddon.fit() resizes the terminal, report new dimensions to server
+    const resizeDisposable = term.onResize(({ rows: r, cols: c }) => {
+      sendResize(r, c);
+    });
     resizeObserver.observe(container);
+
+    // Touch scrolling for mobile — with inertia (momentum)
+    let touchStartY = 0;
+    let touchAccum = 0;
+    let isTouchScrolling = false;
+    let velocity = 0;
+    let lastTouchTime = 0;
+    let inertiaRaf = 0;
+    const TOUCH_THRESHOLD = 5; // px before we start scrolling
+    const FRICTION = 0.92; // deceleration factor per frame
+    const MIN_VELOCITY = 0.5; // px/frame below which we stop
+
+    function getLineHeight() {
+      const rowsEl = term.element?.querySelector(".xterm-rows");
+      return rowsEl
+        ? rowsEl.getBoundingClientRect().height / term.rows || 16
+        : 16;
+    }
+
+    function stopInertia() {
+      if (inertiaRaf) {
+        cancelAnimationFrame(inertiaRaf);
+        inertiaRaf = 0;
+      }
+    }
+
+    function startInertia() {
+      stopInertia();
+      const lineHeight = getLineHeight();
+      let accum = 0;
+      function tick() {
+        velocity *= FRICTION;
+        if (Math.abs(velocity) < MIN_VELOCITY) {
+          inertiaRaf = 0;
+          return;
+        }
+        accum += velocity;
+        const lines = Math.trunc(accum / lineHeight);
+        if (lines !== 0) {
+          term.scrollLines(lines);
+          accum -= lines * lineHeight;
+        }
+        inertiaRaf = requestAnimationFrame(tick);
+      }
+      inertiaRaf = requestAnimationFrame(tick);
+    }
+
+    const onTouchStart = (e: TouchEvent) => {
+      stopInertia();
+      touchStartY = e.touches[0]!.clientY;
+      lastTouchTime = performance.now();
+      touchAccum = 0;
+      velocity = 0;
+      isTouchScrolling = false;
+    };
+
+    const onTouchMove = (e: TouchEvent) => {
+      const currentY = e.touches[0]!.clientY;
+      const deltaY = touchStartY - currentY;
+      touchStartY = currentY;
+
+      if (!isTouchScrolling && Math.abs(deltaY) < TOUCH_THRESHOLD) return;
+      isTouchScrolling = true;
+
+      const now = performance.now();
+      const dt = now - lastTouchTime;
+      lastTouchTime = now;
+
+      // Track velocity (px per 16ms frame)
+      if (dt > 0) {
+        velocity = deltaY * (16 / dt);
+      }
+
+      const lineHeight = getLineHeight();
+      touchAccum += deltaY;
+      const lines = Math.trunc(touchAccum / lineHeight);
+      if (lines !== 0) {
+        term.scrollLines(lines);
+        touchAccum -= lines * lineHeight;
+      }
+      e.preventDefault();
+    };
+
+    const onTouchEnd = () => {
+      if (isTouchScrolling && Math.abs(velocity) > MIN_VELOCITY) {
+        startInertia();
+      }
+      isTouchScrolling = false;
+      touchAccum = 0;
+    };
+
+    container.addEventListener("touchstart", onTouchStart, { passive: true });
+    container.addEventListener("touchmove", onTouchMove, { passive: false });
+    container.addEventListener("touchend", onTouchEnd, { passive: true });
 
     init();
 
@@ -275,7 +403,12 @@ export default function TerminalPanel({ sessionId, terminalId: initialId, worksp
       active = false;
       initRef.current = null;
       inputDisposable.dispose();
+      resizeDisposable.dispose();
       resizeObserver.disconnect();
+      stopInertia();
+      container.removeEventListener("touchstart", onTouchStart);
+      container.removeEventListener("touchmove", onTouchMove);
+      container.removeEventListener("touchend", onTouchEnd);
       unsubClosed();
       // Close channel on cleanup
       if (ch > 0 && rpc) {
@@ -365,4 +498,6 @@ export default function TerminalPanel({ sessionId, terminalId: initialId, worksp
       )}
     </div>
   );
-}
+});
+
+export default TerminalPanel;
