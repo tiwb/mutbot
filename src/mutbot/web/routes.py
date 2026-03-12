@@ -7,7 +7,7 @@ import json as _json
 import logging
 from typing import Any
 
-from mutbot.web.view import View, WebSocketView, WebSocketConnection, WebSocketDisconnect, json_response, Response
+from mutagent.net.view import View, WebSocketView, WebSocketConnection, WebSocketDisconnect, json_response, Response
 from mutbot.web.rpc import (
     RpcDispatcher, RpcContext, make_event,
     AppRpc, WorkspaceRpc, SessionRpc,

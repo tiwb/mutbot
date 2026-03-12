@@ -17,10 +17,8 @@ from typing import Any
 
 import pytest
 
-from mutbot.server import Server
-from mutbot.server._http import HTTPProtocol, RequestResponseCycle, FlowControl
-from mutbot.server._ws import WSProtocol
-from mutbot.server._sse import format_sse
+from mutagent.net.server import Server
+from mutagent.net._protocol import HTTPProtocol, RequestResponseCycle, FlowControl, WSProtocol, format_sse
 
 
 # ---------------------------------------------------------------------------

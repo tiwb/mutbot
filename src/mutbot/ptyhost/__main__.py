@@ -25,7 +25,7 @@ def main() -> None:
     )
 
     from mutbot.ptyhost._app import PtyHostApp
-    from mutbot.server import Server
+    from mutagent.net.server import Server
 
     app = PtyHostApp()
 

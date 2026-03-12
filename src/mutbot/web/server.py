@@ -18,7 +18,7 @@ from mutbot.runtime.workspace import WorkspaceManager
 from mutbot.runtime.session_manager import SessionManager
 from mutbot.runtime.terminal import TerminalManager
 from mutbot.runtime.config import MutbotConfig, load_mutbot_config
-from mutbot.web.view import Router
+from mutagent.net.view import Router
 
 logger = logging.getLogger(__name__)
 
@@ -375,7 +375,7 @@ def main():
     """MutBot server entry point: config → logging → Router → Server."""
     import argparse
     import mutbot
-    from mutbot.server import Server
+    from mutagent.net.server import Server
 
     parser = argparse.ArgumentParser(description="MutBot Web UI")
     parser.add_argument(

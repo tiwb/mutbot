@@ -2,7 +2,7 @@
 
 涵盖：
 - JSON-RPC 2.0 分发器（单元测试）
-- MCP server tool/resource/prompt 注册
+- MCP server tool 自动发现（MCPToolSet Declaration）
 - MCP client ↔ server 端到端（Streamable HTTP）
 - Session 管理
 - 错误处理
@@ -10,14 +10,15 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 from typing import Any
 
 import pytest
 
-from mutbot.server import Server, MCPServer, MCPClient, MCPError, mount_mcp
-from mutbot.server._jsonrpc import (
+from mutagent.net.server import Server, MCPServer, mount_mcp
+from mutagent.net.client import MCPClient, MCPError
+from mutagent.net.mcp import MCPToolSet
+from mutagent.net._mcp_proto import (
     JsonRpcDispatcher,
     JsonRpcError,
     PARSE_ERROR,
@@ -26,8 +27,8 @@ from mutbot.server._jsonrpc import (
     INTERNAL_ERROR,
     make_request,
     make_notification,
+    ToolResult,
 )
-from mutbot.server._mcp_types import ToolResult, PROTOCOL_VERSION
 
 
 # ---------------------------------------------------------------------------
@@ -132,39 +133,54 @@ class TestJsonRpcDispatcher:
 
 
 # ---------------------------------------------------------------------------
-# MCP Server 单元测试
+# MCPToolSet Declaration 测试
 # ---------------------------------------------------------------------------
 
-class TestMCPServer:
-    def test_tool_registration(self):
-        mcp = MCPServer(name="test", version="1.0")
+class _TestTools(MCPToolSet):
+    """测试用 tool 集合。"""
 
-        @mcp.tool(description="Add two numbers")
-        async def add(a: int, b: int) -> str:
-            return str(a + b)
+    async def add(self, a: int, b: int) -> str:
+        """Add two numbers"""
+        return str(int(a) + int(b))
 
-        assert "add" in mcp._tools
-        tool_def, _ = mcp._tools["add"]
-        assert tool_def.description == "Add two numbers"
-        assert "a" in tool_def.inputSchema["properties"]
+    async def fail_tool(self) -> str:
+        """Always fails"""
+        raise RuntimeError("intentional failure")
 
-    def test_resource_registration(self):
-        mcp = MCPServer(name="test", version="1.0")
 
-        @mcp.resource("file:///readme", name="README", description="The readme")
-        async def read_readme(uri):
-            return "# Hello"
+class TestMCPToolSetDiscovery:
+    def test_tools_discovered(self):
+        """MCPToolProvider 应自动发现 MCPToolSet 子类的方法。"""
+        from mutagent.net.mcp import MCPToolProvider
+        provider = MCPToolProvider()
+        tools = provider.list_tools()
+        names = [t["name"] for t in tools]
+        assert "add" in names
+        assert "fail_tool" in names
 
-        assert "file:///readme" in mcp._resources
+    def test_tool_schema(self):
+        """Tool schema 应从函数签名推断。"""
+        from mutagent.net.mcp import MCPToolProvider
+        provider = MCPToolProvider()
+        tools = provider.list_tools()
+        add_tool = next(t for t in tools if t["name"] == "add")
+        assert "a" in add_tool["inputSchema"]["properties"]
+        assert "b" in add_tool["inputSchema"]["properties"]
+        assert add_tool["description"] == "Add two numbers"
 
-    def test_prompt_registration(self):
-        mcp = MCPServer(name="test", version="1.0")
+    @pytest.mark.asyncio
+    async def test_call_tool(self):
+        from mutagent.net.mcp import MCPToolProvider
+        provider = MCPToolProvider()
+        result = await provider.call_tool("add", {"a": 3, "b": 4})
+        assert result.content[0]["text"] == "7"
 
-        @mcp.prompt(description="Generate code")
-        async def code_gen(language: str = "python"):
-            return [{"role": "user", "content": {"type": "text", "text": f"Write {language} code"}}]
-
-        assert "code_gen" in mcp._prompts
+    @pytest.mark.asyncio
+    async def test_call_unknown_tool(self):
+        from mutagent.net.mcp import MCPToolProvider
+        provider = MCPToolProvider()
+        with pytest.raises(JsonRpcError):
+            await provider.call_tool("nonexistent", {})
 
 
 # ---------------------------------------------------------------------------
@@ -172,29 +188,6 @@ class TestMCPServer:
 # ---------------------------------------------------------------------------
 
 _MCP_PORT_BASE = 19200
-
-
-def _create_test_mcp() -> MCPServer:
-    """创建带 tool/resource/prompt 的测试 MCP server。"""
-    mcp = MCPServer(name="test-server", version="1.0.0", instructions="A test server")
-
-    @mcp.tool(description="Add two numbers")
-    async def add(a: int, b: int) -> str:
-        return str(int(a) + int(b))
-
-    @mcp.tool(description="Always fails")
-    async def fail_tool() -> str:
-        raise RuntimeError("intentional failure")
-
-    @mcp.resource("test://hello", name="hello", description="Hello resource")
-    async def read_hello(uri: str) -> str:
-        return "Hello, World!"
-
-    @mcp.prompt(description="Greeting prompt")
-    async def greet(name: str = "World") -> list[dict[str, Any]]:
-        return [{"role": "user", "content": {"type": "text", "text": f"Hello {name}!"}}]
-
-    return mcp
 
 
 async def _lifespan_app(scope: dict, receive: Any, send: Any) -> None:
@@ -213,7 +206,7 @@ async def _lifespan_app(scope: dict, receive: Any, send: Any) -> None:
 
 
 async def _start_mcp_server(port: int) -> tuple[Server, MCPServer]:
-    mcp = _create_test_mcp()
+    mcp = MCPServer(name="test-server", version="1.0.0", instructions="A test server")
     app = mount_mcp(_lifespan_app, "/mcp", mcp)
     server = Server(app)
     await server._lifespan_startup()
@@ -261,45 +254,6 @@ class TestMCPEndToEnd:
             async with MCPClient(f"http://127.0.0.1:{port}/mcp") as client:
                 result = await client.call_tool("fail_tool")
                 assert result.get("isError") is True
-        finally:
-            await _stop_mcp_server(server)
-
-    @pytest.mark.asyncio
-    async def test_list_resources(self):
-        port = _MCP_PORT_BASE + 4
-        server, _ = await _start_mcp_server(port)
-        try:
-            async with MCPClient(f"http://127.0.0.1:{port}/mcp") as client:
-                resources = await client.list_resources()
-                assert len(resources) == 1
-                assert resources[0]["uri"] == "test://hello"
-        finally:
-            await _stop_mcp_server(server)
-
-    @pytest.mark.asyncio
-    async def test_read_resource(self):
-        port = _MCP_PORT_BASE + 5
-        server, _ = await _start_mcp_server(port)
-        try:
-            async with MCPClient(f"http://127.0.0.1:{port}/mcp") as client:
-                result = await client.read_resource("test://hello")
-                contents = result["contents"]
-                assert contents[0]["text"] == "Hello, World!"
-        finally:
-            await _stop_mcp_server(server)
-
-    @pytest.mark.asyncio
-    async def test_list_and_get_prompts(self):
-        port = _MCP_PORT_BASE + 6
-        server, _ = await _start_mcp_server(port)
-        try:
-            async with MCPClient(f"http://127.0.0.1:{port}/mcp") as client:
-                prompts = await client.list_prompts()
-                assert len(prompts) == 1
-                assert prompts[0]["name"] == "greet"
-
-                result = await client.get_prompt("greet", arguments={"name": "Alice"})
-                assert "Alice" in result["messages"][0]["content"]["text"]
         finally:
             await _stop_mcp_server(server)
 
