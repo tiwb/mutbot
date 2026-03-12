@@ -1,4 +1,4 @@
-"""mutbot.proxy.routes -- LLM 代理 FastAPI 路由。
+"""mutbot.proxy.routes -- LLM 代理路由 View 子类。
 
 挂载到 /llm 前缀，将外部请求代理到配置的 LLM 后端。
 /llm 根路径提供 API 说明页面。
@@ -12,10 +12,8 @@ import time
 from typing import Any
 
 import httpx
-from fastapi import APIRouter, Request
 
 from mutagent.http import HttpClient
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
 from mutbot.proxy.translation import (
     anthropic_request_to_openai,
@@ -23,34 +21,40 @@ from mutbot.proxy.translation import (
     openai_response_to_anthropic,
     openai_sse_to_anthropic_events,
 )
+from mutbot.web.view import View, Request, Response, StreamingResponse, json_response, html_response
 
 logger = logging.getLogger(__name__)
 
-# 模块级配置（在 create_llm_router 中初始化）
+# 模块级配置（在 lifespan 中初始化）
 _providers_config: dict[str, dict[str, Any]] = {}
 _copilot_auth: Any = None  # 延迟 import CopilotAuth
 
 
-def create_llm_router(config: dict[str, Any]) -> APIRouter:
-    """创建 LLM 代理路由。
+# ---------------------------------------------------------------------------
+# View 子类
+# ---------------------------------------------------------------------------
 
-    Args:
-        config: 配置 dict（含 providers 和 default_model）。
-    """
-    global _providers_config
-    _providers_config = config.get("providers", {})
+class LlmInfoView(View):
+    """LLM API 说明页面。"""
+    path = "/llm"
 
-    router = APIRouter()
+    async def get(self, request: Request) -> Response:
+        return html_response(_render_info_page())
 
-    @router.get("", response_class=HTMLResponse)
-    @router.get("/", response_class=HTMLResponse)
-    async def llm_info_page() -> HTMLResponse:
-        """LLM API 说明页面。"""
-        return HTMLResponse(_render_info_page())
 
-    @router.get("/v1/models")
-    async def list_models() -> JSONResponse:
-        """列出所有已配置的模型。"""
+class LlmInfoSlashView(View):
+    """LLM API 说明页面（带尾斜杠）。"""
+    path = "/llm/"
+
+    async def get(self, request: Request) -> Response:
+        return html_response(_render_info_page())
+
+
+class LlmModelsView(View):
+    """列出所有已配置的模型。"""
+    path = "/llm/v1/models"
+
+    async def get(self, request: Request) -> Response:
         models = _get_all_models()
         data = []
         for m in models:
@@ -61,21 +65,25 @@ def create_llm_router(config: dict[str, Any]) -> APIRouter:
                 "owned_by": m["provider_name"],
                 "model_id": m["model_id"],
             })
-        return JSONResponse({"object": "list", "data": data})
+        return json_response({"object": "list", "data": data})
 
-    @router.post("/v1/messages", response_model=None)
-    async def proxy_anthropic(request: Request) -> StreamingResponse | JSONResponse:
-        """Anthropic Messages 格式代理端点。"""
+
+class LlmMessagesView(View):
+    """Anthropic Messages 格式代理端点。"""
+    path = "/llm/v1/messages"
+
+    async def post(self, request: Request) -> Response | StreamingResponse:
         body = await request.json()
         return await _proxy_request(body, client_format="anthropic")
 
-    @router.post("/v1/chat/completions", response_model=None)
-    async def proxy_openai(request: Request) -> StreamingResponse | JSONResponse:
-        """OpenAI Chat Completions 格式代理端点。"""
+
+class LlmCompletionsView(View):
+    """OpenAI Chat Completions 格式代理端点。"""
+    path = "/llm/v1/chat/completions"
+
+    async def post(self, request: Request) -> Response | StreamingResponse:
         body = await request.json()
         return await _proxy_request(body, client_format="openai")
-
-    return router
 
 
 # ---------------------------------------------------------------------------
@@ -83,23 +91,18 @@ def create_llm_router(config: dict[str, Any]) -> APIRouter:
 # ---------------------------------------------------------------------------
 
 def _find_model_config(model_name: str) -> dict[str, Any] | None:
-    """根据模型名查找配置。按 provider 顺序搜索。
-
-    返回合并后的 flat dict（provider 字段 + model_id），与 LLMProvider.resolve_model() 逻辑一致。
-    """
+    """根据模型名查找配置。按 provider 顺序搜索。"""
     normalized = normalize_model_name(model_name)
 
     for _prov_name, prov_conf in _providers_config.items():
         models = prov_conf.get("models", [])
         if isinstance(models, list):
-            # list 形式：直接匹配 model_id（含归一化匹配）
             for mid in models:
                 if mid == model_name or normalize_model_name(mid) == normalized:
                     result = {k: v for k, v in prov_conf.items() if k != "models"}
                     result["model_id"] = mid
                     return result
         elif isinstance(models, dict):
-            # dict 形式：仅按 key（别名）匹配
             if model_name in models:
                 result = {k: v for k, v in prov_conf.items() if k != "models"}
                 result["model_id"] = models[model_name]
@@ -140,16 +143,10 @@ def _get_all_models() -> list[dict[str, str]]:
 def _get_backend_info(
     model_config: dict[str, Any],
 ) -> tuple[str, str, dict[str, str]]:
-    """获取后端信息：(base_url, target_format, headers)。
-
-    Returns:
-        (base_url, target_format, headers)
-        target_format: "anthropic" 或 "openai"
-    """
+    """获取后端信息：(base_url, target_format, headers)。"""
     provider = model_config.get("provider", "AnthropicProvider")
 
     if "CopilotProvider" in provider:
-        # Copilot 后端 → OpenAI 格式
         from mutbot.copilot.auth import CopilotAuth
         auth = CopilotAuth.get_instance()
         base_url = auth.get_base_url(model_config.get("account_type", "individual"))
@@ -165,7 +162,6 @@ def _get_backend_info(
         return base_url, "openai", headers
 
     else:
-        # Anthropic 后端
         base_url = model_config.get("base_url", "https://api.anthropic.com")
         headers = {
             "Authorization": f"Bearer {model_config.get('auth_token', '')}",
@@ -182,16 +178,16 @@ def _get_backend_info(
 async def _proxy_request(
     body: dict[str, Any],
     client_format: str,
-) -> StreamingResponse | JSONResponse:
+) -> Response | StreamingResponse:
     """统一代理处理逻辑。"""
     model_name = body.get("model", "")
     stream = body.get("stream", False)
 
     model_config = _find_model_config(model_name)
     if model_config is None:
-        return JSONResponse(
-            status_code=404,
-            content={"error": {"message": f"Model not found: {model_name}"}},
+        return json_response(
+            {"error": {"message": f"Model not found: {model_name}"}},
+            status=404,
         )
 
     base_url, target_format, headers = _get_backend_info(model_config)
@@ -209,14 +205,14 @@ async def _proxy_request(
         backend_body["model"] = normalize_model_name(actual_model)
         endpoint = f"{base_url}/chat/completions"
     elif client_format == "openai" and target_format == "anthropic":
-        return JSONResponse(
-            status_code=501,
-            content={"error": {"message": "OpenAI-to-Anthropic proxy not implemented"}},
+        return json_response(
+            {"error": {"message": "OpenAI-to-Anthropic proxy not implemented"}},
+            status=501,
         )
     else:
-        return JSONResponse(
-            status_code=400,
-            content={"error": {"message": f"Unknown format: {client_format} → {target_format}"}},
+        return json_response(
+            {"error": {"message": f"Unknown format: {client_format} → {target_format}"}},
+            status=400,
         )
 
     t0 = time.monotonic()
@@ -241,7 +237,7 @@ async def _proxy_no_stream(
     target_format: str,
     model: str,
     t0: float,
-) -> JSONResponse:
+) -> Response:
     """非流式代理。"""
     body.pop("stream", None)
 
@@ -253,7 +249,7 @@ async def _proxy_no_stream(
 
     if resp.status_code != 200:
         logger.warning("Proxy backend error (%d): %s", resp.status_code, resp.text[:200])
-        return JSONResponse(status_code=resp.status_code, content=data)
+        return json_response(data, status=resp.status_code)
 
     # 响应格式转换
     if client_format != target_format:
@@ -261,7 +257,7 @@ async def _proxy_no_stream(
             data = openai_response_to_anthropic(data, model=model)
 
     _log_proxy_call(client_format, model, body, data, duration_ms)
-    return JSONResponse(content=data)
+    return json_response(data)
 
 
 async def _proxy_stream(
@@ -289,15 +285,15 @@ async def _proxy_stream(
                         error_text += chunk
                     logger.warning("Proxy stream error (%d): %s",
                                    resp.status_code, error_text[:200])
-                    yield f"data: {json.dumps({'error': {'message': error_text[:500]}})}\n\n"
+                    yield f"data: {json.dumps({'error': {'message': error_text[:500]}})}\n\n".encode()
                     return
 
                 if client_format == target_format:
                     # 同格式 → 直接透传
                     async for line in resp.aiter_lines():
-                        yield f"{line}\n"
+                        yield f"{line}\n".encode()
                         if line == "":
-                            yield "\n"
+                            yield b"\n"
                 elif target_format == "openai" and client_format == "anthropic":
                     # OpenAI SSE → Anthropic SSE 转换
                     lines: list[str] = []
@@ -310,22 +306,17 @@ async def _proxy_stream(
                     for event_type, event_data in openai_sse_to_anthropic_events(
                         line_iter(), model=model
                     ):
-                        yield f"event: {event_type}\ndata: {event_data}\n\n"
+                        yield f"event: {event_type}\ndata: {event_data}\n\n".encode()
 
         duration_ms = int((time.monotonic() - t0) * 1000)
         logger.info("Proxy stream completed (model=%s, duration=%dms)", model, duration_ms)
 
-    media_type = (
-        "text/event-stream"
-        if client_format == "anthropic"
-        else "text/event-stream"
-    )
     return StreamingResponse(
         event_generator(),
-        media_type=media_type,
+        media_type="text/event-stream",
         headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
+            "cache-control": "no-cache",
+            "connection": "keep-alive",
         },
     )
 

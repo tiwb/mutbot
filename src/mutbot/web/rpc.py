@@ -4,17 +4,19 @@ Workspace 级 WebSocket 的 RPC 基础设施，支持：
 - 请求/响应式 RPC 调用
 - 服务端事件推送
 - 按 method 名分发到对应 handler
+- Declaration 子类自动发现
 """
 
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, TYPE_CHECKING
 
-from fastapi import WebSocket
+import mutobj
 
 if TYPE_CHECKING:
     from mutbot.channel import ChannelContext
@@ -41,8 +43,8 @@ class RpcContext:
     workspace_id: str
     # 广播到当前 workspace 所有客户端
     broadcast: Callable[[dict], Awaitable[None]]
-    # 发送者 WebSocket，用于 broadcast 时排除自身
-    sender_ws: WebSocket | None = None
+    # 发送者 WebSocket（Any 类型，兼容新旧接口）
+    sender_ws: Any = None
     # dispatch 发送 rpc_result 后执行的回调（handler 可设置）
     _post_send: Callable[[], Any] | None = None
 
@@ -105,6 +107,22 @@ class RpcDispatcher:
         """已注册的 method 名列表"""
         return list(self._handlers)
 
+    @classmethod
+    def from_declaration(cls, *base_classes: type) -> RpcDispatcher:
+        """自动发现指定基类的所有子类，注册其公开方法。
+
+        方法名映射规则：{namespace}.{method_name}
+        """
+        dispatcher = cls()
+        for base in base_classes:
+            for rpc_cls in mutobj.discover_subclasses(base):
+                instance = rpc_cls()
+                ns = instance.namespace
+                for name in _get_rpc_methods(rpc_cls, base):
+                    method_name = f"{ns}.{name}" if ns else name
+                    dispatcher.register(method_name, getattr(instance, name))
+        return dispatcher
+
     async def dispatch(self, message: dict, context: RpcContext) -> dict | None:
         """分发一条 RPC 消息，返回响应 dict 或 None（非 RPC 消息时）。
 
@@ -141,6 +159,44 @@ class RpcDispatcher:
         except Exception as exc:
             logger.exception("RPC handler error: method=%s", method_name)
             return _error_response(req_id, ERR_INTERNAL, str(exc))
+
+
+# ---------------------------------------------------------------------------
+# RPC Declaration 基类
+# ---------------------------------------------------------------------------
+
+class AppRpc(mutobj.Declaration):
+    """App 级 RPC 基类（/ws/app 端点）。"""
+    namespace: str = ""
+
+
+class WorkspaceRpc(mutobj.Declaration):
+    """Workspace 级 RPC 基类（/ws/workspace/{id} 端点，非 session 相关）。"""
+    namespace: str = ""
+
+
+class SessionRpc(mutobj.Declaration):
+    """Session 级 RPC 基类（workspace 内，session 相关操作）。"""
+    namespace: str = ""
+
+
+# ---------------------------------------------------------------------------
+# 辅助函数
+# ---------------------------------------------------------------------------
+
+def _get_rpc_methods(cls: type, base: type) -> list[str]:
+    """获取 RPC 类的公开方法（排除基类方法和私有方法）。"""
+    base_methods = set(dir(base))
+    result: list[str] = []
+    for name in dir(cls):
+        if name.startswith("_"):
+            continue
+        if name in base_methods:
+            continue
+        attr = getattr(cls, name, None)
+        if attr is not None and (inspect.isfunction(attr) or inspect.ismethod(attr)):
+            result.append(name)
+    return result
 
 
 def _error_response(req_id: str, code: int, message: str) -> dict:

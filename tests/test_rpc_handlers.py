@@ -165,14 +165,13 @@ def _make_context(broadcasted=None, **kwargs) -> RpcContext:
 
 
 async def _dispatch(method, params, ctx):
-    """通过全局 workspace_rpc 分发 RPC 消息"""
-    from mutbot.web.routes import workspace_rpc
-    from mutbot.web.rpc_session import register_session_rpc
-    from mutbot.web.rpc_workspace import register_workspace_rpc
-    register_session_rpc(workspace_rpc)
-    register_workspace_rpc(workspace_rpc)
+    """通过 RpcDispatcher.from_declaration 分发 RPC 消息"""
+    from mutbot.web.rpc import RpcDispatcher, WorkspaceRpc, SessionRpc
+    import mutbot.web.rpc_session  # noqa: F401 — 触发 Declaration 注册
+    import mutbot.web.rpc_workspace  # noqa: F401
+    dispatcher = RpcDispatcher.from_declaration(WorkspaceRpc, SessionRpc)
     msg = {"type": "rpc", "id": "test_1", "method": method, "params": params}
-    return await workspace_rpc.dispatch(msg, ctx)
+    return await dispatcher.dispatch(msg, ctx)
 
 
 # ---------------------------------------------------------------------------
@@ -396,7 +395,10 @@ class TestTerminalHandlers:
 class TestMethodRegistration:
 
     def test_all_handlers_registered(self):
-        from mutbot.web.routes import workspace_rpc
+        from mutbot.web.rpc import RpcDispatcher, WorkspaceRpc, SessionRpc
+        import mutbot.web.rpc_session  # noqa: F401
+        import mutbot.web.rpc_workspace  # noqa: F401
+        dispatcher = RpcDispatcher.from_declaration(WorkspaceRpc, SessionRpc)
         expected = [
             "menu.query", "menu.execute",
             "session.create", "session.list", "session.get",
@@ -407,7 +409,7 @@ class TestMethodRegistration:
             "file.read",
         ]
         for method in expected:
-            assert method in workspace_rpc.methods, f"Missing handler: {method}"
+            assert method in dispatcher.methods, f"Missing handler: {method}"
 
 
 # ---------------------------------------------------------------------------

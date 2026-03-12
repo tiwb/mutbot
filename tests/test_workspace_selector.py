@@ -1,24 +1,16 @@
 """测试工作区选择器后端功能
 
-NOTE: RPC handler 函数在重构后变为 register_app_rpc 内的嵌套函数，
-无法直接 import。workspace.list / workspace.create 等 RPC 测试需通过
-dispatcher 调用方式重写。当前仅保留 sanitize_workspace_name 等纯函数测试。
-
 涵盖：
 - sanitize_workspace_name 各种输入
 - 工作区名称唯一性（重复名称自动加后缀）
 - get_by_name 查找
 - 注册表（registry）读写与 WorkspaceManager 注册表集成
-- /ws/app RPC handlers (workspace.list / workspace.create / filesystem.browse / workspace.remove)
-- Origin 校验
+- App RPC handlers (workspace.list / workspace.create / filesystem.browse / workspace.remove)
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
-import os
-import tempfile
 from pathlib import Path
 from unittest import mock
 
@@ -27,10 +19,7 @@ import pytest
 from mutbot.runtime.workspace import WorkspaceManager, sanitize_workspace_name
 from mutbot.runtime import storage
 from mutbot.web.rpc import RpcContext
-
-# RPC handler 函数在重构后变为 register_app_rpc 内的嵌套函数，无法直接 import。
-# 依赖这些函数的测试类（TestAppWorkspaceList 等）暂时 skip。
-_RPC_SKIP = pytest.mark.skip(reason="RPC handlers moved to nested functions, need rewrite")
+from mutbot.web.rpc_app import WorkspaceOps, FilesystemOps
 
 
 # ---------------------------------------------------------------------------
@@ -145,13 +134,13 @@ def _make_app_context(workspace_manager=None) -> RpcContext:
     )
 
 
-@_RPC_SKIP
 @pytest.mark.asyncio
 class TestAppWorkspaceList:
     async def test_empty_list(self):
         wm = WorkspaceManager()
         ctx = _make_app_context(wm)
-        result = await handle_app_workspace_list({}, ctx)
+        ops = WorkspaceOps()
+        result = await ops.list({}, ctx)
         assert result == []
 
     async def test_with_workspaces(self):
@@ -159,19 +148,20 @@ class TestAppWorkspaceList:
         wm.create("test-a", "/tmp/a")
         wm.create("test-b", "/tmp/b")
         ctx = _make_app_context(wm)
-        result = await handle_app_workspace_list({}, ctx)
+        ops = WorkspaceOps()
+        result = await ops.list({}, ctx)
         assert len(result) == 2
         names = {ws["name"] for ws in result}
         assert names == {"test-a", "test-b"}
 
 
-@_RPC_SKIP
 @pytest.mark.asyncio
 class TestAppWorkspaceCreate:
     async def test_create_success(self, tmp_path):
         wm = WorkspaceManager()
         ctx = _make_app_context(wm)
-        result = await handle_app_workspace_create(
+        ops = WorkspaceOps()
+        result = await ops.create(
             {"project_path": str(tmp_path)}, ctx
         )
         assert "error" not in result
@@ -181,13 +171,15 @@ class TestAppWorkspaceCreate:
     async def test_missing_project_path(self):
         wm = WorkspaceManager()
         ctx = _make_app_context(wm)
-        result = await handle_app_workspace_create({}, ctx)
+        ops = WorkspaceOps()
+        result = await ops.create({}, ctx)
         assert "error" in result
 
     async def test_relative_path_rejected(self, tmp_path):
         wm = WorkspaceManager()
         ctx = _make_app_context(wm)
-        result = await handle_app_workspace_create(
+        ops = WorkspaceOps()
+        result = await ops.create(
             {"project_path": "relative/path"}, ctx
         )
         assert "error" in result
@@ -195,7 +187,8 @@ class TestAppWorkspaceCreate:
     async def test_nonexistent_path_rejected(self):
         wm = WorkspaceManager()
         ctx = _make_app_context(wm)
-        result = await handle_app_workspace_create(
+        ops = WorkspaceOps()
+        result = await ops.create(
             {"project_path": "/nonexistent/path/12345"}, ctx
         )
         assert "error" in result
@@ -203,30 +196,31 @@ class TestAppWorkspaceCreate:
     async def test_create_with_custom_name(self, tmp_path):
         wm = WorkspaceManager()
         ctx = _make_app_context(wm)
-        result = await handle_app_workspace_create(
+        ops = WorkspaceOps()
+        result = await ops.create(
             {"project_path": str(tmp_path), "name": "Custom Name"}, ctx
         )
         assert result["name"] == "custom-name"
 
 
-@_RPC_SKIP
 @pytest.mark.asyncio
 class TestFilesystemBrowse:
     async def test_home_directory(self):
         ctx = _make_app_context()
-        result = await handle_filesystem_browse({}, ctx)
+        ops = FilesystemOps()
+        result = await ops.browse({}, ctx)
         assert "error" not in result
         assert result["path"] == str(Path.home())
         assert isinstance(result["entries"], list)
 
     async def test_specific_directory(self, tmp_path):
-        # 创建子目录
         (tmp_path / "sub-a").mkdir()
         (tmp_path / "sub-b").mkdir()
         (tmp_path / "file.txt").write_text("hello")
 
         ctx = _make_app_context()
-        result = await handle_filesystem_browse({"path": str(tmp_path)}, ctx)
+        ops = FilesystemOps()
+        result = await ops.browse({"path": str(tmp_path)}, ctx)
         assert result["path"] == str(tmp_path.resolve())
         # 只返回目录，不返回文件
         names = [e["name"] for e in result["entries"]]
@@ -239,7 +233,8 @@ class TestFilesystemBrowse:
         (tmp_path / "visible").mkdir()
 
         ctx = _make_app_context()
-        result = await handle_filesystem_browse({"path": str(tmp_path)}, ctx)
+        ops = FilesystemOps()
+        result = await ops.browse({"path": str(tmp_path)}, ctx)
         names = [e["name"] for e in result["entries"]]
         assert "visible" in names
         assert ".hidden" not in names
@@ -248,12 +243,14 @@ class TestFilesystemBrowse:
         sub = tmp_path / "child"
         sub.mkdir()
         ctx = _make_app_context()
-        result = await handle_filesystem_browse({"path": str(sub)}, ctx)
+        ops = FilesystemOps()
+        result = await ops.browse({"path": str(sub)}, ctx)
         assert result["parent"] == str(tmp_path.resolve())
 
     async def test_nonexistent_directory(self):
         ctx = _make_app_context()
-        result = await handle_filesystem_browse(
+        ops = FilesystemOps()
+        result = await ops.browse(
             {"path": "/nonexistent/path/12345"}, ctx
         )
         assert "error" in result
@@ -264,7 +261,8 @@ class TestFilesystemBrowse:
         (tmp_path / "Middle").mkdir()
 
         ctx = _make_app_context()
-        result = await handle_filesystem_browse({"path": str(tmp_path)}, ctx)
+        ops = FilesystemOps()
+        result = await ops.browse({"path": str(tmp_path)}, ctx)
         names = [e["name"] for e in result["entries"]]
         assert names == sorted(names, key=str.lower)
 
@@ -412,7 +410,6 @@ class TestWorkspaceManagerRegistry:
 # workspace.remove RPC 测试
 # ---------------------------------------------------------------------------
 
-@_RPC_SKIP
 @pytest.mark.asyncio
 class TestAppWorkspaceRemove:
     async def test_remove_success(self, tmp_path):
@@ -420,22 +417,23 @@ class TestAppWorkspaceRemove:
             wm = WorkspaceManager()
             ws = wm.create("test", "/tmp/test")
             ctx = _make_app_context(wm)
-            result = await handle_app_workspace_remove(
-                {"workspace_id": ws.id}, ctx
-            )
+            ops = WorkspaceOps()
+            result = await ops.remove({"workspace_id": ws.id}, ctx)
             assert result == {"ok": True}
             assert wm.get(ws.id) is None
 
     async def test_remove_missing_id(self):
         wm = WorkspaceManager()
         ctx = _make_app_context(wm)
-        result = await handle_app_workspace_remove({}, ctx)
+        ops = WorkspaceOps()
+        result = await ops.remove({}, ctx)
         assert "error" in result
 
     async def test_remove_nonexistent(self):
         wm = WorkspaceManager()
         ctx = _make_app_context(wm)
-        result = await handle_app_workspace_remove(
+        ops = WorkspaceOps()
+        result = await ops.remove(
             {"workspace_id": "nonexistent"}, ctx
         )
         assert "error" in result

@@ -112,15 +112,14 @@ def test_import_runtime_terminal():
 
 def test_import_web_server():
     """web.server 整体导入链正常（间接验证所有内部 import）"""
-    from mutbot.web.server import app
-    assert app is not None
-    assert app.title == "MutBot"
+    from mutbot.web.server import main
+    assert main is not None
 
 
 def test_import_web_routes():
     """web.routes 可导入"""
-    from mutbot.web.routes import workspace_rpc
-    assert workspace_rpc is not None
+    from mutbot.web.routes import HealthView
+    assert HealthView is not None
 
 
 # ---------------------------------------------------------------------------

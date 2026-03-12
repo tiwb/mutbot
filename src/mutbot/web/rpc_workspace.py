@@ -1,6 +1,6 @@
-"""Workspace 级 RPC handler — workspace/terminal/file/log/config/menu。
+"""Workspace 级 RPC handler — workspace/terminal/file/config/menu。
 
-注册到 workspace_rpc dispatcher（从 routes.py 导入）。
+Declaration 子类，自动发现注册到 WorkspaceRpc dispatcher。
 """
 
 from __future__ import annotations
@@ -8,7 +8,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from mutbot.web.rpc import RpcContext
+from mutbot.web.rpc import WorkspaceRpc, RpcContext
 from mutbot.web.serializers import (
     workspace_dict, session_dict, terminal_dict,
     session_kind, session_type_display, LANG_MAP,
@@ -16,28 +16,19 @@ from mutbot.web.serializers import (
 from mutbot.runtime.menu_impl import menu_registry
 from mutbot.menu import MenuResult
 
-_registered = False
 
+class MenuOps(WorkspaceRpc):
+    """Workspace 级菜单操作。"""
+    namespace = "menu"
 
-def register_workspace_rpc(workspace_rpc) -> None:
-    """注册 Workspace 级 RPC handler（menu、workspace、terminal、file、log、config）。"""
-    global _registered
-    if _registered:
-        return
-    _registered = True
-
-    # --- Menu ---
-
-    @workspace_rpc.method("menu.query")
-    async def handle_menu_query(params: dict, ctx: RpcContext) -> list[dict]:
+    async def query(self, params: dict, ctx: RpcContext) -> list[dict]:
         """查询指定 category 的菜单项列表"""
         category = params.get("category", "")
         menu_context = params.get("context", {})
         ctx._menu_context = menu_context  # type: ignore[attr-defined]
         return menu_registry.query(category, ctx)
 
-    @workspace_rpc.method("menu.execute")
-    async def handle_menu_execute(params: dict, ctx: RpcContext) -> dict:
+    async def execute(self, params: dict, ctx: RpcContext) -> dict:
         """执行指定菜单项。"""
         menu_id = params.get("menu_id", "")
         if not menu_id:
@@ -97,10 +88,12 @@ def register_workspace_rpc(workspace_rpc) -> None:
 
         return result_dict
 
-    # --- Workspace ---
 
-    @workspace_rpc.method("workspace.get")
-    async def handle_workspace_get(params: dict, ctx: RpcContext) -> dict:
+class WorkspaceDetailOps(WorkspaceRpc):
+    """Workspace 详情操作。"""
+    namespace = "workspace"
+
+    async def get(self, params: dict, ctx: RpcContext) -> dict:
         """获取 workspace 详情"""
         wm = ctx.workspace_manager
         if not wm:
@@ -111,8 +104,7 @@ def register_workspace_rpc(workspace_rpc) -> None:
             return {"error": "workspace not found"}
         return workspace_dict(ws)
 
-    @workspace_rpc.method("workspace.update")
-    async def handle_workspace_update(params: dict, ctx: RpcContext) -> dict:
+    async def update(self, params: dict, ctx: RpcContext) -> dict:
         """更新 workspace 字段（如 layout）"""
         wm = ctx.workspace_manager
         if not wm:
@@ -126,8 +118,7 @@ def register_workspace_rpc(workspace_rpc) -> None:
         wm.update(ws)
         return workspace_dict(ws)
 
-    @workspace_rpc.method("workspace.reorder_sessions")
-    async def handle_reorder_sessions(params: dict, ctx: RpcContext) -> dict:
+    async def reorder_sessions(self, params: dict, ctx: RpcContext) -> dict:
         """更新 workspace 中的 session 排列顺序。"""
         wm = ctx.workspace_manager
         if not wm:
@@ -142,10 +133,12 @@ def register_workspace_rpc(workspace_rpc) -> None:
         wm.update(ws)
         return {"status": "ok"}
 
-    # --- Terminal ---
 
-    @workspace_rpc.method("terminal.create")
-    async def handle_terminal_create(params: dict, ctx: RpcContext) -> dict:
+class TerminalOps(WorkspaceRpc):
+    """终端操作。"""
+    namespace = "terminal"
+
+    async def create(self, params: dict, ctx: RpcContext) -> dict:
         """创建终端"""
         wm = ctx.workspace_manager
         tm = ctx.terminal_manager
@@ -161,16 +154,14 @@ def register_workspace_rpc(workspace_rpc) -> None:
         await ctx.broadcast_event("terminal_created", data)
         return data
 
-    @workspace_rpc.method("terminal.list")
-    async def handle_terminal_list(params: dict, ctx: RpcContext) -> list[dict]:
+    async def list(self, params: dict, ctx: RpcContext) -> list[dict]:
         """列出 workspace 下的所有终端"""
         tm = ctx.terminal_manager
         if not tm:
             return []
         return [terminal_dict(t) for t in tm.list_by_workspace(ctx.workspace_id)]
 
-    @workspace_rpc.method("terminal.delete")
-    async def handle_terminal_delete(params: dict, ctx: RpcContext) -> dict:
+    async def delete(self, params: dict, ctx: RpcContext) -> dict:
         """删除终端"""
         tm = ctx.terminal_manager
         if not tm:
@@ -183,10 +174,12 @@ def register_workspace_rpc(workspace_rpc) -> None:
         await ctx.broadcast_event("terminal_deleted", {"term_id": term_id})
         return {"status": "killed"}
 
-    # --- File ---
 
-    @workspace_rpc.method("file.read")
-    async def handle_file_read(params: dict, ctx: RpcContext) -> dict:
+class FileOps(WorkspaceRpc):
+    """文件操作。"""
+    namespace = "file"
+
+    async def read(self, params: dict, ctx: RpcContext) -> dict:
         """读取文件内容"""
         wm = ctx.workspace_manager
         if not wm:
@@ -215,10 +208,12 @@ def register_workspace_rpc(workspace_rpc) -> None:
         language = LANG_MAP.get(ext, "plaintext")
         return {"path": str(target.relative_to(project)), "content": content, "language": language}
 
-    # --- Config ---
 
-    @workspace_rpc.method("config.models")
-    async def handle_config_models(params: dict, ctx: RpcContext) -> dict:
+class ConfigOps(WorkspaceRpc):
+    """配置操作。"""
+    namespace = "config"
+
+    async def models(self, params: dict, ctx: RpcContext) -> dict:
         """返回所有已配置的模型列表"""
         from mutagent.provider import LLMProvider
 

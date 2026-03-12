@@ -22,62 +22,53 @@ import pytest
 # ---------------------------------------------------------------------------
 
 class TestConnectionManagerPendingEvents:
-    """测试 ConnectionManager 的 pending events 队列机制。"""
-
-    def _make_manager(self):
-        from mutbot.web.connection import ConnectionManager
-        return ConnectionManager()
+    """测试 pending events 队列机制（现为 routes 模块级函数）。"""
 
     def test_queue_event_stores(self):
-        """无连接时 queue_event 存入 pending。"""
-        cm = self._make_manager()
-        cm.queue_event("ws1", "open_session", {"session_id": "s1"})
-        assert "ws1" in cm._pending_events
-        assert len(cm._pending_events["ws1"]) == 1
-        msg = cm._pending_events["ws1"][0]
+        """queue_workspace_event 存入 pending。"""
+        from mutbot.web.routes import (
+            queue_workspace_event, _workspace_pending_events, _pop_pending_events,
+        )
+        # 清理状态
+        _workspace_pending_events.clear()
+        queue_workspace_event("ws1", "open_session", {"session_id": "s1"})
+        assert "ws1" in _workspace_pending_events
+        assert len(_workspace_pending_events["ws1"]) == 1
+        msg = _workspace_pending_events["ws1"][0]
         assert msg["type"] == "event"
         assert msg["event"] == "open_session"
         assert msg["data"]["session_id"] == "s1"
+        _workspace_pending_events.clear()
 
     def test_queue_multiple_events(self):
         """多个事件入队。"""
-        cm = self._make_manager()
-        cm.queue_event("ws1", "event_a", {"x": 1})
-        cm.queue_event("ws1", "event_b", {"y": 2})
-        assert len(cm._pending_events["ws1"]) == 2
+        from mutbot.web.routes import (
+            queue_workspace_event, _workspace_pending_events,
+        )
+        _workspace_pending_events.clear()
+        queue_workspace_event("ws1", "event_a", {"x": 1})
+        queue_workspace_event("ws1", "event_b", {"y": 2})
+        assert len(_workspace_pending_events["ws1"]) == 2
+        _workspace_pending_events.clear()
 
-    @pytest.mark.asyncio
-    async def test_flush_on_connect(self):
-        """连接时 flush pending events 给新客户端。"""
-        cm = self._make_manager()
-        cm.queue_event("ws1", "open_session", {"session_id": "s1"})
+    def test_pop_pending_events(self):
+        """_pop_pending_events 取出并清空 pending。"""
+        from mutbot.web.routes import (
+            queue_workspace_event, _workspace_pending_events, _pop_pending_events,
+        )
+        _workspace_pending_events.clear()
+        queue_workspace_event("ws1", "open_session", {"session_id": "s1"})
+        events = _pop_pending_events("ws1")
+        assert len(events) == 1
+        assert events[0]["event"] == "open_session"
+        assert "ws1" not in _workspace_pending_events
 
-        # 模拟 WebSocket
-        ws = AsyncMock()
-        ws.accept = AsyncMock()
-        ws.send_json = AsyncMock()
-
-        await cm.connect("ws1", ws)
-
-        ws.accept.assert_called_once()
-        ws.send_json.assert_called_once()
-        sent = ws.send_json.call_args[0][0]
-        assert sent["event"] == "open_session"
-        # flush 后 pending 清空
-        assert "ws1" not in cm._pending_events
-
-    @pytest.mark.asyncio
-    async def test_no_pending_no_flush(self):
-        """无 pending 时连接不 flush。"""
-        cm = self._make_manager()
-        ws = AsyncMock()
-        ws.accept = AsyncMock()
-        ws.send_json = AsyncMock()
-
-        await cm.connect("ws1", ws)
-
-        ws.accept.assert_called_once()
-        ws.send_json.assert_not_called()
+    def test_pop_empty(self):
+        """无 pending 时 _pop_pending_events 返回空列表。"""
+        from mutbot.web.routes import _pop_pending_events, _workspace_pending_events
+        _workspace_pending_events.clear()
+        events = _pop_pending_events("ws1")
+        assert events == []
 
 
 # ---------------------------------------------------------------------------

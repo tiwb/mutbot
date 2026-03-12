@@ -1,6 +1,6 @@
 """Session 级 RPC handler — CRUD + connect/disconnect。
 
-注册到 workspace_rpc dispatcher（从 routes.py 导入）。
+Declaration 子类，自动发现注册到 SessionRpc dispatcher。
 """
 
 from __future__ import annotations
@@ -10,25 +10,19 @@ import logging
 from typing import Any
 
 from mutbot.session import SessionChannels
-from mutbot.web.rpc import RpcContext
+from mutbot.web.rpc import SessionRpc, RpcContext
 from mutbot.web.serializers import session_dict, session_kind, session_type_display
 
 logger = logging.getLogger(__name__)
 
-_registered = False
 
-
-def register_session_rpc(workspace_rpc) -> None:
-    """注册 Session 级 RPC handler。"""
-    global _registered
-    if _registered:
-        return
-    _registered = True
+class SessionOps(SessionRpc):
+    """Session CRUD 和生命周期操作。"""
+    namespace = "session"
 
     # --- connect / disconnect ---
 
-    @workspace_rpc.method("session.connect")
-    async def handle_session_connect(params: dict, ctx: RpcContext) -> dict:
+    async def connect(self, params: dict, ctx: RpcContext) -> dict:
         session_id = params.get("session_id", "")
         if not session_id:
             raise ValueError("missing session_id")
@@ -57,8 +51,7 @@ def register_session_rpc(workspace_rpc) -> None:
 
         return {"ch": channel.ch}
 
-    @workspace_rpc.method("session.disconnect")
-    async def handle_session_disconnect(params: dict, ctx: RpcContext) -> dict:
+    async def disconnect(self, params: dict, ctx: RpcContext) -> dict:
         session_id = params.get("session_id", "")
         ch = params.get("ch", 0)
         if not session_id or not ch:
@@ -86,8 +79,7 @@ def register_session_rpc(workspace_rpc) -> None:
 
     # --- CRUD ---
 
-    @workspace_rpc.method("session.create")
-    async def handle_session_create(params: dict, ctx: RpcContext) -> dict:
+    async def create(self, params: dict, ctx: RpcContext) -> dict:
         """创建 Session"""
         wm = ctx.workspace_manager
         sm = ctx.session_manager
@@ -128,8 +120,7 @@ def register_session_rpc(workspace_rpc) -> None:
         await ctx.broadcast_event("session_created", data)
         return data
 
-    @workspace_rpc.method("session.types")
-    async def handle_session_types(params: dict, ctx: RpcContext) -> list[dict]:
+    async def types(self, params: dict, ctx: RpcContext) -> list[dict]:
         """返回可用的 Session 类型列表"""
         import mutobj
         from mutbot.session import Session, AgentSession
@@ -148,8 +139,7 @@ def register_session_rpc(workspace_rpc) -> None:
             })
         return result
 
-    @workspace_rpc.method("session.list")
-    async def handle_session_list(params: dict, ctx: RpcContext) -> list[dict]:
+    async def list(self, params: dict, ctx: RpcContext) -> list[dict]:
         """列出 workspace 下的所有 Session"""
         sm = ctx.session_manager
         if not sm:
@@ -164,8 +154,7 @@ def register_session_rpc(workspace_rpc) -> None:
             return [session_dict(s) for s in all_sessions]
         return [session_dict(s) for s in sm.list_by_workspace(workspace_id)]
 
-    @workspace_rpc.method("session.get")
-    async def handle_session_get(params: dict, ctx: RpcContext) -> dict:
+    async def get(self, params: dict, ctx: RpcContext) -> dict:
         """获取单个 Session"""
         sm = ctx.session_manager
         if not sm:
@@ -176,8 +165,7 @@ def register_session_rpc(workspace_rpc) -> None:
             return {"error": "session not found"}
         return session_dict(session)
 
-    @workspace_rpc.method("session.messages")
-    async def handle_session_messages(params: dict, ctx: RpcContext) -> dict:
+    async def messages(self, params: dict, ctx: RpcContext) -> dict:
         """获取 Session 的持久化消息"""
         sm = ctx.session_manager
         if not sm:
@@ -213,8 +201,7 @@ def register_session_rpc(workspace_rpc) -> None:
             "agent_display": agent_display,
         }
 
-    @workspace_rpc.method("session.update")
-    async def handle_session_update(params: dict, ctx: RpcContext) -> dict:
+    async def update(self, params: dict, ctx: RpcContext) -> dict:
         """更新 Session 字段"""
         sm = ctx.session_manager
         if not sm:
@@ -238,8 +225,7 @@ def register_session_rpc(workspace_rpc) -> None:
         await ctx.broadcast_event("session_updated", data)
         return data
 
-    @workspace_rpc.method("session.stop")
-    async def handle_session_stop(params: dict, ctx: RpcContext) -> dict:
+    async def stop(self, params: dict, ctx: RpcContext) -> dict:
         """停止 Session"""
         sm = ctx.session_manager
         if not sm:
@@ -251,8 +237,7 @@ def register_session_rpc(workspace_rpc) -> None:
         await ctx.broadcast_event("session_updated", data)
         return {"status": session.status if session else "stopped"}
 
-    @workspace_rpc.method("session.delete")
-    async def handle_session_delete(params: dict, ctx: RpcContext) -> dict:
+    async def delete(self, params: dict, ctx: RpcContext) -> dict:
         """删除 Session"""
         sm = ctx.session_manager
         wm = ctx.workspace_manager
@@ -279,8 +264,7 @@ def register_session_rpc(workspace_rpc) -> None:
         await ctx.broadcast_event("session_deleted", {"session_id": session_id})
         return {"status": "deleted"}
 
-    @workspace_rpc.method("session.delete_batch")
-    async def handle_session_delete_batch(params: dict, ctx: RpcContext) -> dict:
+    async def delete_batch(self, params: dict, ctx: RpcContext) -> dict:
         """批量删除 sessions。"""
         sm = ctx.session_manager
         wm = ctx.workspace_manager
@@ -309,8 +293,7 @@ def register_session_rpc(workspace_rpc) -> None:
             wm.update(ws)
         return {"status": "deleted", "count": len(session_ids)}
 
-    @workspace_rpc.method("session.restart")
-    async def handle_session_restart(params: dict, ctx: RpcContext) -> dict:
+    async def restart(self, params: dict, ctx: RpcContext) -> dict:
         """重启 TerminalSession：重建 PTY。"""
         sm = ctx.session_manager
         tm = ctx.terminal_manager
@@ -357,8 +340,7 @@ def register_session_rpc(workspace_rpc) -> None:
         await ctx.broadcast_event("session_updated", data)
         return {"session_id": session_id, "terminal_id": new_term_id}
 
-    @workspace_rpc.method("session.run_tool")
-    async def handle_session_run_tool(params: dict, ctx: RpcContext) -> dict:
+    async def run_tool(self, params: dict, ctx: RpcContext) -> dict:
         """在指定 session 中请求执行一个工具调用。"""
         sm = ctx.session_manager
         if not sm:
@@ -376,8 +358,7 @@ def register_session_rpc(workspace_rpc) -> None:
         bridge.request_tool(tool_name, tool_input)
         return {"ok": True}
 
-    @workspace_rpc.method("session.run_setup")
-    async def handle_run_setup(params: dict, ctx: RpcContext) -> dict:
+    async def run_setup(self, params: dict, ctx: RpcContext) -> dict:
         """在指定 session 上触发 Config-llm 配置工具。"""
         sm = ctx.session_manager
         if not sm:

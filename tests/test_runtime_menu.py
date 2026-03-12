@@ -347,15 +347,13 @@ class TestMenuRpcHandlers:
 
     @classmethod
     def setup_class(cls):
-        from mutbot.web.routes import workspace_rpc
-        from mutbot.web.rpc_session import register_session_rpc
-        from mutbot.web.rpc_workspace import register_workspace_rpc
-        register_session_rpc(workspace_rpc)
-        register_workspace_rpc(workspace_rpc)
+        import mutbot.web.rpc_session  # noqa: F401 — 触发 Declaration 注册
+        import mutbot.web.rpc_workspace  # noqa: F401
+        from mutbot.web.rpc import RpcDispatcher, WorkspaceRpc, SessionRpc
+        cls._dispatcher = RpcDispatcher.from_declaration(WorkspaceRpc, SessionRpc)
 
     @pytest.mark.asyncio
     async def test_menu_query_handler(self):
-        from mutbot.web.routes import workspace_rpc
         ctx = _make_context()
 
         msg = {
@@ -364,7 +362,7 @@ class TestMenuRpcHandlers:
             "method": "menu.query",
             "params": {"category": "SessionPanel/Add"},
         }
-        resp = await workspace_rpc.dispatch(msg, ctx)
+        resp = await self._dispatcher.dispatch(msg, ctx)
 
         assert resp["type"] == "rpc_result"
         assert resp["id"] == "r1"
@@ -374,7 +372,6 @@ class TestMenuRpcHandlers:
 
     @pytest.mark.asyncio
     async def test_menu_query_empty_category(self):
-        from mutbot.web.routes import workspace_rpc
         ctx = _make_context()
 
         msg = {
@@ -383,14 +380,13 @@ class TestMenuRpcHandlers:
             "method": "menu.query",
             "params": {"category": "NonExistent"},
         }
-        resp = await workspace_rpc.dispatch(msg, ctx)
+        resp = await self._dispatcher.dispatch(msg, ctx)
 
         assert resp["type"] == "rpc_result"
         assert resp["result"] == []
 
     @pytest.mark.asyncio
     async def test_menu_execute_handler(self):
-        from mutbot.web.routes import workspace_rpc
 
         class FakeSession:
             id = "new_session_id"
@@ -432,7 +428,7 @@ class TestMenuRpcHandlers:
                 "params": {"session_type": "mutbot.session.AgentSession"},
             },
         }
-        resp = await workspace_rpc.dispatch(msg, ctx)
+        resp = await self._dispatcher.dispatch(msg, ctx)
 
         assert resp["type"] == "rpc_result"
         result = resp["result"]
@@ -448,7 +444,6 @@ class TestMenuRpcHandlers:
 
     @pytest.mark.asyncio
     async def test_menu_execute_missing_menu_id(self):
-        from mutbot.web.routes import workspace_rpc
         ctx = _make_context()
 
         msg = {
@@ -457,14 +452,13 @@ class TestMenuRpcHandlers:
             "method": "menu.execute",
             "params": {},
         }
-        resp = await workspace_rpc.dispatch(msg, ctx)
+        resp = await self._dispatcher.dispatch(msg, ctx)
 
         assert resp["type"] == "rpc_result"
         assert "error" in resp["result"]
 
     @pytest.mark.asyncio
     async def test_menu_execute_unknown_menu(self):
-        from mutbot.web.routes import workspace_rpc
         ctx = _make_context()
 
         msg = {
@@ -473,16 +467,15 @@ class TestMenuRpcHandlers:
             "method": "menu.execute",
             "params": {"menu_id": "no.such.Menu"},
         }
-        resp = await workspace_rpc.dispatch(msg, ctx)
+        resp = await self._dispatcher.dispatch(msg, ctx)
 
         assert resp["type"] == "rpc_result"
         assert "error" in resp["result"]
 
     @pytest.mark.asyncio
     async def test_menu_methods_registered(self):
-        from mutbot.web.routes import workspace_rpc
-        assert "menu.query" in workspace_rpc.methods
-        assert "menu.execute" in workspace_rpc.methods
+        assert "menu.query" in self._dispatcher.methods
+        assert "menu.execute" in self._dispatcher.methods
 
 
 # ---------------------------------------------------------------------------

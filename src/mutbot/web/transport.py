@@ -19,7 +19,7 @@ from mutobj import impl
 from mutbot.channel import Channel
 
 if TYPE_CHECKING:
-    from fastapi import WebSocket
+    from mutbot.web.view import WebSocketConnection as WebSocket
 
 logger = logging.getLogger(__name__)
 

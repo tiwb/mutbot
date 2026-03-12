@@ -6,7 +6,13 @@
 from __future__ import annotations
 
 from mutbot.server._server import Server
-from mutbot.server._mcp_server import MCPServer, mount_mcp
+from mutbot.server._mcp_server import MCPServer, mount_mcp, handle_mcp
 from mutbot.server._mcp_client import MCPClient, MCPError
 
-__all__ = ["Server", "MCPServer", "MCPClient", "MCPError", "mount_mcp"]
+__all__ = ["Server", "MCPServer", "MCPClient", "MCPError", "mount_mcp", "handle_mcp"]
+
+try:
+    from mutbot.server._mcp_server import MCPToolSet, MCPToolProvider
+    __all__ += ["MCPToolSet", "MCPToolProvider"]
+except ImportError:
+    pass

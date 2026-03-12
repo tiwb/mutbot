@@ -245,11 +245,14 @@ class TestMakeEvent:
 
 
 # ---------------------------------------------------------------------------
-# workspace_rpc 全局实例
+# RpcDispatcher.from_declaration 自动发现
 # ---------------------------------------------------------------------------
 
-class TestWorkspaceRpcInstance:
+class TestRpcDeclarationDiscovery:
 
-    def test_workspace_rpc_importable(self):
-        from mutbot.web.routes import workspace_rpc
-        assert isinstance(workspace_rpc, RpcDispatcher)
+    def test_from_declaration_creates_dispatcher(self):
+        import mutbot.web.rpc_workspace  # noqa: F401
+        from mutbot.web.rpc import WorkspaceRpc
+        dispatcher = RpcDispatcher.from_declaration(WorkspaceRpc)
+        assert isinstance(dispatcher, RpcDispatcher)
+        assert "menu.query" in dispatcher.methods

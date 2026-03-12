@@ -1,37 +1,30 @@
 """App 级 RPC handler — workspace CRUD、filesystem、app menu。
 
-注册到 app_rpc dispatcher（从 routes.py 导入）。
+Declaration 子类，自动发现注册到 AppRpc dispatcher。
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from mutbot.web.rpc import RpcContext
+from mutbot.web.rpc import AppRpc, RpcContext
 from mutbot.web.serializers import workspace_dict
 from mutbot.runtime.menu_impl import menu_registry
 from mutbot.menu import MenuResult
 
-_registered = False
 
+class WorkspaceOps(AppRpc):
+    """workspace CRUD 操作。"""
+    namespace = "workspace"
 
-def register_app_rpc(app_rpc) -> None:
-    """注册 App 级 RPC handler。"""
-    global _registered
-    if _registered:
-        return
-    _registered = True
-
-    @app_rpc.method("workspace.list")
-    async def handle_app_workspace_list(params: dict, ctx: RpcContext) -> list[dict]:
+    async def list(self, params: dict, ctx: RpcContext) -> list[dict]:
         """列出所有工作区。"""
         wm = ctx.workspace_manager
         if not wm:
             return []
         return [workspace_dict(ws) for ws in wm.list_all()]
 
-    @app_rpc.method("workspace.create")
-    async def handle_app_workspace_create(params: dict, ctx: RpcContext) -> dict:
+    async def create(self, params: dict, ctx: RpcContext) -> dict:
         """创建工作区。"""
         wm = ctx.workspace_manager
         if not wm:
@@ -80,8 +73,26 @@ def register_app_rpc(app_rpc) -> None:
 
         return workspace_dict(ws)
 
-    @app_rpc.method("filesystem.browse")
-    async def handle_filesystem_browse(params: dict, ctx: RpcContext) -> dict:
+    async def remove(self, params: dict, ctx: RpcContext) -> dict:
+        """从注册表移除工作区（不删除数据文件）。"""
+        wm = ctx.workspace_manager
+        if not wm:
+            return {"error": "workspace_manager not available"}
+
+        workspace_id = params.get("workspace_id", "")
+        if not workspace_id:
+            return {"error": "missing workspace_id"}
+
+        if not wm.remove(workspace_id):
+            return {"error": "workspace not found"}
+        return {"ok": True}
+
+
+class FilesystemOps(AppRpc):
+    """文件系统操作。"""
+    namespace = "filesystem"
+
+    async def browse(self, params: dict, ctx: RpcContext) -> dict:
         """列出目录内容（仅子目录）。"""
         path_str = params.get("path", "")
         if not path_str:
@@ -111,31 +122,19 @@ def register_app_rpc(app_rpc) -> None:
             "entries": entries,
         }
 
-    @app_rpc.method("workspace.remove")
-    async def handle_app_workspace_remove(params: dict, ctx: RpcContext) -> dict:
-        """从注册表移除工作区（不删除数据文件）。"""
-        wm = ctx.workspace_manager
-        if not wm:
-            return {"error": "workspace_manager not available"}
 
-        workspace_id = params.get("workspace_id", "")
-        if not workspace_id:
-            return {"error": "missing workspace_id"}
+class AppMenuOps(AppRpc):
+    """App 级菜单操作。"""
+    namespace = "menu"
 
-        if not wm.remove(workspace_id):
-            return {"error": "workspace not found"}
-        return {"ok": True}
-
-    @app_rpc.method("menu.query")
-    async def handle_app_menu_query(params: dict, ctx: RpcContext) -> list[dict]:
+    async def query(self, params: dict, ctx: RpcContext) -> list[dict]:
         """App 级菜单查询。"""
         category = params.get("category", "")
         menu_context = params.get("context", {})
         ctx._menu_context = menu_context  # type: ignore[attr-defined]
         return menu_registry.query(category, ctx)
 
-    @app_rpc.method("menu.execute")
-    async def handle_app_menu_execute(params: dict, ctx: RpcContext) -> dict:
+    async def execute(self, params: dict, ctx: RpcContext) -> dict:
         """App 级菜单执行。"""
         menu_id = params.get("menu_id", "")
         if not menu_id:

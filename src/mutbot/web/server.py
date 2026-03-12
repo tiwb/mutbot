@@ -1,4 +1,4 @@
-"""MutBot Web server — FastAPI application."""
+"""MutBot Web server — Router + lifespan + 启动入口。"""
 
 from __future__ import annotations
 
@@ -12,15 +12,13 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI
-from fastapi.staticfiles import StaticFiles
-
 from mutagent.runtime.log_store import LogStore, LogStoreHandler, SingleLineFormatter
 
 from mutbot.runtime.workspace import WorkspaceManager
 from mutbot.runtime.session_manager import SessionManager
 from mutbot.runtime.terminal import TerminalManager
 from mutbot.runtime.config import MutbotConfig, load_mutbot_config
+from mutbot.web.view import Router
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +31,7 @@ session_manager: SessionManager | None = None
 log_store: LogStore | None = None
 terminal_manager: TerminalManager | None = None
 channel_manager: Any = None
+config: MutbotConfig | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -67,11 +66,6 @@ def _stop_all_clients():
         pass
 
 
-def _install_double_ctrlc_handler():
-    """No-op — mutbot.server.Server handles SIGINT directly (double Ctrl+C built-in)."""
-    pass
-
-
 async def _shutdown_cleanup():
     """Stop non-terminal sessions, close ptyhost connection (terminals survive restart)."""
     if session_manager is not None:
@@ -95,21 +89,17 @@ async def _shutdown_cleanup():
         if terminal_sids:
             logger.info("Preserving %d terminal sessions (ptyhost keeps PTYs alive)", len(terminal_sids))
 
-    # Stop all WebSocket clients — cancel _send_worker tasks that would otherwise
-    # block the event loop and prevent uvicorn from shutting down.
+    # Stop all WebSocket clients
     _stop_all_clients()
 
-    # 关闭 ptyhost 连接（不 kill 任何终端，PTY 进程由 ptyhost 持久化）
+    # 关闭 ptyhost 连接
     if terminal_manager is not None:
         await terminal_manager.close()
 
 
-async def _watch_config_changes(config: MutbotConfig) -> None:
-    """Background task: poll ~/.mutbot/config.json mtime every 5s.
-
-    On change, call config.reload() which auto-triggers on_change callbacks.
-    """
-    config_path = config._config_path
+async def _watch_config_changes(cfg: MutbotConfig) -> None:
+    """Background task: poll ~/.mutbot/config.json mtime every 5s."""
+    config_path = cfg._config_path
     last_mtime: float = 0.0
     try:
         last_mtime = config_path.stat().st_mtime
@@ -125,16 +115,14 @@ async def _watch_config_changes(config: MutbotConfig) -> None:
         if current_mtime != last_mtime:
             last_mtime = current_mtime
             logger.info("Config file changed, reloading")
-            config.reload()
+            cfg.reload()
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(router: Router):
     global workspace_manager, session_manager, log_store, terminal_manager, channel_manager
 
-    # --- Config & logging from app.state (initialized in main()) ---
-    config = app.state.config
-    log_store = app.state.log_store
+    assert config is not None, "config must be set before lifespan"
 
     workspace_manager = WorkspaceManager()
     session_manager = SessionManager(config=config)
@@ -196,8 +184,6 @@ async def lifespan(app: FastAPI):
         if _synced:
             logger.info("Synced %d terminal session(s) with ptyhost", _synced)
 
-    # --- Setup 模式：推迟到 workspace.create RPC 中处理 ---
-
     log_dir = Path.home() / ".mutbot" / "logs"
     logger.info("Logging initialized (log_dir=%s)", log_dir)
 
@@ -205,10 +191,6 @@ async def lifespan(app: FastAPI):
     session_manager.log_dir = log_dir
     # Wire terminal_manager for Terminal Session lifecycle
     session_manager.terminal_manager = terminal_manager
-
-    # --- Double Ctrl+C handler ---
-    # Server handles first SIGINT; this is a safety net only.
-    _install_double_ctrlc_handler()
 
     # --- on_change 回调统一注册 ---
 
@@ -270,10 +252,6 @@ async def lifespan(app: FastAPI):
         message = context.get("message", "Unhandled exception in async task")
         _logger = logging.getLogger("mutbot.asyncio")
         if exception:
-            # CPython bug: Windows Proactor 在 _call_connection_lost 中对已重置的
-            # socket 调用 shutdown() 抛出 ConnectionResetError（WinError 10054）。
-            # 此时 protocol.connection_lost() 已执行完毕，应用层断开处理不受影响。
-            # https://github.com/python/cpython/issues/93821
             if isinstance(exception, ConnectionResetError):
                 _logger.debug("%s: %s", message, exception)
             else:
@@ -318,30 +296,6 @@ async def lifespan(app: FastAPI):
     )
 
 
-import mutbot
-app = FastAPI(title="MutBot", version=mutbot.__version__, lifespan=lifespan)
-
-
-# ---------------------------------------------------------------------------
-# API routes
-# ---------------------------------------------------------------------------
-
-from mutbot.web.routes import router as api_router  # noqa: E402
-app.include_router(api_router)
-
-
-# ---------------------------------------------------------------------------
-# LLM proxy routes (module-level registration, config loaded in lifespan)
-# ---------------------------------------------------------------------------
-
-try:
-    from mutbot.proxy import create_llm_router
-    _llm_router = create_llm_router({})  # config 在 lifespan 中填充
-    app.include_router(_llm_router, prefix="/llm")
-except ImportError:
-    pass
-
-
 # ---------------------------------------------------------------------------
 # CLI entry point
 # ---------------------------------------------------------------------------
@@ -352,10 +306,7 @@ _DEFAULT_PORT = 8741
 
 
 def _parse_listen(value: str) -> tuple[str, int]:
-    """Parse a --listen / config listen value into (host, port).
-
-    Formats: 'host:port', pure digits → port, otherwise → host.
-    """
+    """Parse a --listen / config listen value into (host, port)."""
     if ":" in value:
         host, port_str = value.rsplit(":", 1)
         return host, int(port_str)
@@ -388,7 +339,6 @@ def _enumerate_ips() -> list[str]:
             _socket.gethostname(), None, _socket.AF_INET,
         )
         ips = list(dict.fromkeys(info[4][0] for info in infos))
-        # Ensure 127.0.0.1 is included
         if "127.0.0.1" not in ips:
             ips.insert(0, "127.0.0.1")
         return ips
@@ -403,10 +353,9 @@ def _build_banner_lines(
     lines: list[str] = []
     for host, port in addresses:
         if host == "0.0.0.0":
-            # Expand to all local IPs
             for ip in _enumerate_ips():
                 if (ip, port) in {(h, p) for h, p in addresses if h != "0.0.0.0"}:
-                    continue  # Already covered by an explicit bind
+                    continue
                 lines.append(_format_banner_line(ip, port))
         else:
             lines.append(_format_banner_line(host, port))
@@ -423,9 +372,9 @@ def _format_banner_line(host: str, port: int) -> str:
 
 
 def main():
-    """MutBot server entry point: config → logging → app.state → server."""
+    """MutBot server entry point: config → logging → Router → Server."""
     import argparse
-
+    import mutbot
     from mutbot.server import Server
 
     parser = argparse.ArgumentParser(description="MutBot Web UI")
@@ -441,6 +390,7 @@ def main():
     args = parser.parse_args()
 
     # 1. Config（进程最早阶段）
+    global config, log_store
     config = load_mutbot_config()
 
     # 2. 日志初始化（紧随 config，保证不丢日志）
@@ -475,14 +425,29 @@ def main():
     root_logger.addHandler(file_handler)
 
     # LogStoreHandler（全量 DEBUG，lifespan 中取出使用）
-    _log_store = LogStore()
-    mem_handler = LogStoreHandler(_log_store)
+    log_store = LogStore()
+    mem_handler = LogStoreHandler(log_store)
     mem_handler.setFormatter(logging.Formatter("%(message)s"))
     root_logger.addHandler(mem_handler)
 
-    # 3. app.state 赋值
-    app.state.config = config
-    app.state.log_store = _log_store
+    # 3. 构建 Router
+    router = Router()
+    router.set_lifespan(lifespan)
+
+    # import 路由模块以触发 View/WebSocketView 子类注册
+    import mutbot.web.routes  # noqa: F401
+    try:
+        import mutbot.proxy.routes  # noqa: F401
+    except ImportError:
+        pass
+
+    # 自动发现 View/WebSocketView 子类
+    router.discover()
+
+    # 静态文件
+    _frontend_dist = Path(__file__).resolve().parent / "frontend_dist"
+    if _frontend_dist.is_dir():
+        router.add_static("/", _frontend_dist)
 
     # 4. Listen 地址合并（CLI + config）
     cli_listen = args.listen or []
@@ -498,7 +463,7 @@ def main():
         sockets.append(sock)
 
     # 6. 启动 server
-    server = Server(app)
+    server = Server(router)
 
     async def _on_startup():
         banner_lines = _build_banner_lines(addresses)
@@ -511,12 +476,3 @@ def main():
         server.run(sockets=sockets, on_startup=_on_startup)
     except KeyboardInterrupt:
         pass
-
-
-# ---------------------------------------------------------------------------
-# Static files (production build)
-# ---------------------------------------------------------------------------
-
-_frontend_dist = Path(__file__).resolve().parent / "frontend_dist"
-if _frontend_dist.is_dir():
-    app.mount("/", StaticFiles(directory=str(_frontend_dist), html=True), name="static")

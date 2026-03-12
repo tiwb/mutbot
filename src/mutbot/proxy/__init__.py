@@ -1,11 +1,10 @@
 """mutbot.proxy — LLM 代理模块。
 
-通过 modules 配置加载：
-    "modules": ["mutbot.proxy"]
-
-import 此模块时不会产生副作用，仅暴露 create_llm_router。
+import 此模块时加载 View 子类（LlmInfoView、LlmModelsView 等），
+自动注册到 Router。
 """
 
-from mutbot.proxy.routes import create_llm_router
+# import routes 模块以注册 View 子类
+import mutbot.proxy.routes as _routes  # noqa: F401
 
-__all__ = ["create_llm_router"]
+__all__: list[str] = []

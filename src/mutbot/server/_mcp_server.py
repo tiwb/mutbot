@@ -1,4 +1,9 @@
-"""MCP server 框架 — tool/resource/prompt 注册 + Streamable HTTP 端点。"""
+"""MCP server 框架 — tool/resource/prompt 注册 + Streamable HTTP 端点。
+
+支持两种使用方式：
+1. MCPServer 类 — 装饰器注册 tool/resource/prompt（库用法）
+2. handle_mcp + MCPToolSet — ASGI 风格纯函数 + Declaration 自动发现（应用用法）
+"""
 
 from __future__ import annotations
 
@@ -415,3 +420,165 @@ def _infer_schema(fn: Callable[..., Any]) -> dict[str, Any]:
     if required:
         schema["required"] = required
     return schema
+
+
+# ---------------------------------------------------------------------------
+# handle_mcp — ASGI 风格纯函数
+# ---------------------------------------------------------------------------
+
+async def handle_mcp(
+    scope: dict[str, Any],
+    receive: Any,
+    send: Any,
+    handler: Callable[[dict[str, Any], Any, Any], Awaitable[None]],
+) -> None:
+    """ASGI → MCP 协议翻译。纯函数，无状态。
+
+    handler 签名: async def handler(mcp_scope, receive, send)
+      mcp_scope: {"type": "mcp", "method": str, "params": dict}
+      send: async def send(result_dict)
+    """
+    method = scope.get("method", "GET")
+
+    if method == "POST":
+        # 读取 body
+        body = b""
+        while True:
+            msg = await receive()
+            body += msg.get("body", b"")
+            if not msg.get("more_body", False):
+                break
+
+        try:
+            parsed = json.loads(body)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            await _send_json_response(send, 400, {
+                "jsonrpc": "2.0", "id": None,
+                "error": {"code": -32700, "message": "Parse error"},
+            })
+            return
+
+        if not isinstance(parsed, dict):
+            await _send_json_response(send, 400, {
+                "jsonrpc": "2.0", "id": None,
+                "error": {"code": -32600, "message": "Invalid request"},
+            })
+            return
+
+        rpc_id = parsed.get("id")
+        rpc_method = parsed.get("method", "")
+        rpc_params = parsed.get("params", {})
+
+        mcp_scope = {
+            "type": "mcp",
+            "method": rpc_method,
+            "params": rpc_params,
+        }
+
+        # 收集 handler 的 send 结果
+        results: list[dict] = []
+
+        async def mcp_send(data: dict) -> None:
+            results.append(data)
+
+        await handler(mcp_scope, receive, mcp_send)
+
+        if not results:
+            await _send_empty_response(send, 202)
+            return
+
+        # 最终结果
+        final = results[-1]
+        response = {
+            "jsonrpc": "2.0",
+            "id": rpc_id,
+            "result": final,
+        }
+
+        # 检查 Accept 头
+        headers = dict(scope.get("headers", []))
+        accept = headers.get(b"accept", b"").decode()
+
+        extra_headers: list[tuple[bytes, bytes]] = []
+
+        if "text/event-stream" in accept:
+            await _send_sse_response(send, response, extra_headers)
+        else:
+            await _send_json_response(send, 200, response, extra_headers)
+
+    elif method == "DELETE":
+        await _send_empty_response(send, 200)
+
+    else:
+        await _send_json_response(send, 405, {"error": "Method not allowed"})
+
+
+# ---------------------------------------------------------------------------
+# MCPToolSet — Declaration 基类
+# ---------------------------------------------------------------------------
+
+try:
+    import mutobj
+
+    class MCPToolSet(mutobj.Declaration):
+        """MCP tool 集合基类。一个类定义一组 tool，方法名就是 tool name。"""
+        prefix: str = ""
+
+    class MCPToolProvider:
+        """generation 检查 + 懒刷新，桥接 Declaration 发现到 MCP handler。"""
+
+        def __init__(self) -> None:
+            self._gen: int = -1
+            self._tools: dict[str, tuple[MCPToolSet, str]] = {}
+
+        def refresh(self) -> None:
+            gen = mutobj.get_registry_generation()
+            if gen != self._gen:
+                self._gen = gen
+                self._tools = {}
+                for cls in mutobj.discover_subclasses(MCPToolSet):
+                    instance = cls()
+                    prefix = instance.prefix
+                    for name in dir(cls):
+                        if name.startswith("_"):
+                            continue
+                        if name in ("prefix",):
+                            continue
+                        attr = getattr(cls, name, None)
+                        if attr is not None and (inspect.isfunction(attr) or inspect.ismethod(attr)):
+                            # 排除基类方法
+                            if name in dir(MCPToolSet):
+                                continue
+                            tool_name = f"{prefix}{name}" if prefix else name
+                            self._tools[tool_name] = (instance, name)
+
+        def list_tools(self) -> list[dict[str, Any]]:
+            """从类型注解 + docstring 自动生成 tool schema。"""
+            self.refresh()
+            result: list[dict[str, Any]] = []
+            for tool_name, (instance, method_name) in self._tools.items():
+                method = getattr(instance, method_name)
+                schema = _infer_schema(method)
+                result.append({
+                    "name": tool_name,
+                    "description": method.__doc__ or "",
+                    "inputSchema": schema,
+                })
+            return result
+
+        async def call_tool(self, name: str, args: dict[str, Any]) -> Any:
+            self.refresh()
+            if name not in self._tools:
+                raise JsonRpcError(INVALID_PARAMS, f"Unknown tool: {name}")
+            instance, method_name = self._tools[name]
+            method = getattr(instance, method_name)
+            result = await method(**args)
+            if isinstance(result, str):
+                return ToolResult.text(result)
+            if isinstance(result, ToolResult):
+                return result
+            return ToolResult.text(str(result))
+
+except ImportError:
+    # mutobj not available — MCPToolSet/MCPToolProvider not usable
+    pass
