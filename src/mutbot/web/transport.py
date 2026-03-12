@@ -19,7 +19,7 @@ from mutobj import impl
 from mutbot.channel import Channel
 
 if TYPE_CHECKING:
-    from mutagent.net.view import WebSocketConnection as WebSocket
+    from mutagent.net.server import WebSocketConnection as WebSocket
 
 logger = logging.getLogger(__name__)
 

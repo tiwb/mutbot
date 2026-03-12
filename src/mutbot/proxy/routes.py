@@ -21,7 +21,7 @@ from mutbot.proxy.translation import (
     openai_response_to_anthropic,
     openai_sse_to_anthropic_events,
 )
-from mutagent.net.view import View, Request, Response, StreamingResponse, json_response, html_response
+from mutagent.net.server import View, Request, Response, StreamingResponse, json_response, html_response
 
 logger = logging.getLogger(__name__)
 

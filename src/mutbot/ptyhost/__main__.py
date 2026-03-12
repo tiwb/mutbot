@@ -25,7 +25,7 @@ def main() -> None:
     )
 
     from mutbot.ptyhost._app import PtyHostApp
-    from mutagent.net.server import Server
+    from mutagent.net.asgi import Server as _ASGIServer
 
     app = PtyHostApp()
 
@@ -43,7 +43,7 @@ def main() -> None:
 
     logger.info("ptyhost starting on 127.0.0.1:%d", port)
 
-    server = Server(app)
+    server = _ASGIServer(app)
 
     # 空闲退出回调
     app.should_exit_callback = lambda: setattr(server, "should_exit", True)

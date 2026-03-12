@@ -1,4 +1,4 @@
-"""MutBot Web server — Router + lifespan + 启动入口。"""
+"""MutBot Web server — MutBotServer + lifespan + 启动入口。"""
 
 from __future__ import annotations
 
@@ -7,7 +7,6 @@ import logging
 import os
 import socket as _socket
 import sys
-from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -18,7 +17,7 @@ from mutbot.runtime.workspace import WorkspaceManager
 from mutbot.runtime.session_manager import SessionManager
 from mutbot.runtime.terminal import TerminalManager
 from mutbot.runtime.config import MutbotConfig, load_mutbot_config
-from mutagent.net.view import Router
+from mutagent.net.server import Server, StaticView
 
 logger = logging.getLogger(__name__)
 
@@ -118,11 +117,15 @@ async def _watch_config_changes(cfg: MutbotConfig) -> None:
             cfg.reload()
 
 
-@asynccontextmanager
-async def lifespan(router: Router):
+# Background tasks（用于 on_shutdown 取消）
+_background_tasks: list[asyncio.Task[Any]] = []
+
+
+async def _on_startup() -> None:
+    """MutBot 启动逻辑（对应 Server.on_startup）。"""
     global workspace_manager, session_manager, log_store, terminal_manager, channel_manager
 
-    assert config is not None, "config must be set before lifespan"
+    assert config is not None, "config must be set before startup"
 
     workspace_manager = WorkspaceManager()
     session_manager = SessionManager(config=config)
@@ -241,10 +244,10 @@ async def lifespan(router: Router):
         logger.warning("Failed to load LLM proxy config", exc_info=True)
 
     # --- Config file change watcher ---
-    config_watcher_task = asyncio.create_task(_watch_config_changes(config))
+    _background_tasks.append(asyncio.create_task(_watch_config_changes(config)))
 
     # --- Dirty session persist loop ---
-    persist_dirty_task = asyncio.create_task(session_manager.persist_dirty_loop())
+    _background_tasks.append(asyncio.create_task(session_manager.persist_dirty_loop()))
 
     # --- asyncio 未捕获异常兜底 ---
     def _asyncio_exception_handler(loop, context):
@@ -261,19 +264,18 @@ async def lifespan(router: Router):
 
     asyncio.get_running_loop().set_exception_handler(_asyncio_exception_handler)
 
-    yield
 
-    # --- Cancel config watcher ---
-    config_watcher_task.cancel()
-    persist_dirty_task.cancel()
-    try:
-        await config_watcher_task
-    except asyncio.CancelledError:
-        pass
-    try:
-        await persist_dirty_task
-    except asyncio.CancelledError:
-        pass
+async def _on_shutdown() -> None:
+    """MutBot 关闭逻辑（对应 Server.on_shutdown）。"""
+    # --- Cancel background tasks ---
+    for task in _background_tasks:
+        task.cancel()
+    for task in _background_tasks:
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+    _background_tasks.clear()
 
     # --- Graceful shutdown with timeout fallback ---
     import threading as _threading
@@ -372,10 +374,11 @@ def _format_banner_line(host: str, port: int) -> str:
 
 
 def main():
-    """MutBot server entry point: config → logging → Router → Server."""
+    """MutBot server entry point: config → logging → Server → run."""
     import argparse
     import mutbot
-    from mutagent.net.server import Server
+    from mutagent.net.server import Server as _Server
+    from mutagent import impl as _impl
 
     parser = argparse.ArgumentParser(description="MutBot Web UI")
     parser.add_argument(
@@ -424,37 +427,50 @@ def main():
     ))
     root_logger.addHandler(file_handler)
 
-    # LogStoreHandler（全量 DEBUG，lifespan 中取出使用）
+    # LogStoreHandler（全量 DEBUG，on_startup 中取出使用）
     log_store = LogStore()
     mem_handler = LogStoreHandler(log_store)
     mem_handler.setFormatter(logging.Formatter("%(message)s"))
     root_logger.addHandler(mem_handler)
 
-    # 3. 构建 Router
-    router = Router()
-    router.set_lifespan(lifespan)
-
-    # import 路由模块以触发 View/WebSocketView 子类注册
+    # 3. import 路由模块以触发 View/WebSocketView 子类注册
     import mutbot.web.routes  # noqa: F401
     try:
         import mutbot.proxy.routes  # noqa: F401
     except ImportError:
         pass
 
-    # 自动发现 View/WebSocketView 子类
-    router.discover()
-
-    # 静态文件
+    # 4. 静态文件 — StaticView 子类
     _frontend_dist = Path(__file__).resolve().parent / "frontend_dist"
     if _frontend_dist.is_dir():
-        router.add_static("/", _frontend_dist)
+        class _FrontendStatic(StaticView):
+            path = "/"
+            directory = str(_frontend_dist)
 
-    # 4. Listen 地址合并（CLI + config）
+    # 5. 创建 MutBotServer — 使用 @impl 覆盖 on_startup/on_shutdown
+    class MutBotServer(_Server):
+        pass
+
+    @_impl(MutBotServer.on_startup)
+    async def _mutbot_on_startup(self):
+        await _on_startup()
+        # Banner
+        banner_lines = _build_banner_lines(addresses)
+        print(f"\n  MutBot v{mutbot.__version__}\n")
+        for line in banner_lines:
+            print(line)
+        print()
+
+    @_impl(MutBotServer.on_shutdown)
+    async def _mutbot_on_shutdown(self):
+        await _on_shutdown()
+
+    # 6. Listen 地址合并（CLI + config）
     cli_listen = args.listen or []
     config_listen = config.get("listen", default=[]) or []
     addresses = _collect_listen_addresses(cli_listen, config_listen)
 
-    # 5. 创建 sockets
+    # 7. 创建 sockets
     sockets: list[_socket.socket] = []
     for host, port in addresses:
         sock = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
@@ -462,17 +478,10 @@ def main():
         sock.bind((host, port))
         sockets.append(sock)
 
-    # 6. 启动 server
-    server = Server(router)
-
-    async def _on_startup():
-        banner_lines = _build_banner_lines(addresses)
-        print(f"\n  MutBot v{mutbot.__version__}\n")
-        for line in banner_lines:
-            print(line)
-        print()
+    # 8. 启动 server
+    server = MutBotServer()
 
     try:
-        server.run(sockets=sockets, on_startup=_on_startup)
+        server.run(listen=sockets)
     except KeyboardInterrupt:
         pass

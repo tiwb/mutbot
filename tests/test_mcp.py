@@ -15,9 +15,10 @@ from typing import Any
 
 import pytest
 
-from mutagent.net.server import Server, MCPServer, mount_mcp
+from mutagent.net.server import Server
+from mutagent.net.mcp import MCPView, MCPToolSet
 from mutagent.net.client import MCPClient, MCPError
-from mutagent.net.mcp import MCPToolSet
+from mutagent.net._mcp_impl import MCPToolProvider
 from mutagent.net._mcp_proto import (
     JsonRpcDispatcher,
     JsonRpcError,
@@ -151,7 +152,6 @@ class _TestTools(MCPToolSet):
 class TestMCPToolSetDiscovery:
     def test_tools_discovered(self):
         """MCPToolProvider 应自动发现 MCPToolSet 子类的方法。"""
-        from mutagent.net.mcp import MCPToolProvider
         provider = MCPToolProvider()
         tools = provider.list_tools()
         names = [t["name"] for t in tools]
@@ -160,7 +160,6 @@ class TestMCPToolSetDiscovery:
 
     def test_tool_schema(self):
         """Tool schema 应从函数签名推断。"""
-        from mutagent.net.mcp import MCPToolProvider
         provider = MCPToolProvider()
         tools = provider.list_tools()
         add_tool = next(t for t in tools if t["name"] == "add")
@@ -170,14 +169,12 @@ class TestMCPToolSetDiscovery:
 
     @pytest.mark.asyncio
     async def test_call_tool(self):
-        from mutagent.net.mcp import MCPToolProvider
         provider = MCPToolProvider()
         result = await provider.call_tool("add", {"a": 3, "b": 4})
         assert result.content[0]["text"] == "7"
 
     @pytest.mark.asyncio
     async def test_call_unknown_tool(self):
-        from mutagent.net.mcp import MCPToolProvider
         provider = MCPToolProvider()
         with pytest.raises(JsonRpcError):
             await provider.call_tool("nonexistent", {})
@@ -190,80 +187,85 @@ class TestMCPToolSetDiscovery:
 _MCP_PORT_BASE = 19200
 
 
-async def _lifespan_app(scope: dict, receive: Any, send: Any) -> None:
-    """带 lifespan 的 ASGI wrapper。"""
-    if scope["type"] == "lifespan":
-        msg = await receive()
-        if msg["type"] == "lifespan.startup":
-            await send({"type": "lifespan.startup.complete"})
-        msg = await receive()
-        if msg["type"] == "lifespan.shutdown":
-            await send({"type": "lifespan.shutdown.complete"})
-        return
-    # HTTP 404 for non-MCP requests
-    await send({"type": "http.response.start", "status": 404, "headers": []})
-    await send({"type": "http.response.body", "body": b"Not Found"})
+class _TestMCPView(MCPView):
+    """测试用 MCPView — Server 自动发现此子类。"""
+    path = "/test-mcp"
+    name = "test-server"
+    version = "1.0.0"
+    instructions = "A test server"
 
 
-async def _start_mcp_server(port: int) -> tuple[Server, MCPServer]:
-    mcp = MCPServer(name="test-server", version="1.0.0", instructions="A test server")
-    app = mount_mcp(_lifespan_app, "/mcp", mcp)
-    server = Server(app)
-    await server._lifespan_startup()
-    await server.startup(host="127.0.0.1", port=port)
-    return server, mcp
+async def _start_mcp_server(port: int) -> Server:
+    server = Server()
+    await server.start(listen=[f"127.0.0.1:{port}"])
+    return server
 
 
 async def _stop_mcp_server(server: Server) -> None:
-    await server.shutdown(timeout=3)
-    await server._lifespan_shutdown()
+    await server.stop()
 
 
 class TestMCPEndToEnd:
     @pytest.mark.asyncio
     async def test_initialize_and_list_tools(self):
         port = _MCP_PORT_BASE + 1
-        server, _ = await _start_mcp_server(port)
+        server = await _start_mcp_server(port)
         try:
-            async with MCPClient(f"http://127.0.0.1:{port}/mcp") as client:
+            client = MCPClient(url=f"http://127.0.0.1:{port}/test-mcp")
+            await client.connect()
+            try:
                 assert client.server_info["name"] == "test-server"
                 tools = await client.list_tools()
                 names = [t["name"] for t in tools]
                 assert "add" in names
                 assert "fail_tool" in names
+            finally:
+                await client.close()
         finally:
             await _stop_mcp_server(server)
 
     @pytest.mark.asyncio
     async def test_call_tool(self):
         port = _MCP_PORT_BASE + 2
-        server, _ = await _start_mcp_server(port)
+        server = await _start_mcp_server(port)
         try:
-            async with MCPClient(f"http://127.0.0.1:{port}/mcp") as client:
+            client = MCPClient(url=f"http://127.0.0.1:{port}/test-mcp")
+            await client.connect()
+            try:
                 result = await client.call_tool("add", a=3, b=4)
                 assert result["content"][0]["text"] == "7"
                 assert not result.get("isError", False)
+            finally:
+                await client.close()
         finally:
             await _stop_mcp_server(server)
 
     @pytest.mark.asyncio
     async def test_call_tool_error(self):
         port = _MCP_PORT_BASE + 3
-        server, _ = await _start_mcp_server(port)
+        server = await _start_mcp_server(port)
         try:
-            async with MCPClient(f"http://127.0.0.1:{port}/mcp") as client:
+            client = MCPClient(url=f"http://127.0.0.1:{port}/test-mcp")
+            await client.connect()
+            try:
                 result = await client.call_tool("fail_tool")
                 assert result.get("isError") is True
+            finally:
+                await client.close()
         finally:
             await _stop_mcp_server(server)
 
     @pytest.mark.asyncio
     async def test_ping(self):
         port = _MCP_PORT_BASE + 7
-        server, _ = await _start_mcp_server(port)
+        server = await _start_mcp_server(port)
         try:
-            async with MCPClient(f"http://127.0.0.1:{port}/mcp") as client:
+            client = MCPClient(url=f"http://127.0.0.1:{port}/test-mcp")
+            await client.connect()
+            try:
                 await client.ping()  # 不抛异常即成功
+            finally:
+                await client.close()
         finally:
             await _stop_mcp_server(server)
 
@@ -271,23 +273,33 @@ class TestMCPEndToEnd:
     async def test_session_management(self):
         """初始化后应有 session ID。"""
         port = _MCP_PORT_BASE + 8
-        server, _ = await _start_mcp_server(port)
+        server = await _start_mcp_server(port)
         try:
-            async with MCPClient(f"http://127.0.0.1:{port}/mcp") as client:
-                assert client._session_id is not None
-                assert len(client._session_id) == 32  # hex(16 bytes)
+            client = MCPClient(url=f"http://127.0.0.1:{port}/test-mcp")
+            await client.connect()
+            try:
+                from mutagent.net._client_impl import _ext
+                ext = _ext(client)
+                assert ext._session_id is not None
+                assert len(ext._session_id) == 32  # hex(16 bytes)
+            finally:
+                await client.close()
         finally:
             await _stop_mcp_server(server)
 
     @pytest.mark.asyncio
     async def test_unknown_tool_error(self):
         port = _MCP_PORT_BASE + 9
-        server, _ = await _start_mcp_server(port)
+        server = await _start_mcp_server(port)
         try:
-            async with MCPClient(f"http://127.0.0.1:{port}/mcp") as client:
+            client = MCPClient(url=f"http://127.0.0.1:{port}/test-mcp")
+            await client.connect()
+            try:
                 with pytest.raises(MCPError) as exc_info:
                     await client.call_tool("nonexistent")
                 assert "Unknown tool" in str(exc_info.value)
+            finally:
+                await client.close()
         finally:
             await _stop_mcp_server(server)
 

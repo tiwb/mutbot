@@ -17,7 +17,7 @@ from typing import Any
 
 import pytest
 
-from mutagent.net.server import Server
+from mutagent.net.asgi import Server
 from mutagent.net._protocol import HTTPProtocol, RequestResponseCycle, FlowControl, WSProtocol, format_sse
 
 
