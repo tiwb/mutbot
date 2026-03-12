@@ -435,6 +435,7 @@ def main():
 
     # 3. import 路由模块以触发 View/WebSocketView 子类注册
     import mutbot.web.routes  # noqa: F401
+    import mutbot.web.mcp  # noqa: F401
     try:
         import mutbot.proxy.routes  # noqa: F401
     except ImportError:
