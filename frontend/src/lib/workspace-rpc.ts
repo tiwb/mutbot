@@ -100,6 +100,7 @@ export class WorkspaceRpc {
   private tokenFn?: () => string | null;
   private onOpenCb?: () => void;
   private onCloseCb?: () => void;
+  private onConnectingCb?: () => void;
 
   // RPC
   private pending = new Map<string, PendingCall>();
@@ -133,12 +134,14 @@ export class WorkspaceRpc {
       tokenFn?: () => string | null;
       onOpen?: () => void;
       onClose?: () => void;
+      onConnecting?: () => void;
     },
   ) {
     this.baseUrl = getWsUrl(`/ws/workspace/${workspaceId}`);
     this.tokenFn = opts?.tokenFn;
     this.onOpenCb = opts?.onOpen;
     this.onCloseCb = opts?.onClose;
+    this.onConnectingCb = opts?.onConnecting;
     this.connect();
   }
 
@@ -162,6 +165,7 @@ export class WorkspaceRpc {
 
   private connect() {
     if (this.closed) return;
+    this.onConnectingCb?.();
     const url = this.buildUrl();
     const ws = new WebSocket(url);
     ws.binaryType = "arraybuffer";
@@ -181,10 +185,12 @@ export class WorkspaceRpc {
 
     ws.onclose = () => {
       this.stopAckTimer();
+      // 始终通知 onClose（UI 清理 rpc 引用，触发面板 cleanup）
       this.onCloseCb?.();
       if (!this.closed && this.retryCount < MAX_RETRIES) {
         const delay = Math.min(1000 * 2 ** this.retryCount, 30000);
         this.retryCount++;
+        this.onConnectingCb?.();
         this.retryTimer = setTimeout(() => this.connect(), delay);
       }
     };

@@ -343,18 +343,25 @@ body,
   flex: 1;
 }
 
-.sidebar-disconnected-dot {
+.sidebar-status-dot {
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: var(--error);
   flex-shrink: 0;
-  animation: disconnected-pulse 2s ease-in-out infinite;
 }
 
-@keyframes disconnected-pulse {
+.sidebar-status-dot.disconnected {
+  background: var(--error);
+}
+
+.sidebar-status-dot.connecting {
+  background: #e8a317;
+  animation: status-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes status-pulse {
   0%, 100% { opacity: 1; }
-  50% { opacity: 0.3; }
+  50% { opacity: 0.25; }
 }
 
 .sidebar-menu-btn {
@@ -3641,6 +3648,11 @@ body,
 
 .mobile-status-dot.connected {
   background: var(--accent-green);
+}
+
+.mobile-status-dot.connecting {
+  background: #e8a317;
+  animation: status-pulse 1.5s ease-in-out infinite;
 }
 
 .mobile-status-dot.disconnected {

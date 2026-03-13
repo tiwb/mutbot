@@ -131,7 +131,7 @@ export default function App() {
   }, []);
 
   // Workspace RPC 连接状态
-  const [wsConnected, setWsConnected] = useState(false);
+  const [wsStatus, setWsStatus] = useState<"connected" | "connecting" | "disconnected">("disconnected");
 
   // Workspace RPC 连接
   const rpcRef = useRef<WorkspaceRpc | null>(null);
@@ -274,16 +274,19 @@ export default function App() {
     if (!workspace) return;
     const wsRpc = new WorkspaceRpc(workspace.id, {
       onOpen: () => {
-        setWsConnected(true);
+        setWsStatus("connected");
         // 连接就绪后再暴露给面板，避免面板在 WS 连接前发 RPC 被 resetState 拒绝
         setRpc(wsRpc);
         // 连接建立后通过 RPC 获取 session 列表
         wsRpc.call<Session[]>("session.list", { workspace_id: workspace.id }).then(setSessions).catch(() => {});
       },
       onClose: () => {
-        setWsConnected(false);
+        setWsStatus("disconnected");
         // 清除 rpc 引用，断线重连时触发面板 useEffect 重新 openChannel
         setRpc(null);
+      },
+      onConnecting: () => {
+        setWsStatus("connecting");
       },
     });
     rpcRef.current = wsRpc;
@@ -1107,7 +1110,7 @@ export default function App() {
           activeSessionId={activeSessionId}
           workspaceId={workspace?.id ?? null}
           rpc={rpc}
-          connected={wsConnected}
+          connectionStatus={wsStatus}
           onSelectSession={handleSelectSession}
           onCreateSession={handleCreateSession}
           onDeleteSessions={handleDeleteSessions}
@@ -1145,7 +1148,7 @@ export default function App() {
             sessions={sessions}
             activeSessionId={activeSessionId}
             rpc={rpc}
-            connected={wsConnected}
+            connectionStatus={wsStatus}
             onSelect={handleSelectSession}
             onModeChange={handleSidebarModeChange}
             onDeleteSessions={handleDeleteSessions}

@@ -21,7 +21,7 @@ interface Props {
   activeSessionId: string | null;
   workspaceId: string | null;
   rpc: WorkspaceRpc | null;
-  connected: boolean;
+  connectionStatus: "connected" | "connecting" | "disconnected";
   onSelectSession: (id: string) => void;
   onCreateSession: (type: string) => void;
   onDeleteSessions: (ids: string[]) => void;
@@ -36,7 +36,7 @@ export default function MobileLayout({
   activeSessionId,
   workspaceId,
   rpc,
-  connected,
+  connectionStatus,
   onSelectSession,
   onCreateSession,
   onDeleteSessions,
@@ -340,11 +340,7 @@ export default function MobileLayout({
           </div>
         )}
         <div className="mobile-topbar-status">
-          {connected ? (
-            <span className="mobile-status-dot connected" />
-          ) : (
-            <span className="mobile-status-dot disconnected" />
-          )}
+          <span className={`mobile-status-dot ${connectionStatus}`} />
         </div>
       </div>
 
@@ -434,7 +430,7 @@ export default function MobileLayout({
         sessions={sessions}
         activeSessionId={activeSessionId}
         rpc={rpc}
-        connected={connected}
+        connectionStatus={connectionStatus}
         onSelect={handleSelectSession}
         onClose={() => setDrawerOpen(false)}
         onCreateSession={onCreateSession}
