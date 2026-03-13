@@ -353,6 +353,10 @@ export default function App() {
           showToast("Configuration updated. New sessions will use the latest settings.");
         }
       }),
+
+      wsRpc.on("server_restarting", () => {
+        showToast("Server is restarting... Reconnecting automatically.");
+      }),
     ];
 
     return () => {
@@ -425,6 +429,12 @@ export default function App() {
     async (result: MenuExecResult, tabsetNode?: TabSetNode) => {
       if (result.error || result.action === "error") return;
 
+      if (result.action === "toast") {
+        const msg = (result.data?.message as string) || "";
+        if (msg) showToast(msg);
+        return;
+      }
+
       if (result.action === "session_created") {
         const sessionId = result.data.session_id as string;
         if (!sessionId || !rpcRef.current) return;
@@ -436,7 +446,7 @@ export default function App() {
         }
       }
     },
-    [addTabForSession],
+    [addTabForSession, showToast],
   );
 
   // ------------------------------------------------------------------

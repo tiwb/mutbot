@@ -373,12 +373,51 @@ def _format_banner_line(host: str, port: int) -> str:
     return f"  \u279c {local_url}  (via {via_url})"
 
 
-def main():
-    """MutBot server entry point: config → logging → Server → run."""
+def _init_logging(cfg: MutbotConfig, debug: bool, log_prefix: str = "server") -> LogStore:
+    """初始化日志系统（config + console + file + memory store）。"""
+    session_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_dir = Path.home() / ".mutbot" / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.DEBUG)
+
+    # 控制台 StreamHandler（--debug 覆盖 config）
+    if debug:
+        console_level = logging.DEBUG
+    else:
+        level_name = cfg.get("logging.console_level", default="WARNING")
+        console_level = getattr(logging, level_name.upper(), logging.WARNING)
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(console_level)
+    console_handler.setFormatter(logging.Formatter(
+        "%(levelname)-8s %(name)s: %(message)s",
+    ))
+    root_logger.addHandler(console_handler)
+
+    # FileHandler → ~/.mutbot/logs/<prefix>-YYYYMMDD_HHMMSS.log（全量 DEBUG）
+    file_handler = logging.FileHandler(
+        log_dir / f"{log_prefix}-{session_ts}.log", encoding="utf-8",
+    )
+    file_handler.setLevel(logging.DEBUG)
+    file_handler.setFormatter(SingleLineFormatter(
+        "%(asctime)s %(levelname)-8s %(name)s - %(message)s",
+    ))
+    root_logger.addHandler(file_handler)
+
+    # LogStoreHandler（全量 DEBUG，on_startup 中取出使用）
+    store = LogStore()
+    mem_handler = LogStoreHandler(store)
+    mem_handler.setFormatter(logging.Formatter("%(message)s"))
+    root_logger.addHandler(mem_handler)
+
+    return store
+
+
+def _parse_args():
+    """解析命令行参数。"""
     import argparse
     import mutbot
-    from mutagent.net.server import Server as _Server
-    from mutagent import impl as _impl
 
     parser = argparse.ArgumentParser(description="MutBot Web UI")
     parser.add_argument(
@@ -390,48 +429,36 @@ def main():
         help="Bind address (repeatable). Default: 127.0.0.1:8741",
     )
     parser.add_argument("--debug", action="store_true", help="Enable debug logging to console")
-    args = parser.parse_args()
 
-    # 1. Config（进程最早阶段）
+    # Supervisor / Worker 模式
+    parser.add_argument(
+        "--worker", action="store_true",
+        help="Run as Worker process (internal, used by Supervisor)",
+    )
+    parser.add_argument(
+        "--port", type=int, default=None,
+        help="Worker listen port (used with --worker)",
+    )
+    parser.add_argument(
+        "--no-supervisor", action="store_true",
+        help="Run in single-process mode (bypass Supervisor)",
+    )
+
+    return parser.parse_args()
+
+
+def worker_main(port: int, debug: bool = False) -> None:
+    """Worker 进程入口：监听 localhost 指定端口，运行完整 MutBotServer。"""
+    import mutbot
+    from mutagent.net.server import Server as _Server
+    from mutagent import impl as _impl
+
+    # 1. Config
     global config, log_store
     config = load_mutbot_config()
 
-    # 2. 日志初始化（紧随 config，保证不丢日志）
-    session_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    log_dir = Path.home() / ".mutbot" / "logs"
-    log_dir.mkdir(parents=True, exist_ok=True)
-
-    root_logger = logging.getLogger()
-    root_logger.setLevel(logging.DEBUG)
-
-    # 控制台 StreamHandler（--debug 覆盖 config）
-    if args.debug:
-        console_level = logging.DEBUG
-    else:
-        level_name = config.get("logging.console_level", default="WARNING")
-        console_level = getattr(logging, level_name.upper(), logging.WARNING)
-    console_handler = logging.StreamHandler()
-    console_handler.setLevel(console_level)
-    console_handler.setFormatter(logging.Formatter(
-        "%(levelname)-8s %(name)s: %(message)s",
-    ))
-    root_logger.addHandler(console_handler)
-
-    # FileHandler → ~/.mutbot/logs/server-YYYYMMDD_HHMMSS.log（全量 DEBUG）
-    file_handler = logging.FileHandler(
-        log_dir / f"server-{session_ts}.log", encoding="utf-8",
-    )
-    file_handler.setLevel(logging.DEBUG)
-    file_handler.setFormatter(SingleLineFormatter(
-        "%(asctime)s %(levelname)-8s %(name)s - %(message)s",
-    ))
-    root_logger.addHandler(file_handler)
-
-    # LogStoreHandler（全量 DEBUG，on_startup 中取出使用）
-    log_store = LogStore()
-    mem_handler = LogStoreHandler(log_store)
-    mem_handler.setFormatter(logging.Formatter("%(message)s"))
-    root_logger.addHandler(mem_handler)
+    # 2. 日志（Worker 用 server- 前缀，与单进程模式一致）
+    log_store = _init_logging(config, debug, log_prefix="server")
 
     # 3. import 路由模块以触发 View/WebSocketView 子类注册
     import mutbot.web.routes  # noqa: F401
@@ -441,21 +468,127 @@ def main():
     except ImportError:
         pass
 
-    # 4. 静态文件 — StaticView 子类
+    # 4. 静态文件
     _frontend_dist = Path(__file__).resolve().parent / "frontend_dist"
     if _frontend_dist.is_dir():
         class _FrontendStatic(StaticView):
             path = "/"
             directory = str(_frontend_dist)
 
-    # 5. 创建 MutBotServer — 使用 @impl 覆盖 on_startup/on_shutdown
+    # 5. 创建 MutBotServer
     class MutBotServer(_Server):
         pass
 
     @_impl(MutBotServer.on_startup)
     async def _mutbot_on_startup(self):
         await _on_startup()
-        # Banner
+        logger.info("Worker ready on port %d (pid=%d)", port, os.getpid())
+
+    @_impl(MutBotServer.on_shutdown)
+    async def _mutbot_on_shutdown(self):
+        await _on_shutdown()
+
+    # 6. 创建 socket（Worker 只监听 localhost）
+    sock = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
+    sock.setsockopt(_socket.SOL_SOCKET, _socket.SO_REUSEADDR, 1)
+    sock.bind(("127.0.0.1", port))
+
+    # 7. 启动
+    server = MutBotServer()
+    try:
+        server.run(listen=[sock])
+    except KeyboardInterrupt:
+        pass
+
+
+def supervisor_main(
+    listen_addresses: list[tuple[str, int]],
+    debug: bool = False,
+    extra_worker_args: list[str] | None = None,
+) -> None:
+    """Supervisor 进程入口：启动 TCP 代理 + 管理 Worker 子进程。"""
+    from mutbot.web.supervisor import Supervisor
+
+    # Supervisor 自己的日志（不加载业务模块）
+    cfg = load_mutbot_config()
+    _init_logging(cfg, debug, log_prefix="supervisor")
+
+    # 构造传给 Worker 的额外参数
+    worker_args: list[str] = []
+    if debug:
+        worker_args.append("--debug")
+    if extra_worker_args:
+        worker_args.extend(extra_worker_args)
+
+    supervisor = Supervisor(
+        listen_addresses=listen_addresses,
+        worker_args=worker_args,
+        debug=debug,
+    )
+    supervisor.run()
+
+
+def main():
+    """MutBot server entry point — 根据参数选择 Supervisor / Worker / 单进程模式。"""
+    args = _parse_args()
+
+    # Worker 模式（由 Supervisor spawn）
+    if args.worker:
+        port = args.port or _DEFAULT_PORT
+        worker_main(port=port, debug=args.debug)
+        return
+
+    # 解析监听地址
+    global config
+    cfg = load_mutbot_config()
+    cli_listen = args.listen or []
+    config_listen = cfg.get("listen", default=[]) or []
+    addresses = _collect_listen_addresses(cli_listen, config_listen)
+
+    # 单进程模式（--no-supervisor 或调试用）
+    if args.no_supervisor:
+        _standalone_main(addresses, args.debug)
+        return
+
+    # 默认：Supervisor 模式
+    supervisor_main(listen_addresses=addresses, debug=args.debug)
+
+
+def _standalone_main(addresses: list[tuple[str, int]], debug: bool = False) -> None:
+    """单进程模式（与原来的 main() 行为一致）。"""
+    import mutbot
+    from mutagent.net.server import Server as _Server
+    from mutagent import impl as _impl
+
+    # 1. Config
+    global config, log_store
+    config = load_mutbot_config()
+
+    # 2. 日志
+    log_store = _init_logging(config, debug)
+
+    # 3. import 路由模块
+    import mutbot.web.routes  # noqa: F401
+    import mutbot.web.mcp  # noqa: F401
+    try:
+        import mutbot.proxy.routes  # noqa: F401
+    except ImportError:
+        pass
+
+    # 4. 静态文件
+    _frontend_dist = Path(__file__).resolve().parent / "frontend_dist"
+    if _frontend_dist.is_dir():
+        class _FrontendStatic(StaticView):
+            path = "/"
+            directory = str(_frontend_dist)
+
+    # 5. 创建 MutBotServer
+    class MutBotServer(_Server):
+        pass
+
+    @_impl(MutBotServer.on_startup)
+    async def _mutbot_on_startup(self):
+        await _on_startup()
         banner_lines = _build_banner_lines(addresses)
         print(f"\n  MutBot v{mutbot.__version__}\n")
         for line in banner_lines:
@@ -466,12 +599,7 @@ def main():
     async def _mutbot_on_shutdown(self):
         await _on_shutdown()
 
-    # 6. Listen 地址合并（CLI + config）
-    cli_listen = args.listen or []
-    config_listen = config.get("listen", default=[]) or []
-    addresses = _collect_listen_addresses(cli_listen, config_listen)
-
-    # 7. 创建 sockets
+    # 6. 创建 sockets
     sockets: list[_socket.socket] = []
     for host, port in addresses:
         sock = _socket.socket(_socket.AF_INET, _socket.SOCK_STREAM)
@@ -479,9 +607,8 @@ def main():
         sock.bind((host, port))
         sockets.append(sock)
 
-    # 8. 启动 server
+    # 7. 启动
     server = MutBotServer()
-
     try:
         server.run(listen=sockets)
     except KeyboardInterrupt:

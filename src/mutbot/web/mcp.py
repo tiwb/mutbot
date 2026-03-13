@@ -126,6 +126,30 @@ class ServerTools(MCPToolSet):
             "memory_mb": mem_mb,
         }, ensure_ascii=False)
 
+    async def restart_server(self) -> str:
+        """触发服务器热重启。通过 Supervisor 的 /api/restart 端点实现平滑交接（drain 旧 Worker → spawn 新 Worker）。"""
+        import urllib.request
+        srv = _get_managers()
+        port = 8741
+        if srv.config:
+            listen = srv.config.get("listen", default=[])
+            if listen:
+                # 取第一个地址的端口
+                addr = listen[0] if isinstance(listen, list) and listen else str(listen)
+                if ":" in str(addr):
+                    port = int(str(addr).rsplit(":", 1)[1])
+                elif str(addr).isdigit():
+                    port = int(addr)
+
+        url = f"http://127.0.0.1:{port}/api/restart"
+        try:
+            req = urllib.request.Request(url, data=b"", method="POST")
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                result = json.loads(resp.read())
+                return json.dumps(result, ensure_ascii=False)
+        except Exception as e:
+            return json.dumps({"error": str(e)}, ensure_ascii=False)
+
 
 # ---------------------------------------------------------------------------
 # Workspace Tools

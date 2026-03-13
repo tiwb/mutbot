@@ -75,6 +75,50 @@ class HealthView(View):
 
 
 # ---------------------------------------------------------------------------
+# Internal drain endpoint (Supervisor → Worker)
+# ---------------------------------------------------------------------------
+
+class InternalDrainView(View):
+    """Drain 端点 — Supervisor 通知 Worker 进入 drain 模式。
+
+    仅接受 localhost 请求（外部请求被 Supervisor TCP 代理拦截，返回 403）。
+    """
+    path = "/internal/drain"
+
+    async def post(self, request):
+        from mutbot.web.server import session_manager
+        from mutbot.web.rpc import make_event
+
+        logger.info("Drain requested — stopping agent sessions and notifying clients")
+
+        # 1. 给所有 WS 客户端发送 server_restarting 事件
+        _broadcast_to_all_workspaces(make_event("server_restarting", {}))
+
+        # 2. 强制停止所有 Agent Session 并持久化
+        if session_manager is not None:
+            from mutbot.session import TerminalSession
+            stopped = 0
+            for sid in list(session_manager._sessions):
+                session = session_manager._sessions.get(sid)
+                if session and not isinstance(session, TerminalSession):
+                    try:
+                        await session_manager.stop(sid)
+                        stopped += 1
+                    except Exception:
+                        logger.warning("Failed to stop session %s during drain", sid, exc_info=True)
+
+            # 持久化所有 session 状态
+            for session in session_manager._sessions.values():
+                try:
+                    session_manager._persist(session)
+                except Exception:
+                    logger.warning("Failed to persist session %s during drain", session.id, exc_info=True)
+            logger.info("Drain complete: stopped %d agent session(s)", stopped)
+
+        return json_response({"status": "drained"})
+
+
+# ---------------------------------------------------------------------------
 # Lazy imports from server module
 # ---------------------------------------------------------------------------
 

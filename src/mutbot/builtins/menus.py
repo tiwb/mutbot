@@ -289,6 +289,43 @@ class CloseWorkspaceMenu(Menu):
     client_action = "close_workspace"
 
 
+class RestartServerMenu(Menu):
+    """全局菜单 — Restart Server"""
+    display_name = "Restart Server"
+    display_icon = "refresh-cw"
+    display_category = "SessionList/Header"
+    display_order = "1workspace:1"
+
+    async def execute(self, params: dict, context: RpcContext) -> MenuResult:
+        import json
+        import urllib.request
+
+        port = 8741
+        if context.config:
+            listen = context.config.get("listen", default=[])
+            if listen:
+                addr = listen[0] if isinstance(listen, list) and listen else str(listen)
+                if ":" in str(addr):
+                    port = int(str(addr).rsplit(":", 1)[1])
+                elif str(addr).isdigit():
+                    port = int(addr)
+
+        url = f"http://127.0.0.1:{port}/api/restart"
+        try:
+            req = urllib.request.Request(url, data=b"", method="POST")
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                result = json.loads(resp.read())
+            status = result.get("status", "unknown")
+            if status == "restarting":
+                return MenuResult(action="toast", data={"message": "Server is restarting..."})
+            elif status == "already_restarting":
+                return MenuResult(action="toast", data={"message": "Server restart already in progress."})
+            else:
+                return MenuResult(action="toast", data={"message": f"Unexpected: {status}"})
+        except Exception as e:
+            return MenuResult(action="toast", data={"message": f"Failed to restart: {e}"})
+
+
 # ---------------------------------------------------------------------------
 # 内置菜单：AgentPanel 标题栏菜单 (AgentPanel/Header)
 # ---------------------------------------------------------------------------
