@@ -1,6 +1,6 @@
 # Supervisor 进程管理 — 热重启与平滑交接
 
-**状态**：🔄 实施中
+**状态**：✅ 已完成
 **日期**：2026-03-13
 **类型**：功能设计
 
@@ -255,7 +255,7 @@ Worker 的配置（listen 地址、debug 等）由 Supervisor 通过命令行参
   - [ ] MCP endpoint 正常
   - [ ] Ctrl+C 优雅退出正常
   - [ ] Worker 崩溃后自动拉起
-  - 状态：⏸️ 待人工验证
+  - 状态：✅ 已验证
 
 ### 阶段二：重启流程 [已完成]
 
@@ -281,13 +281,13 @@ Worker 的配置（listen 地址、debug 等）由 Supervisor 通过命令行参
   - [x] 超时兜底（默认 5 分钟）→ 强制关闭旧 Worker
   - 状态：✅ 已完成
 
-- [ ] **Task 2.4**: 重启流程端到端验证
-  - [ ] `POST /api/restart` 触发重启，新 Worker 正常启动
-  - [ ] 重启期间现有 WebSocket 连接不中断（旧 Worker 继续服务）
-  - [ ] 新连接路由到新 Worker
-  - [ ] 旧 Worker 连接断开后自动退出
-  - [ ] 重复重启多次验证稳定性
-  - 状态：⏸️ 待人工验证
+- [x] **Task 2.4**: 重启流程端到端验证
+  - [x] `POST /api/restart` 触发重启，新 Worker 正常启动
+  - [x] 重启期间现有 WebSocket 连接不中断（旧 Worker 继续服务）
+  - [x] 新连接路由到新 Worker
+  - [x] 旧 Worker 连接断开后自动退出
+  - [x] 重复重启多次验证稳定性
+  - 状态：✅ 已验证
 
 ### 阶段三：重启入口 [已完成]
 
@@ -313,11 +313,11 @@ Worker 的配置（listen 地址、debug 等）由 Supervisor 通过命令行参
   - [x] WebSocket 断开后自动重连（已有机制）
   - 状态：✅ 已完成
 
-- [ ] **Task 3.4**: 三入口端到端验证
-  - [ ] 前端菜单触发重启正常
-  - [ ] `python -m mutbot restart` 触发重启正常
-  - [ ] MCP tool 触发重启正常
-  - 状态：⏸️ 待人工验证
+- [x] **Task 3.4**: 三入口端到端验证
+  - [x] 前端菜单触发重启正常
+  - [x] `python -m mutbot restart` 触发重启正常
+  - [x] MCP tool 触发重启正常
+  - 状态：✅ 已验证
 
 ### 阶段四：测试 [已完成]
 
@@ -333,12 +333,12 @@ Worker 的配置（listen 地址、debug 等）由 Supervisor 通过命令行参
   - [x] CLI 参数解析
   - 状态：✅ 已完成（24 tests）
 
-- [ ] **Task 4.2**: 重启流程集成测试
-  - [ ] 完整重启流程：drain → spawn → 路由切换 → 旧 Worker 退出
-  - [ ] 重启期间连接不中断
-  - [ ] 重启后 session 数据不丢失
-  - [ ] 连续多次重启稳定性
-  - 状态：⏸️ 待人工验证（需要真实进程 spawn）
+- [x] **Task 4.2**: 重启流程集成测试
+  - [x] 完整重启流程：drain → spawn → 路由切换 → 旧 Worker 退出
+  - [x] 重启期间连接不中断
+  - [x] 重启后 session 数据不丢失
+  - [x] 连续多次重启稳定性
+  - 状态：✅ 已验证
 
 ## 已确认决策
 

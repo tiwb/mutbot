@@ -149,43 +149,20 @@ OIDC 登录成功
 ```
 src/mutbot/auth/
   __init__.py
-  middleware.py    — FastAPI 中间件：本地豁免 + token 验证
-  routes.py        — /auth/* HTTP 路由（login, callback, logout, userinfo）
-  token.py         — JWT 签发与验证
-  providers.py     — OIDC 提供商抽象 + GitHub 实现
+  views.py       — View/WebSocketView 子类：login, callback, logout, userinfo
+  token.py       — JWT 签发与验证
+  providers.py   — OIDC 提供商抽象 + GitHub 实现
 ```
 
-#### FastAPI 中间件逻辑
+认证逻辑通过 `View` 子类的 `before_request()` 或 Server 层请求处理钩子实现（当前框架无中间件机制，需要在 mutagent.net 层增加请求拦截点）。
 
-```python
-# 伪代码
-async def auth_middleware(request, call_next):
-    # 1. 无配置 → 放行
-    if not config.get("auth"):
-        return await call_next(request)
+#### 请求拦截逻辑（替代中间件）
 
-    # 2. 本地请求 → 放行
-    if is_local_request(request):
-        return await call_next(request)
+当前 mutbot 使用自研 ASGI 服务器（mutagent.net，基于 h11 + wsproto），**没有中间件系统**。路由通过 mutobj `discover_subclasses(View)` 零注册发现。
 
-    # 3. 静态资源 + auth 路由 → 放行
-    if is_public_path(request.url.path):
-        return await call_next(request)
-
-    # 4. 验证 token
-    token = extract_token(request)  # cookie 或 query param
-    user = verify_token(token)
-    if not user:
-        # HTTP → 重定向登录; WebSocket → 拒绝连接
-        ...
-
-    # 5. 检查允许列表
-    if not is_user_allowed(user, config):
-        return 403
-
-    request.state.user = user
-    return await call_next(request)
-```
+认证拦截的实现方向：
+1. **Server 层请求钩子**：在 `mutagent.net.Server` 的请求分发逻辑中增加 `before_dispatch` 钩子（Declaration 方法），mutbot 通过 `@impl` 注入认证检查
+2. **View 基类方法**：在 `View.handle()` 前增加 `before_request()` 钩子，auth 模块提供 `@impl` 检查 token
 
 #### WebSocket 认证
 
@@ -230,19 +207,24 @@ WebSocket 不能用 HTTP 重定向，处理方式：
 ## 关键参考
 
 ### 源码
-- `src/mutbot/web/server.py` — FastAPI app 创建、lifespan、中间件注册点
-- `src/mutbot/web/routes.py` — WebSocket 端点（/ws/app, /ws/workspace/{id}, /ws/logs）
-- `src/mutbot/runtime/config.py` — MutbotConfig 配置系统
-- `src/mutbot/copilot/auth.py` — 现有 GitHub OAuth 设备流实现（可参考模式）
-- `frontend/src/lib/websocket.ts` — ReconnectingWebSocket，已有 tokenFn 机制
+- `mutagent/src/mutagent/net/server.py` — Server/View/WebSocketView Declaration（自研 ASGI 框架，无 FastAPI）
+- `mutagent/src/mutagent/net/_server_impl.py` — Server 请求分发实现（认证拦截点需在此层增加）
+- `mutagent/src/mutagent/net/_protocol.py` — HTTP/WS 协议处理（h11 + wsproto）
+- `src/mutbot/web/server.py` — MutBotServer，继承 mutagent.net.Server
+- `src/mutbot/web/routes.py` — View 子类（HealthView、WebSocket 端点等，零注册发现）
+- `src/mutbot/runtime/config.py` — MutbotConfig 配置系统（支持 on_change 回调）
+- `src/mutbot/copilot/auth.py` — 现有 GitHub Copilot OAuth 设备流实现（仅用于 LLM API 认证，非 Web 访问控制）
+- `frontend/src/lib/websocket.ts` — ReconnectingWebSocket，已有 tokenFn 机制（`?token=xxx`）
 - `frontend/src/lib/connection.ts` — getWsUrl()，isRemote()
 - `frontend/src/lib/app-rpc.ts` — AppRpc 构造函数已有 tokenFn 参数
 
 ### 关键发现
-- 前端 WebSocket 已预留 token 传递机制（`tokenFn` → query param `token=xxx`）
-- FastAPI 中间件可通过 `app.add_middleware()` 在 server.py 中注册
+- 前端 WebSocket 已预留 token 传递机制（`tokenFn` → query param `token=xxx`），已有完整基础设施但未接入实际 token 源
+- 当前 Web 框架为自研 ASGI（mutagent.net），无中间件系统，路由通过 mutobj `discover_subclasses(View)` 零注册发现
+- 认证路由（`/auth/*`）可作为 `View` 子类自动注册，无需手动添加
 - 默认 host 是 `127.0.0.1`，需用 `--host 0.0.0.0` 才会暴露到网络
 - config 支持 `on_change` 回调，auth 配置变更可实时生效
+- `copilot/auth.py` 中的 GitHub OAuth 是设备流（CLI 交互式），不适用于 Web 登录场景，但可参考 token 管理模式
 
 ### 相关规范
 - `mutbot.ai/docs/specifications/feature-remote-server.md` — mutbot.ai 多服务器连接（纯前端），4401 处理和 token 存储与本规范交互

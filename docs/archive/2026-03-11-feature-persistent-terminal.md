@@ -1,6 +1,6 @@
 # 终端 Session 持久化（服务器重启后存活） 设计规范
 
-**状态**：🔄 实施中（Phase 1-4 完成，Phase 5 测试中）
+**状态**：✅ 已完成
 **日期**：2026-03-11
 **类型**：功能设计
 
@@ -305,11 +305,11 @@ src/mutbot/
   - restart 流程：notify_exit → on_create(走 ptyhost create) → on_connect
   - 状态：✅ 已完成
 
-### Phase 5: 测试验证 [🔄 进行中]
+### Phase 5: 测试验证 [✅ 已完成]
 
-- [ ] **Task 5.1**: 手动集成测试
+- [x] **Task 5.1**: 手动集成测试
   - mutbot 启动 → ptyhost 自动 spawn → 创建终端 → 重启 mutbot → 终端存活 → 重连
-  - 状态：🔄 进行中（菜单创建 session 的 await 缺失 bug 已修复，单元测试全部通过）
+  - 状态：✅ 已完成
 
 - [x] **Task 5.2**: 单元测试适配
   - ptyhost 重构后的测试适配（模块重命名、async/await、RpcContext API、Channel API 等）
