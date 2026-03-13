@@ -24,7 +24,7 @@ logger = logging.getLogger("mutbot.ptyhost")
 
 IS_WINDOWS = sys.platform == "win32"
 
-SCROLLBACK_MAX = 64 * 1024
+SCROLLBACK_MAX = 10 * 1024 * 1024  # 10MB — 内存中保留完整历史，replay 时按需截取
 
 # Strip OSC 0/1/2 (window/icon title) sequences
 _OSC_TITLE_RE = re.compile(rb"\x1b\][012];[^\x07\x1b]*(?:\x07|\x1b\\)")

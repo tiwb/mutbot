@@ -9,12 +9,17 @@ TerminalManager 通过 WebSocket 连接 ptyhost 守护进程，
 
 from __future__ import annotations
 
+import asyncio
 import base64
+import codecs
 import logging
 import re
 from typing import Any, Callable, TYPE_CHECKING
 
+import pyte
+
 from mutobj import impl
+from mutbot.runtime.ansi_render import render_dirty, render_full
 
 if TYPE_CHECKING:
     from mutbot.channel import Channel, ChannelContext
@@ -30,11 +35,37 @@ ExitCallback = Callable[[int | None], None]
 logger = logging.getLogger(__name__)
 
 _CSI_QUERY_RE = re.compile(rb"\x1b\[(?:[>=]?0?c|[56]n)")
+# 备用屏幕切换 + 光标保存/恢复
+_TUI_CLEANUP_RE = re.compile(
+    rb"\x1b\[\?1049[hl]"        # 备用屏幕切换
+    rb"|\x1b\[\?47[hl]"         # 备用屏幕切换（旧式）
+    rb"|\x1b[78]"               # 光标保存/恢复 (DECSC/DECRC)
+    rb"|\x1b\[[su]"             # 光标保存/恢复 (SCO)
+)
 _CLEAR_SCREEN = b"\x1b[0m\x1b[2J\x1b[H"
 
+# Replay 发送上限
+_REPLAY_MAX_BYTES = 256 * 1024  # 256KB
 
-def _strip_replay_queries(data: bytes) -> bytes:
-    return _CSI_QUERY_RE.sub(b"", data)
+
+def _strip_replay_sequences(data: bytes) -> bytes:
+    """剥离 replay 时有害的终端控制序列。"""
+    data = _CSI_QUERY_RE.sub(b"", data)
+    data = _TUI_CLEANUP_RE.sub(b"", data)
+    return data
+
+
+def _truncate_replay(data: bytes, max_bytes: int = _REPLAY_MAX_BYTES) -> bytes:
+    """截取 scrollback 尾部用于 replay，对齐到行边界。"""
+    if len(data) <= max_bytes:
+        return data
+    # 从 max_bytes 处向前找最近的换行符
+    tail = data[-max_bytes:]
+    nl = tail.find(b"\n")
+    if nl != -1 and nl < len(tail) - 1:
+        # 从换行符后开始，确保首行完整
+        tail = tail[nl + 1:]
+    return tail
 
 
 class TerminalManager:
@@ -43,6 +74,10 @@ class TerminalManager:
     维护 mutbot 侧的 multi-client attach/detach + 主客户端优先 resize 策略。
     PTY 操作委托给 ptyhost 守护进程。
     """
+
+    # PTY 输出批处理参数
+    _FLUSH_INTERVAL = 0.016  # ~16ms (≈1帧)
+    _FLUSH_MAX_BYTES = 32 * 1024  # 32KB 立即 flush
 
     def __init__(self) -> None:
         self._client: PtyHostClient | None = None
@@ -55,6 +90,13 @@ class TerminalManager:
         # 主客户端控制权（resize 跟随主客户端）
         self._primary_client: dict[str, str] = {}     # {term_id: client_id}
         self._primary_locked: dict[str, bool] = {}    # {term_id: locked}
+        # PTY 输出批处理缓冲
+        self._output_buffers: dict[str, bytearray] = {}
+        self._flush_handles: dict[str, asyncio.TimerHandle] = {}
+        # pyte 虚拟终端（per-terminal）
+        self._screens: dict[str, pyte.Screen] = {}
+        self._streams: dict[str, pyte.Stream] = {}
+        self._decoders: dict[str, codecs.IncrementalDecoder] = {}
 
     async def connect(self, host: str, port: int) -> None:
         """连接 ptyhost 守护进程。"""
@@ -95,6 +137,12 @@ class TerminalManager:
         assert self._client, "not connected to ptyhost"
         term_id = await self._client.create(rows, cols, cwd)
         self._known_terms.add(term_id)
+        # 初始化 pyte 虚拟终端
+        screen = pyte.Screen(cols, rows)
+        stream = pyte.Stream(screen)
+        self._screens[term_id] = screen
+        self._streams[term_id] = stream
+        self._decoders[term_id] = codecs.getincrementaldecoder("utf-8")("replace")
         return term_id
 
     def kill(self, term_id: str) -> None:
@@ -104,6 +152,12 @@ class TerminalManager:
         self._client_sizes.pop(term_id, None)
         self._primary_client.pop(term_id, None)
         self._primary_locked.pop(term_id, None)
+        self._cancel_flush_timer(term_id)
+        self._output_buffers.pop(term_id, None)
+        # 清理 pyte 实例
+        self._screens.pop(term_id, None)
+        self._streams.pop(term_id, None)
+        self._decoders.pop(term_id, None)
         if self._client:
             self._client.kill_nowait(term_id)
 
@@ -219,7 +273,13 @@ class TerminalManager:
         else:
             eff_rows, eff_cols = rows, cols
 
-        return await self._client.resize(term_id, eff_rows, eff_cols)
+        result = await self._client.resize(term_id, eff_rows, eff_cols)
+        # 同步 resize pyte Screen
+        if result is not None:
+            screen = self._screens.get(term_id)
+            if screen:
+                screen.resize(result[0], result[1])
+        return result
 
     # ------------------------------------------------------------------
     # Query
@@ -302,18 +362,79 @@ class TerminalManager:
     # ------------------------------------------------------------------
 
     def _on_pty_output(self, term_id: str, data: bytes) -> None:
-        """ptyhost 推送的 PTY 输出 → 广播到已 attach 的前端 channel。"""
+        """ptyhost 推送的 PTY 输出 → 缓冲后批量广播到已 attach 的前端 channel。"""
         conns = self._connections.get(term_id)
         if not conns:
             return
-        dead: list[str] = []
+
+        buf = self._output_buffers.get(term_id)
+        if buf is None:
+            buf = bytearray()
+            self._output_buffers[term_id] = buf
+        buf.extend(data)
+
+        if len(buf) >= self._FLUSH_MAX_BYTES:
+            # 超过上限，立即 flush
+            self._cancel_flush_timer(term_id)
+            self._flush_output(term_id)
+        elif term_id not in self._flush_handles:
+            # 首次数据到达，启动定时器
+            loop = asyncio.get_event_loop()
+            handle = loop.call_later(
+                self._FLUSH_INTERVAL, self._flush_output, term_id,
+            )
+            self._flush_handles[term_id] = handle
+
+    def _flush_output(self, term_id: str) -> None:
+        """将缓冲区内容 feed 到 pyte，计算 dirty diff，广播 ANSI 帧。"""
+        self._flush_handles.pop(term_id, None)
+        buf = self._output_buffers.pop(term_id, None)
+        if not buf:
+            return
+        conns = self._connections.get(term_id)
+        if not conns:
+            return
+
+        stream = self._streams.get(term_id)
+        screen = self._screens.get(term_id)
+        decoder = self._decoders.get(term_id)
+
+        if stream is None or screen is None or decoder is None:
+            # pyte 不可用，fallback 到 raw bytes
+            data = bytes(buf)
+            dead: list[str] = []
+            for client_id, (on_output, _) in list(conns.items()):
+                try:
+                    on_output(data)
+                except Exception:
+                    dead.append(client_id)
+            for client_id in dead:
+                conns.pop(client_id, None)
+            return
+
+        # 增量解码 bytes → str，feed 到 pyte
+        text = decoder.decode(bytes(buf), False)
+        if text:
+            stream.feed(text)
+
+        # 计算 dirty diff → ANSI 帧
+        frame = render_dirty(screen)
+        if not frame:
+            return
+
+        dead = []
         for client_id, (on_output, _) in list(conns.items()):
             try:
-                on_output(data)
+                on_output(frame)
             except Exception:
                 dead.append(client_id)
         for client_id in dead:
             conns.pop(client_id, None)
+
+    def _cancel_flush_timer(self, term_id: str) -> None:
+        handle = self._flush_handles.pop(term_id, None)
+        if handle is not None:
+            handle.cancel()
 
     def _on_pty_exit(self, term_id: str, exit_code: int | None) -> None:
         """ptyhost 推送的终端退出事件 → 通知已 attach 的前端 channel。"""
@@ -344,6 +465,12 @@ class TerminalManager:
         self._known_terms.clear()
         self._primary_client.clear()
         self._primary_locked.clear()
+        for tid in list(self._flush_handles):
+            self._cancel_flush_timer(tid)
+        self._output_buffers.clear()
+        self._screens.clear()
+        self._streams.clear()
+        self._decoders.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -411,16 +538,27 @@ async def _terminal_on_connect(
 
     alive = tm.has(term_id)
 
-    # ---- 发送 scrollback（始终先清屏） ----
+    # ---- 发送屏幕快照（pyte 优先，fallback scrollback） ----
     if alive:
-        scrollback = await tm.get_scrollback(term_id)
-        scrollback = _strip_replay_queries(scrollback) if scrollback else b""
-        channel.send_binary(_CLEAR_SCREEN + scrollback)
+        screen = tm._screens.get(term_id)
+        if screen is not None:
+            # pyte 全屏快照 — 干净的 ANSI，无历史脏数据
+            snapshot = render_full(screen)
+            channel.send_binary(snapshot)
+        else:
+            # fallback: scrollback replay
+            scrollback = await tm.get_scrollback(term_id)
+            if scrollback:
+                scrollback = _truncate_replay(scrollback)
+                scrollback = _strip_replay_sequences(scrollback)
+            channel.send_binary(_CLEAR_SCREEN + (scrollback or b""))
     elif self.scrollback_b64:
         try:
             scrollback_data = base64.b64decode(self.scrollback_b64)
-            scrollback_data = _strip_replay_queries(scrollback_data) if scrollback_data else b""
-            channel.send_binary(_CLEAR_SCREEN + scrollback_data)
+            if scrollback_data:
+                scrollback_data = _truncate_replay(scrollback_data)
+                scrollback_data = _strip_replay_sequences(scrollback_data)
+            channel.send_binary(_CLEAR_SCREEN + (scrollback_data or b""))
         except Exception:
             logger.warning("scrollback decode failed", exc_info=True)
             channel.send_binary(_CLEAR_SCREEN)
