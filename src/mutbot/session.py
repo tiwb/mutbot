@@ -158,6 +158,18 @@ class DocumentSession(Session):
     language: str = ""
 
 
+class ClaudeCodeSession(Session):
+    """Claude Code CLI Session — spawn CLI 子进程通过 stream-json 管道通信。"""
+
+    display_name = "Claude Code"
+    display_icon = "terminal"
+
+    cwd: str = ""
+    model: str = ""
+    permission_mode: str = ""
+    claude_session_id: str = ""
+
+
 # ---------------------------------------------------------------------------
 # SessionChannels Extension — Session 的 channel 管理
 # ---------------------------------------------------------------------------

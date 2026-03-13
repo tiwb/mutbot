@@ -1,0 +1,336 @@
+/* Claude Code Panel — Terminal-style UI */
+
+.cc-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  font-family: "Cascadia Code", "Fira Code", "JetBrains Mono", "SF Mono", Menlo, Consolas, monospace;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+/* Header */
+.cc-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  background: var(--bg-panel, #1e1e1e);
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+.cc-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #555;
+}
+.cc-status-dot[data-alive="true"] {
+  background: var(--success, #4ec9b0);
+}
+
+.cc-header-label {
+  font-weight: 600;
+  color: var(--text);
+}
+
+.cc-session-id {
+  opacity: 0.5;
+}
+
+.cc-disconnected {
+  color: var(--error, #f44747);
+  font-size: 11px;
+}
+
+/* Messages area */
+.cc-messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 8px 12px;
+  scroll-behavior: smooth;
+}
+
+.cc-msg {
+  margin-bottom: 4px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* System messages */
+.cc-msg-system {
+  color: var(--text-secondary, #858585);
+  font-style: italic;
+}
+
+/* Assistant text — terminal Markdown style */
+.cc-msg-assistant {
+  color: var(--text);
+}
+
+.cc-terminal-md .markdown-body {
+  font-family: inherit;
+  font-size: inherit;
+  line-height: inherit;
+  color: inherit;
+  background: transparent;
+}
+
+/* Override Markdown headings: bold, no size change */
+.cc-terminal-md .markdown-body h1,
+.cc-terminal-md .markdown-body h2,
+.cc-terminal-md .markdown-body h3,
+.cc-terminal-md .markdown-body h4,
+.cc-terminal-md .markdown-body h5,
+.cc-terminal-md .markdown-body h6 {
+  font-size: inherit;
+  font-weight: 700;
+  margin: 0.5em 0 0.25em;
+  color: var(--accent, #569cd6);
+  border: none;
+  padding: 0;
+}
+
+/* Code blocks blend with text */
+.cc-terminal-md .markdown-body pre {
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 8px;
+  margin: 4px 0;
+  overflow-x: auto;
+}
+
+.cc-terminal-md .markdown-body code {
+  font-family: inherit;
+  font-size: inherit;
+}
+
+.cc-terminal-md .markdown-body p {
+  margin: 0.25em 0;
+}
+
+.cc-terminal-md .markdown-body ul,
+.cc-terminal-md .markdown-body ol {
+  margin: 0.25em 0;
+  padding-left: 1.5em;
+}
+
+/* Tool use blocks */
+.cc-msg-tool {
+  border-left: 2px solid var(--accent, #569cd6);
+  padding-left: 8px;
+  margin: 4px 0;
+}
+
+.cc-tool-header {
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  opacity: 0.85;
+}
+.cc-tool-header:hover {
+  opacity: 1;
+}
+
+.cc-tool-chevron {
+  font-size: 10px;
+  width: 12px;
+  display: inline-block;
+}
+
+.cc-tool-name {
+  color: var(--accent, #569cd6);
+  font-weight: 600;
+}
+
+.cc-tool-id {
+  opacity: 0.4;
+  font-size: 11px;
+}
+
+.cc-tool-input {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 6px 8px;
+  margin: 4px 0 4px 18px;
+  font-size: 12px;
+  overflow-x: auto;
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+/* Tool result */
+.cc-msg-tool-result {
+  padding-left: 10px;
+  border-left: 2px solid var(--success, #4ec9b0);
+  opacity: 0.8;
+}
+.cc-msg-tool-result.cc-error {
+  border-left-color: var(--error, #f44747);
+  color: var(--error, #f44747);
+}
+.cc-msg-tool-result pre {
+  margin: 0;
+  max-height: 200px;
+  overflow: auto;
+}
+
+/* Permission request */
+.cc-msg-permission {
+  border: 1px solid var(--warning, #cca700);
+  border-radius: 4px;
+  padding: 8px;
+  margin: 6px 0;
+  background: rgba(204, 167, 0, 0.05);
+}
+
+.cc-permission-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.cc-permission-icon {
+  font-size: 16px;
+  color: var(--warning, #cca700);
+}
+
+.cc-permission-tool {
+  font-weight: 600;
+  color: var(--warning, #cca700);
+}
+
+.cc-permission-actions {
+  display: flex;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.cc-permission-resolved {
+  margin-left: auto;
+  opacity: 0.5;
+  font-size: 11px;
+}
+
+/* Result summary */
+.cc-msg-result {
+  color: var(--text-secondary, #858585);
+  font-size: 12px;
+  padding: 4px 0;
+  border-top: 1px solid var(--border);
+  margin-top: 8px;
+}
+
+/* Status */
+.cc-msg-status {
+  color: var(--accent, #569cd6);
+  font-size: 12px;
+  opacity: 0.8;
+}
+
+/* Error */
+.cc-msg-error {
+  color: var(--error, #f44747);
+}
+
+/* Thinking indicator */
+.cc-thinking {
+  color: var(--accent, #569cd6);
+  opacity: 0.7;
+  animation: cc-pulse 1.5s infinite;
+}
+
+@keyframes cc-pulse {
+  0%, 100% { opacity: 0.7; }
+  50% { opacity: 0.3; }
+}
+
+/* Input area */
+.cc-input-area {
+  display: flex;
+  gap: 8px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--border);
+  background: var(--bg-panel, #1e1e1e);
+  flex-shrink: 0;
+  align-items: flex-end;
+}
+
+.cc-input-area textarea {
+  flex: 1;
+  background: var(--bg, #1e1e1e);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 6px 8px;
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.4;
+  resize: none;
+  min-height: 28px;
+  max-height: 120px;
+  outline: none;
+}
+
+.cc-input-area textarea:focus {
+  border-color: var(--accent, #569cd6);
+}
+
+.cc-input-area textarea:disabled {
+  opacity: 0.5;
+}
+
+.cc-input-buttons {
+  display: flex;
+  gap: 4px;
+}
+
+/* Buttons */
+.cc-btn {
+  padding: 4px 12px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-panel, #1e1e1e);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.cc-btn:hover:not(:disabled) {
+  background: var(--bg-hover, #2a2d2e);
+}
+
+.cc-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.cc-btn-send {
+  border-color: var(--accent, #569cd6);
+  color: var(--accent, #569cd6);
+}
+
+.cc-btn-stop {
+  border-color: var(--error, #f44747);
+  color: var(--error, #f44747);
+}
+
+.cc-btn-allow {
+  border-color: var(--success, #4ec9b0);
+  color: var(--success, #4ec9b0);
+}
+
+.cc-btn-deny {
+  border-color: var(--error, #f44747);
+  color: var(--error, #f44747);
+}

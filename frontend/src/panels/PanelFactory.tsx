@@ -4,12 +4,14 @@ import {
   PANEL_AGENT_CHAT,
   PANEL_TERMINAL,
   PANEL_CODE_EDITOR,
+  PANEL_CLAUDE_CODE,
 } from "../lib/layout";
 import type { WorkspaceRpc } from "../lib/workspace-rpc";
 import AgentPanel from "./AgentPanel";
 
 const TerminalPanel = React.lazy(() => import("./TerminalPanel"));
 const CodeEditorPanel = React.lazy(() => import("./CodeEditorPanel"));
+const ClaudeCodePanel = React.lazy(() => import("./ClaudeCodePanel"));
 
 export interface PanelContext {
   sessions: { id: string; title: string; type: string; kind: string; status: string; config?: Record<string, unknown> | null }[];
@@ -66,6 +68,16 @@ export function panelFactory(node: TabNode, ctx: PanelContext) {
             language={editorConfig?.language}
             rpc={ctx.rpc}
           />
+        </Suspense>
+      );
+    }
+
+    case PANEL_CLAUDE_CODE: {
+      const sessionId = node.getConfig()?.sessionId as string | undefined;
+      if (!sessionId) return <div className="empty-state"><p>No session.</p></div>;
+      return (
+        <Suspense fallback={<Loading />}>
+          <ClaudeCodePanel sessionId={sessionId} rpc={ctx.rpc} />
         </Suspense>
       );
     }

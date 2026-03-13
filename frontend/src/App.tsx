@@ -17,6 +17,7 @@ import {
   PANEL_AGENT_CHAT,
   PANEL_TERMINAL,
   PANEL_CODE_EDITOR,
+  PANEL_CLAUDE_CODE,
 } from "./lib/layout";
 import { panelFactory } from "./panels/PanelFactory";
 import SessionListPanel from "./panels/SessionListPanel";
@@ -398,6 +399,10 @@ export default function App() {
             workspaceId: session.workspace_id,
           };
           break;
+        case "claudecode":
+          component = PANEL_CLAUDE_CODE;
+          tabConfig = { sessionId: session.id };
+          break;
         default: // "agent"
           component = PANEL_AGENT_CHAT;
           tabConfig = { sessionId: session.id };
@@ -498,6 +503,7 @@ export default function App() {
         agent: PANEL_AGENT_CHAT,
         terminal: PANEL_TERMINAL,
         document: PANEL_CODE_EDITOR,
+        claudecode: PANEL_CLAUDE_CODE,
       };
       const targetComponent = componentMap[session.kind] || PANEL_AGENT_CHAT;
 

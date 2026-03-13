@@ -36,6 +36,14 @@ export default function WelcomePage({ rpc, onCreateSession }: Props) {
           <span>Terminal</span>
           <span className="welcome-action-desc">— Open a command-line terminal</span>
         </button>
+        <button
+          className="welcome-action-link"
+          onClick={() => handleClick("mutbot.session.ClaudeCodeSession")}
+        >
+          {renderLucideIcon("terminal", 16, "currentColor")}
+          <span>Claude Code</span>
+          <span className="welcome-action-desc">— Claude Code CLI in your browser</span>
+        </button>
       </div>
     </div>
   );
