@@ -48,6 +48,7 @@ const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPa
   const [expired, setExpired] = useState(false);
   const [connected, setConnected] = useState(false);
   const [ctrlVPaste, setCtrlVPaste] = useState(true);
+  const [resizeLocked, setResizeLocked] = useState(false);
 
   // Ref so the effect's key handler can read current toggle state
   const ctrlVPasteRef = useRef(ctrlVPaste);
@@ -137,6 +138,10 @@ const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPa
     // Flag to suppress recursive sendResize when server-initiated pty_resize
     // triggers xterm's onResize event
     let serverResizing = false;
+    // Whether this client is the primary (controls PTY size)
+    let isPrimary = true;
+    // Whether fitAddon is paused (non-primary clients pause fit to keep PTY-synced size)
+    let fitPaused = false;
 
     function sendResize(r: number, c: number) {
       if (serverResizing) return;
@@ -200,6 +205,26 @@ const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPa
           serverResizing = true;
           termRef.current.resize(ptyCols, ptyRows);
           serverResizing = false;
+          // 非主客户端：暂停 fitAddon，保持 PTY 同步尺寸不被 fit 覆盖
+          if (!isPrimary && !fitPaused) {
+            fitPaused = true;
+          }
+        }
+        return;
+      }
+
+      if (msgType === "resize_owner") {
+        const ownerId = msg.client_id as string;
+        const locked = msg.locked as boolean;
+        const wasPrimary = isPrimary;
+        isPrimary = ownerId === rpc!.clientId;
+        setResizeLocked(locked && isPrimary);
+        // 成为主客户端 → 恢复 fitAddon，重新 fit 到容器尺寸
+        if (isPrimary && !wasPrimary && fitPaused) {
+          fitPaused = false;
+          if (fitRef.current) {
+            fitRef.current.fit();
+          }
         }
         return;
       }
@@ -349,8 +374,9 @@ const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPa
     container.addEventListener("paste", onPaste);
 
     // Resize handling — fit the terminal to container, then report to server.
-    // Server will broadcast pty_resize with the actual PTY size (min of all clients).
+    // Non-primary clients pause fit to keep PTY-synced size.
     const resizeObserver = new ResizeObserver(() => {
+      if (fitPaused) return;
       if (fitRef.current) {
         fitRef.current.fit();
       }
@@ -547,6 +573,27 @@ const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPa
       label: "Clear Terminal",
       onClick: () => {
         termRef.current?.clear();
+      },
+    },
+    { label: "", separator: true },
+    {
+      label: "Auto (follow input)",
+      checked: !resizeLocked,
+      onClick: () => {
+        const ch = chRef.current;
+        if (ch > 0 && rpc) {
+          rpc.sendToChannel(ch, { type: "claim_resize", lock: false });
+        }
+      },
+    },
+    {
+      label: "Follow Me",
+      checked: resizeLocked,
+      onClick: () => {
+        const ch = chRef.current;
+        if (ch > 0 && rpc) {
+          rpc.sendToChannel(ch, { type: "claim_resize", lock: true });
+        }
       },
     },
   ];

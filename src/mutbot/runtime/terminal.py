@@ -40,7 +40,7 @@ def _strip_replay_queries(data: bytes) -> bytes:
 class TerminalManager:
     """ptyhost WebSocket 客户端包装器。
 
-    维护 mutbot 侧的 multi-client attach/detach + min-size 协商。
+    维护 mutbot 侧的 multi-client attach/detach + 主客户端优先 resize 策略。
     PTY 操作委托给 ptyhost 守护进程。
     """
 
@@ -52,6 +52,9 @@ class TerminalManager:
         self._client_sizes: dict[str, dict[str, tuple[int, int]]] = {}
         # 已知的终端 ID 集合
         self._known_terms: set[str] = set()
+        # 主客户端控制权（resize 跟随主客户端）
+        self._primary_client: dict[str, str] = {}     # {term_id: client_id}
+        self._primary_locked: dict[str, bool] = {}    # {term_id: locked}
 
     async def connect(self, host: str, port: int) -> None:
         """连接 ptyhost 守护进程。"""
@@ -99,6 +102,8 @@ class TerminalManager:
         self._known_terms.discard(term_id)
         self._connections.pop(term_id, None)
         self._client_sizes.pop(term_id, None)
+        self._primary_client.pop(term_id, None)
+        self._primary_locked.pop(term_id, None)
         if self._client:
             self._client.kill_nowait(term_id)
 
@@ -112,25 +117,53 @@ class TerminalManager:
         client_id: str,
         on_output: OutputCallback,
         on_exit: ExitCallback,
-    ) -> None:
-        """注册前端 channel 的 output/exit 回调。"""
+    ) -> bool:
+        """注册前端 channel 的 output/exit 回调。
+
+        返回 True 如果该客户端成为了主客户端（首个连接）。
+        """
         conns = self._connections.setdefault(term_id, {})
         conns[client_id] = (on_output, on_exit)
-        logger.info("Terminal %s: attached client %s (total=%d)", term_id, client_id, len(conns))
+        became_primary = False
+        if term_id not in self._primary_client:
+            self._primary_client[term_id] = client_id
+            self._primary_locked[term_id] = False
+            became_primary = True
+        logger.info("Terminal %s: attached client %s (total=%d, primary=%s)",
+                     term_id, client_id, len(conns), became_primary)
+        return became_primary
 
     def detach(self, term_id: str, client_id: str) -> tuple[int, int] | None:
-        """取消注册回调，返回重算后的 (rows, cols) 或 None。"""
+        """取消注册回调。
+
+        如果断开的是主客户端，选新主并用新主尺寸 resize，返回新尺寸。
+        如果断开的不是主客户端，仅清理，返回 None。
+        """
         result: tuple[int, int] | None = None
         sizes = self._client_sizes.get(term_id)
         if sizes:
             sizes.pop(client_id, None)
-            if sizes:
-                eff_rows = min(r for r, _ in sizes.values())
-                eff_cols = min(c for _, c in sizes.values())
-                result = (eff_rows, eff_cols)
-                # Fire-and-forget resize 到 ptyhost
-                if self._client:
-                    self._client.resize_nowait(term_id, eff_rows, eff_cols)
+
+        was_primary = self._primary_client.get(term_id) == client_id
+        if was_primary:
+            # 主客户端断开 → 解锁 + 选新主
+            self._primary_locked.pop(term_id, None)
+            self._primary_client.pop(term_id, None)
+            # 从存活连接中选新主
+            conns = self._connections.get(term_id)
+            if conns and len(conns) > 1:
+                # 排除即将移除的 client_id
+                remaining = [cid for cid in conns if cid != client_id]
+                if remaining:
+                    new_primary = remaining[0]
+                    self._primary_client[term_id] = new_primary
+                    self._primary_locked[term_id] = False
+                    # 用新主客户端的尺寸 resize
+                    if sizes and new_primary in sizes:
+                        eff_rows, eff_cols = sizes[new_primary]
+                        result = (eff_rows, eff_cols)
+                        if self._client:
+                            self._client.resize_nowait(term_id, eff_rows, eff_cols)
 
         conns = self._connections.get(term_id)
         if conns:
@@ -139,7 +172,8 @@ class TerminalManager:
                 del self._connections[term_id]
 
         remaining = len(self._connections.get(term_id, {}))
-        logger.info("Terminal %s: detached client %s (remaining=%d)", term_id, client_id, remaining)
+        logger.info("Terminal %s: detached client %s (remaining=%d, was_primary=%s)",
+                     term_id, client_id, remaining, was_primary)
         return result
 
     # ------------------------------------------------------------------
@@ -151,18 +185,37 @@ class TerminalManager:
         if self._client and term_id in self._known_terms:
             self._client.write(term_id, data)
 
+    # 最小尺寸保护阈值（低于此值的 resize 请求直接忽略）
+    MIN_ROWS = 2
+    MIN_COLS = 10
+
     async def resize(
         self, term_id: str, rows: int, cols: int, client_id: str | None = None,
     ) -> tuple[int, int] | None:
-        """调整终端大小，返回实际 (rows, cols)。"""
+        """调整终端大小，返回实际 (rows, cols)。
+
+        只有主客户端的 resize 生效；非主客户端的 resize 只记录 _client_sizes。
+        低于最小尺寸阈值的请求直接忽略。
+        """
         if not self._client or term_id not in self._known_terms:
+            return None
+
+        # 最小尺寸保护
+        if rows < self.MIN_ROWS or cols < self.MIN_COLS:
+            logger.debug(
+                "resize ignored (below min): term=%s client=%s rows=%d cols=%d",
+                term_id[:8], client_id[:8] if client_id else "", rows, cols,
+            )
             return None
 
         if client_id is not None:
             sizes = self._client_sizes.setdefault(term_id, {})
             sizes[client_id] = (rows, cols)
-            eff_rows = min(r for r, _ in sizes.values())
-            eff_cols = min(c for _, c in sizes.values())
+            # 只有主客户端的 resize 生效
+            primary = self._primary_client.get(term_id)
+            if primary and client_id != primary:
+                return None
+            eff_rows, eff_cols = rows, cols
         else:
             eff_rows, eff_cols = rows, cols
 
@@ -186,6 +239,38 @@ class TerminalManager:
 
     def has(self, term_id: str) -> bool:
         return term_id in self._known_terms
+
+    def get_primary_info(self, term_id: str) -> tuple[str, bool]:
+        """返回 (primary_client_id, locked)。"""
+        return (
+            self._primary_client.get(term_id, ""),
+            self._primary_locked.get(term_id, False),
+        )
+
+    def try_set_primary(
+        self, term_id: str, client_id: str, *, lock: bool | None = None,
+    ) -> bool:
+        """尝试设为主客户端。locked 时自动模式下不切换。
+
+        lock=None 表示自动模式（输入触发），仅在未锁定时切换。
+        lock=True/False 表示手动操作（claim_resize）。
+        返回 True 表示主客户端发生了变化。
+        """
+        current = self._primary_client.get(term_id)
+        if lock is None:
+            # 自动模式：已锁定时不切换
+            if self._primary_locked.get(term_id, False):
+                return False
+            if current == client_id:
+                return False
+            self._primary_client[term_id] = client_id
+            return True
+        else:
+            # 手动操作
+            self._primary_client[term_id] = client_id
+            self._primary_locked[term_id] = lock
+            changed = current != client_id or self._primary_locked.get(term_id) != lock
+            return changed
 
     def connection_count(self, term_id: str) -> int:
         return len(self._connections.get(term_id, {}))
@@ -257,6 +342,8 @@ class TerminalManager:
         self._connections.clear()
         self._client_sizes.clear()
         self._known_terms.clear()
+        self._primary_client.clear()
+        self._primary_locked.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -357,6 +444,19 @@ async def _terminal_on_connect(
             channel.send_json(event)
 
         tm.attach(term_id, client_id, on_output, on_exit)
+        # 向新客户端发送当前 resize_owner 状态 + PTY 尺寸
+        primary, locked = tm.get_primary_info(term_id)
+        if primary:
+            channel.send_json({
+                "type": "resize_owner",
+                "client_id": primary,
+                "locked": locked,
+            })
+            # 发送当前 PTY 尺寸，让新客户端同步 xterm
+            sizes = tm._client_sizes.get(term_id, {})
+            if primary in sizes:
+                r, c = sizes[primary]
+                channel.send_json({"type": "pty_resize", "rows": r, "cols": c})
     else:
         channel.send_json({"type": "ready", "alive": False})
 
@@ -377,33 +477,91 @@ def _terminal_on_disconnect(
         new_size = tm.detach(term_id, client_id)
         if new_size is not None:
             self.broadcast_json({"type": "pty_resize", "rows": new_size[0], "cols": new_size[1]})
+        # 广播新的 resize_owner 状态
+        primary, locked = tm.get_primary_info(term_id)
+        self.broadcast_json({
+            "type": "resize_owner",
+            "client_id": primary,
+            "locked": locked,
+        })
 
 
 @impl(TerminalSession.on_message)
 async def _terminal_on_message(
     self: TerminalSession, channel: Channel, raw: dict, ctx: ChannelContext,
 ) -> None:
-    """处理 resize。"""
-    if raw.get("type") == "resize":
-        tm = ctx.terminal_manager
-        term_id = self.config.get("terminal_id", "")
+    """处理 resize / claim_resize。"""
+    msg_type = raw.get("type")
+    tm = ctx.terminal_manager
+    term_id = self.config.get("terminal_id", "")
+
+    if msg_type == "resize":
         if tm and term_id and tm.has(term_id):
             from mutbot.web.transport import ChannelTransport
             ext = ChannelTransport.get(channel)
             client_id = ext._client.client_id if ext and ext._client else ""
+            req_rows, req_cols = raw.get("rows", 24), raw.get("cols", 80)
             actual = await tm.resize(
-                term_id, raw.get("rows", 24), raw.get("cols", 80), client_id=client_id,
+                term_id, req_rows, req_cols, client_id=client_id,
             )
             if actual is not None:
                 self.broadcast_json({"type": "pty_resize", "rows": actual[0], "cols": actual[1]})
+
+    elif msg_type == "claim_resize":
+        if tm and term_id and tm.has(term_id):
+            from mutbot.web.transport import ChannelTransport
+            ext = ChannelTransport.get(channel)
+            client_id = ext._client.client_id if ext and ext._client else ""
+            lock = bool(raw.get("lock", False))
+            if client_id:
+                if lock:
+                    # 锁定到此客户端
+                    tm.try_set_primary(term_id, client_id, lock=True)
+                else:
+                    # 解锁回自动模式
+                    tm.try_set_primary(term_id, client_id, lock=False)
+                # 广播新状态
+                primary, locked = tm.get_primary_info(term_id)
+                self.broadcast_json({
+                    "type": "resize_owner",
+                    "client_id": primary,
+                    "locked": locked,
+                })
+                # 用该客户端尺寸 resize
+                sizes = tm._client_sizes.get(term_id, {})
+                if client_id in sizes:
+                    new_rows, new_cols = sizes[client_id]
+                    actual = await tm.resize(term_id, new_rows, new_cols)
+                    if actual is not None:
+                        self.broadcast_json({"type": "pty_resize", "rows": actual[0], "cols": actual[1]})
 
 
 @impl(TerminalSession.on_data)
 async def _terminal_on_data(
     self: TerminalSession, channel: Channel, payload: bytes, ctx: ChannelContext,
 ) -> None:
-    """键盘输入转发到 PTY。"""
+    """键盘输入转发到 PTY + 自动模式下切换主客户端。"""
     term_id = self.config.get("terminal_id", "")
     tm = ctx.terminal_manager
     if tm and term_id and tm.has(term_id) and len(payload) > 0:
+        # 输入触发主客户端自动切换
+        from mutbot.web.transport import ChannelTransport
+        ext = ChannelTransport.get(channel)
+        client_id = ext._client.client_id if ext and ext._client else ""
+        if client_id and tm.try_set_primary(term_id, client_id):
+            # 主客户端变更 → 广播 resize_owner
+            primary, locked = tm.get_primary_info(term_id)
+            self.broadcast_json({
+                "type": "resize_owner",
+                "client_id": primary,
+                "locked": locked,
+            })
+            # 用新主客户端的尺寸 resize PTY
+            sizes = tm._client_sizes.get(term_id, {})
+            if client_id in sizes:
+                new_rows, new_cols = sizes[client_id]
+                actual = await tm.resize(term_id, new_rows, new_cols)
+                if actual is not None:
+                    self.broadcast_json({"type": "pty_resize", "rows": actual[0], "cols": actual[1]})
+
         tm.write(term_id, payload)

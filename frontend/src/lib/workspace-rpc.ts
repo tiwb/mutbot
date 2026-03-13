@@ -107,7 +107,9 @@ export class WorkspaceRpc {
   private nextId = 1;
 
   // 可靠传输
-  private clientId = uuid();
+  private _clientId = uuid();
+  /** 本客户端的唯一 ID（用于 resize_owner 比较等）。 */
+  get clientId(): string { return this._clientId; }
   private recvCount = 0;
   private recvSinceLastAck = 0;
   private sendBuffer: BufferEntry[] = [];
@@ -147,7 +149,7 @@ export class WorkspaceRpc {
   private buildUrl(): string {
     let url = this.baseUrl;
     const sep = url.includes("?") ? "&" : "?";
-    url += `${sep}client_id=${encodeURIComponent(this.clientId)}`;
+    url += `${sep}client_id=${encodeURIComponent(this._clientId)}`;
     if (this.totalSent > 0 || this.recvCount > 0) {
       url += `&last_seq=${this.recvCount}`;
     }

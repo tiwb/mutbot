@@ -2093,6 +2093,7 @@ body,
   background: #1e1e1e;
   padding: 4px;
   position: relative;
+  overflow: hidden;
 }
 
 .terminal-panel .xterm {
