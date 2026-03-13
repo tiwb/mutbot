@@ -11,7 +11,18 @@ from __future__ import annotations
 import logging
 import os
 import socket
+import sys
+
 logger = logging.getLogger("mutbot.ptyhost")
+
+_BANNER = """\
+================================================
+  MutBot PTY Host
+  Listening on 127.0.0.1:{port}
+
+  This process manages all terminal sessions.
+  Closing this window will disconnect all terminals.
+================================================"""
 
 
 def _port_file_path() -> str:
@@ -42,6 +53,10 @@ def main() -> None:
         f.write(str(port))
 
     logger.info("ptyhost starting on 127.0.0.1:%d", port)
+
+    # Windows: 打印 banner 到控制台窗口
+    if sys.platform == "win32":
+        print(_BANNER.format(port=port), flush=True)
 
     server = _ASGIServer(app)
 

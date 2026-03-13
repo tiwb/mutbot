@@ -59,8 +59,17 @@ class TerminalManager:
         client = PtyHostClient(host, port)
         client.on_output = self._on_pty_output
         client.on_exit = self._on_pty_exit
+        client.on_disconnect = self._on_ptyhost_disconnect
         await client.connect()
         self._client = client
+
+    async def _reconnect(self) -> None:
+        """ptyhost 断开后自动重连（ensure_ptyhost 会 spawn 新实例）。"""
+        from mutbot.ptyhost._bootstrap import ensure_ptyhost
+        logger.info("Reconnecting to ptyhost...")
+        port = await ensure_ptyhost()
+        await self.connect("127.0.0.1", port)
+        logger.info("Reconnected to ptyhost on port %d", port)
 
     async def close(self) -> None:
         """断开 ptyhost 连接（不 kill 任何终端）。"""
@@ -78,6 +87,8 @@ class TerminalManager:
 
     async def create(self, rows: int, cols: int, cwd: str | None = None) -> str:
         """创建终端，返回 term_id (UUID hex)。"""
+        if not self._client:
+            await self._reconnect()
         assert self._client, "not connected to ptyhost"
         term_id = await self._client.create(rows, cols, cwd)
         self._known_terms.add(term_id)
@@ -230,6 +241,23 @@ class TerminalManager:
             except Exception:
                 pass
 
+    def _on_ptyhost_disconnect(self) -> None:
+        """ptyhost 连接断开 → 通知所有终端的前端 channel 退出。"""
+        logger.warning("ptyhost disconnected, notifying all terminals")
+        for term_id in list(self._known_terms):
+            conns = self._connections.get(term_id)
+            if conns:
+                for _, (_, on_exit) in list(conns.items()):
+                    try:
+                        on_exit(None)
+                    except Exception:
+                        pass
+        # 清理内部状态
+        self._client = None
+        self._connections.clear()
+        self._client_sizes.clear()
+        self._known_terms.clear()
+
 
 # ---------------------------------------------------------------------------
 # TerminalSession @impl — 生命周期
@@ -266,8 +294,8 @@ def _terminal_on_stop(self: TerminalSession, sm: SessionManager) -> None:
 
 @impl(TerminalSession.on_restart_cleanup)
 def _terminal_on_restart_cleanup(self: TerminalSession) -> None:
-    """TerminalSession：保持原状态，等 lifespan 连接 ptyhost 后确认。"""
-    # 不再将 running → stopped。由 lifespan 阶段连接 ptyhost 后确认实际状态。
+    """TerminalSession：保持原状态，等首次 on_connect 时连接 ptyhost 确认。"""
+    # 不改状态。首次客户端 on_connect 时懒连接 ptyhost 并 sync_from_ptyhost 确认实际状态。
     pass
 
 
@@ -285,6 +313,14 @@ async def _terminal_on_connect(
     tm = ctx.terminal_manager
     if not tm or not term_id:
         return
+
+    # 懒连接：如果 ptyhost 未连接，尝试连接并同步
+    if not tm.connected:
+        try:
+            await tm._reconnect()
+            await tm.sync_from_ptyhost()
+        except Exception:
+            logger.warning("Failed to connect to ptyhost on demand", exc_info=True)
 
     alive = tm.has(term_id)
 

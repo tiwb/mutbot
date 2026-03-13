@@ -134,15 +134,6 @@ async def _on_startup() -> None:
     from mutbot.web.transport import ChannelManager as _ChannelManager
     channel_manager = _ChannelManager()
 
-    # --- ptyhost: 发现 / 启动 / 连接 ---
-    from mutbot.ptyhost._bootstrap import ensure_ptyhost
-    try:
-        ptyhost_port = await ensure_ptyhost()
-        await terminal_manager.connect("127.0.0.1", ptyhost_port)
-        logger.info("Connected to ptyhost on port %d", ptyhost_port)
-    except Exception:
-        logger.exception("Failed to connect to ptyhost — terminal sessions will not work")
-
     # --- Load persisted state ---
     workspace_manager.load_from_disk()
 
@@ -162,30 +153,6 @@ async def _on_startup() -> None:
             _cleared += 1
     if _cleared:
         logger.info("Cleared %d stale 'running' session(s) on restart", _cleared)
-
-    # 终端 Session: 与 ptyhost 同步，确认哪些 PTY 还活着
-    if terminal_manager.connected:
-        from mutbot.session import TerminalSession
-        alive_terms = await terminal_manager.sync_from_ptyhost()
-        _synced = 0
-        for session in session_manager._sessions.values():
-            if not isinstance(session, TerminalSession):
-                continue
-            term_id = session.config.get("terminal_id", "")
-            if not term_id:
-                continue
-            if term_id in alive_terms:
-                if session.status != "running":
-                    session.status = "running"
-                    session_manager._persist(session)
-                    _synced += 1
-            else:
-                if session.status == "running":
-                    session.status = "stopped"
-                    session_manager._persist(session)
-                    _synced += 1
-        if _synced:
-            logger.info("Synced %d terminal session(s) with ptyhost", _synced)
 
     log_dir = Path.home() / ".mutbot" / "logs"
     logger.info("Logging initialized (log_dir=%s)", log_dir)

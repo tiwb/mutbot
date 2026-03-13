@@ -1,6 +1,6 @@
 """ptyhost 发现与启动工具。
 
-mutbot 启动时调用，负责发现已运行的 ptyhost 或 spawn 新实例。
+负责发现已运行的 ptyhost 或 spawn 新实例。按需调用（懒启动）。
 """
 
 from __future__ import annotations
@@ -44,13 +44,12 @@ def _spawn_ptyhost() -> None:
     python = sys.executable
     if sys.platform == "win32":
         CREATE_NEW_PROCESS_GROUP = 0x00000200
-        DETACHED_PROCESS = 0x00000008
+        CREATE_NEW_CONSOLE = 0x00000010
+        # Windows: 创建新控制台窗口，让 banner 和日志可见
         subprocess.Popen(
             [python, "-m", "mutbot.ptyhost"],
-            creationflags=CREATE_NEW_PROCESS_GROUP | DETACHED_PROCESS,
+            creationflags=CREATE_NEW_PROCESS_GROUP | CREATE_NEW_CONSOLE,
             close_fds=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
         )
     else:
         subprocess.Popen(
@@ -82,9 +81,9 @@ async def ensure_ptyhost() -> int:
     logger.info("Spawning ptyhost daemon...")
     _spawn_ptyhost()
 
-    # 等待就绪（轮询，超时 3s）
-    for _ in range(30):
-        await asyncio.sleep(0.1)
+    # 等待就绪（轮询，超时 10s）
+    for _ in range(50):
+        await asyncio.sleep(0.2)
         port = _read_port_file()
         if port is not None:
             if await _try_connect(host, port):

@@ -20,6 +20,7 @@ logger = logging.getLogger("mutbot.ptyhost.client")
 # 回调类型
 OutputCallback = Callable[[str, bytes], None]   # (term_id, data)
 ExitCallback = Callable[[str, int | None], None]  # (term_id, exit_code)
+DisconnectCallback = Callable[[], None]  # ptyhost 连接断开
 
 
 class PtyHostClient:
@@ -57,6 +58,7 @@ class PtyHostClient:
         # 回调
         self.on_output: OutputCallback | None = None
         self.on_exit: ExitCallback | None = None
+        self.on_disconnect: DisconnectCallback | None = None
 
     @property
     def connected(self) -> bool:
@@ -136,11 +138,22 @@ class PtyHostClient:
                 for event in self._ws.events():  # type: ignore[union-attr]
                     self._process_event(event)
         except asyncio.CancelledError:
-            pass
+            return  # 正常 cancel（close() 调用），不触发 on_disconnect
         except Exception:
-            logger.debug("ptyhost receive loop ended", exc_info=True)
+            logger.warning("ptyhost receive loop ended unexpectedly", exc_info=True)
         finally:
             self._connected = False
+            # 取消所有 pending futures
+            for future in self._pending.values():
+                if not future.done():
+                    future.set_exception(ConnectionError("ptyhost disconnected"))
+            self._pending.clear()
+        # 通知上层 ptyhost 断开（仅非 cancel 路径）
+        if self.on_disconnect:
+            try:
+                self.on_disconnect()
+            except Exception:
+                logger.warning("on_disconnect callback error", exc_info=True)
 
     def _process_event(self, event: Any) -> None:
         if isinstance(event, ws_events.TextMessage):
