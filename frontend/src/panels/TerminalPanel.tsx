@@ -399,6 +399,14 @@ const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPa
     const FRICTION = 0.92; // deceleration factor per frame
     const MIN_VELOCITY = 0.5; // px/frame below which we stop
 
+    // Long-press to trigger context menu on mobile (500ms, 10px threshold)
+    let longPressTimer = 0;
+    let longPressFired = false;
+    let longPressStartX = 0;
+    let longPressStartY = 0;
+    const LONG_PRESS_MS = 500;
+    const LONG_PRESS_MOVE_THRESHOLD = 10;
+
     function getLineHeight() {
       const rowsEl = term.element?.querySelector(".xterm-rows");
       return rowsEl
@@ -434,6 +442,13 @@ const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPa
       inertiaRaf = requestAnimationFrame(tick);
     }
 
+    function cancelLongPress() {
+      if (longPressTimer) {
+        clearTimeout(longPressTimer);
+        longPressTimer = 0;
+      }
+    }
+
     const onTouchStart = (e: TouchEvent) => {
       stopInertia();
       touchStartY = e.touches[0]!.clientY;
@@ -441,12 +456,35 @@ const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPa
       touchAccum = 0;
       velocity = 0;
       isTouchScrolling = false;
+
+      // Long-press detection
+      const touch = e.touches[0]!;
+      longPressStartX = touch.clientX;
+      longPressStartY = touch.clientY;
+      longPressFired = false;
+      cancelLongPress();
+      longPressTimer = window.setTimeout(() => {
+        longPressTimer = 0;
+        longPressFired = true;
+        navigator.vibrate?.(50);
+        setContextMenu({ position: { x: longPressStartX, y: longPressStartY } });
+      }, LONG_PRESS_MS);
     };
 
     const onTouchMove = (e: TouchEvent) => {
       const currentY = e.touches[0]!.clientY;
       const deltaY = touchStartY - currentY;
       touchStartY = currentY;
+
+      // Cancel long-press if finger moved beyond threshold
+      if (longPressTimer) {
+        const touch = e.touches[0]!;
+        const dx = touch.clientX - longPressStartX;
+        const dy = touch.clientY - longPressStartY;
+        if (Math.sqrt(dx * dx + dy * dy) > LONG_PRESS_MOVE_THRESHOLD) {
+          cancelLongPress();
+        }
+      }
 
       if (!isTouchScrolling && Math.abs(deltaY) < TOUCH_THRESHOLD) return;
       isTouchScrolling = true;
@@ -470,7 +508,16 @@ const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPa
       e.preventDefault();
     };
 
-    const onTouchEnd = () => {
+    const onTouchEnd = (e: TouchEvent) => {
+      cancelLongPress();
+      // Suppress click/tap after long-press triggered the context menu
+      if (longPressFired) {
+        e.preventDefault();
+        longPressFired = false;
+        isTouchScrolling = false;
+        touchAccum = 0;
+        return;
+      }
       if (isTouchScrolling && Math.abs(velocity) > MIN_VELOCITY) {
         startInertia();
       }
@@ -480,7 +527,7 @@ const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPa
 
     container.addEventListener("touchstart", onTouchStart, { passive: true });
     container.addEventListener("touchmove", onTouchMove, { passive: false });
-    container.addEventListener("touchend", onTouchEnd, { passive: true });
+    container.addEventListener("touchend", onTouchEnd, { passive: false });
 
     init();
 
@@ -491,6 +538,7 @@ const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPa
       resizeDisposable.dispose();
       resizeObserver.disconnect();
       stopInertia();
+      cancelLongPress();
       container.removeEventListener("paste", onPaste);
       container.removeEventListener("touchstart", onTouchStart);
       container.removeEventListener("touchmove", onTouchMove);

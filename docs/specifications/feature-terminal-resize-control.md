@@ -218,6 +218,10 @@ self._primary_locked: dict[str, bool] = {}         # {term_id: locked}
   - [ ] 右键菜单切换模式验证
   - 状态：🔄 待手动验证
 
+## 已知问题
+
+- **移动端无法触发右键菜单**：手机上长按终端区域未能弹出右键菜单（claim_resize 不可用），需要支持 touch 长按触发 ContextMenu。
+
 ## 测试验证
 
 （实施阶段填写）
