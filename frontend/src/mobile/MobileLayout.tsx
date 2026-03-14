@@ -359,6 +359,7 @@ export default function MobileLayout({
           >
             <Suspense fallback={<div className="panel-loading">Loading...</div>}>
               <TerminalPanel
+                key={activeSession.id}
                 ref={termPanelRef}
                 sessionId={activeSession.id}
                 terminalId={activeSession.config?.terminal_id as string | undefined}
