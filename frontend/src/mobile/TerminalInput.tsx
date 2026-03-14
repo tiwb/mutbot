@@ -117,19 +117,21 @@ export default function TerminalInput({ onSend, shortcutsOpen, onToggleShortcuts
 
   return (
     <div className="terminal-input-bar">
-      <textarea
-        ref={textareaRef}
-        className="terminal-input-field terminal-input-textarea"
-        value={value}
-        onChange={handleChange}
-        onKeyDown={handleKeyDown}
-        placeholder="Enter command..."
-        autoComplete="off"
-        autoCapitalize="off"
-        autoCorrect="off"
-        spellCheck={false}
-        rows={1}
-      />
+      <div className="terminal-input-textarea-wrapper">
+        <textarea
+          ref={textareaRef}
+          className="terminal-input-field terminal-input-textarea"
+          value={value}
+          onChange={handleChange}
+          onKeyDown={handleKeyDown}
+          placeholder="Enter command..."
+          autoComplete="off"
+          autoCapitalize="off"
+          autoCorrect="off"
+          spellCheck={false}
+          rows={1}
+        />
+      </div>
       <div className="terminal-input-send-wrapper">
         <button
           className="terminal-input-enter"

@@ -48,7 +48,8 @@ const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPa
   const [expired, setExpired] = useState(false);
   const [connected, setConnected] = useState(false);
   const [ctrlVPaste, setCtrlVPaste] = useState(true);
-  const [resizeLocked, setResizeLocked] = useState(false);
+  // follow_me 客户端 ID（null = Auto 模式）
+  const [followMe, setFollowMe] = useState<string | null>(null);
 
   // Ref so the effect's key handler can read current toggle state
   const ctrlVPasteRef = useRef(ctrlVPaste);
@@ -138,10 +139,6 @@ const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPa
     // Flag to suppress recursive sendResize when server-initiated pty_resize
     // triggers xterm's onResize event
     let serverResizing = false;
-    // Whether this client is the primary (controls PTY size)
-    let isPrimary = true;
-    // Whether fitAddon is paused (non-primary clients pause fit to keep PTY-synced size)
-    let fitPaused = false;
 
     function sendResize(r: number, c: number) {
       if (serverResizing) return;
@@ -199,33 +196,19 @@ const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPa
       }
 
       if (msgType === "pty_resize") {
-        const ptyRows = msg.rows as number;
-        const ptyCols = msg.cols as number;
-        if (termRef.current && ptyRows > 0 && ptyCols > 0) {
+        const r = msg.rows as number;
+        const c = msg.cols as number;
+        if (termRef.current && r > 0 && c > 0) {
           serverResizing = true;
-          termRef.current.resize(ptyCols, ptyRows);
+          termRef.current.resize(c, r);
           serverResizing = false;
-          // 非主客户端：暂停 fitAddon，保持 PTY 同步尺寸不被 fit 覆盖
-          if (!isPrimary && !fitPaused) {
-            fitPaused = true;
-          }
         }
         return;
       }
 
       if (msgType === "resize_owner") {
-        const ownerId = msg.client_id as string;
-        const locked = msg.locked as boolean;
-        const wasPrimary = isPrimary;
-        isPrimary = ownerId === rpc!.clientId;
-        setResizeLocked(locked && isPrimary);
-        // 成为主客户端 → 恢复 fitAddon，重新 fit 到容器尺寸
-        if (isPrimary && !wasPrimary && fitPaused) {
-          fitPaused = false;
-          if (fitRef.current) {
-            fitRef.current.fit();
-          }
-        }
+        const fm = msg.follow_me as string | null;
+        setFollowMe(fm);
         return;
       }
     }
@@ -374,10 +357,11 @@ const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPa
     container.addEventListener("paste", onPaste);
 
     // Resize handling — fit the terminal to container, then report to server.
-    // Non-primary clients pause fit to keep PTY-synced size.
+    // If PTY size differs from container fit size, skip fit (PTY controlled by another client).
     const resizeObserver = new ResizeObserver(() => {
-      if (fitPaused) return;
       if (fitRef.current) {
+        // 检查 fitAddon 的 proposeDimensions：如果与当前 PTY 尺寸一致，正常 fit；
+        // 如果 PTY 尺寸被其他客户端控制（不一致），仍然 fit 以发送 resize 上报
         fitRef.current.fit();
       }
     });
@@ -625,22 +609,22 @@ const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPa
     },
     { label: "", separator: true },
     {
-      label: "Auto (follow input)",
-      checked: !resizeLocked,
+      label: "Auto Resize",
+      checked: followMe === null,
       onClick: () => {
         const ch = chRef.current;
         if (ch > 0 && rpc) {
-          rpc.sendToChannel(ch, { type: "claim_resize", lock: false });
+          rpc.sendToChannel(ch, { type: "set_resize_mode", mode: "auto" });
         }
       },
     },
     {
-      label: "Follow Me",
-      checked: resizeLocked,
+      label: "Pin Resize to Me",
+      checked: followMe === rpc?.clientId,
       onClick: () => {
         const ch = chRef.current;
         if (ch > 0 && rpc) {
-          rpc.sendToChannel(ch, { type: "claim_resize", lock: true });
+          rpc.sendToChannel(ch, { type: "set_resize_mode", mode: "follow_me" });
         }
       },
     },

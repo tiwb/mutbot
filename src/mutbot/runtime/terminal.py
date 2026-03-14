@@ -87,9 +87,10 @@ class TerminalManager:
         self._client_sizes: dict[str, dict[str, tuple[int, int]]] = {}
         # 已知的终端 ID 集合
         self._known_terms: set[str] = set()
-        # 主客户端控制权（resize 跟随主客户端）
-        self._primary_client: dict[str, str] = {}     # {term_id: client_id}
-        self._primary_locked: dict[str, bool] = {}    # {term_id: locked}
+        # 用户主动锁定的客户端（None = Auto 模式）
+        self._follow_me: dict[str, str | None] = {}        # {term_id: client_id | None}
+        # Auto 模式下，最后打字的客户端
+        self._last_input_client: dict[str, str | None] = {} # {term_id: client_id | None}
         # PTY 输出批处理缓冲
         self._output_buffers: dict[str, bytearray] = {}
         self._flush_handles: dict[str, asyncio.TimerHandle] = {}
@@ -150,8 +151,8 @@ class TerminalManager:
         self._known_terms.discard(term_id)
         self._connections.pop(term_id, None)
         self._client_sizes.pop(term_id, None)
-        self._primary_client.pop(term_id, None)
-        self._primary_locked.pop(term_id, None)
+        self._follow_me.pop(term_id, None)
+        self._last_input_client.pop(term_id, None)
         self._cancel_flush_timer(term_id)
         self._output_buffers.pop(term_id, None)
         # 清理 pyte 实例
@@ -171,53 +172,30 @@ class TerminalManager:
         client_id: str,
         on_output: OutputCallback,
         on_exit: ExitCallback,
-    ) -> bool:
-        """注册前端 channel 的 output/exit 回调。
-
-        返回 True 如果该客户端成为了主客户端（首个连接）。
-        """
+    ) -> None:
+        """注册前端 channel 的 output/exit 回调。不改变任何控制权状态。"""
         conns = self._connections.setdefault(term_id, {})
         conns[client_id] = (on_output, on_exit)
-        became_primary = False
-        if term_id not in self._primary_client:
-            self._primary_client[term_id] = client_id
-            self._primary_locked[term_id] = False
-            became_primary = True
-        logger.info("Terminal %s: attached client %s (total=%d, primary=%s)",
-                     term_id, client_id, len(conns), became_primary)
-        return became_primary
+        logger.info("Terminal %s: attached client %s (total=%d)",
+                     term_id, client_id, len(conns))
 
-    def detach(self, term_id: str, client_id: str) -> tuple[int, int] | None:
-        """取消注册回调。
+    def detach(self, term_id: str, client_id: str) -> None:
+        """取消注册回调 + 清理 follow_me / last_input_client。
 
-        如果断开的是主客户端，选新主并用新主尺寸 resize，返回新尺寸。
-        如果断开的不是主客户端，仅清理，返回 None。
+        断开的是 follow_me 客户端 → follow_me = None（恢复 Auto）。
+        断开的是 last_input_client → last_input_client = None。
+        不 resize PTY，保持当前尺寸。
         """
-        result: tuple[int, int] | None = None
         sizes = self._client_sizes.get(term_id)
         if sizes:
             sizes.pop(client_id, None)
 
-        was_primary = self._primary_client.get(term_id) == client_id
-        if was_primary:
-            # 主客户端断开 → 解锁 + 选新主
-            self._primary_locked.pop(term_id, None)
-            self._primary_client.pop(term_id, None)
-            # 从存活连接中选新主
-            conns = self._connections.get(term_id)
-            if conns and len(conns) > 1:
-                # 排除即将移除的 client_id
-                remaining = [cid for cid in conns if cid != client_id]
-                if remaining:
-                    new_primary = remaining[0]
-                    self._primary_client[term_id] = new_primary
-                    self._primary_locked[term_id] = False
-                    # 用新主客户端的尺寸 resize
-                    if sizes and new_primary in sizes:
-                        eff_rows, eff_cols = sizes[new_primary]
-                        result = (eff_rows, eff_cols)
-                        if self._client:
-                            self._client.resize_nowait(term_id, eff_rows, eff_cols)
+        # follow_me 客户端断开 → 恢复 Auto
+        if self._follow_me.get(term_id) == client_id:
+            self._follow_me[term_id] = None
+        # last_input_client 断开 → 清除
+        if self._last_input_client.get(term_id) == client_id:
+            self._last_input_client[term_id] = None
 
         conns = self._connections.get(term_id)
         if conns:
@@ -226,9 +204,8 @@ class TerminalManager:
                 del self._connections[term_id]
 
         remaining = len(self._connections.get(term_id, {}))
-        logger.info("Terminal %s: detached client %s (remaining=%d, was_primary=%s)",
-                     term_id, client_id, remaining, was_primary)
-        return result
+        logger.info("Terminal %s: detached client %s (remaining=%d)",
+                     term_id, client_id, remaining)
 
     # ------------------------------------------------------------------
     # I/O
@@ -248,8 +225,9 @@ class TerminalManager:
     ) -> tuple[int, int] | None:
         """调整终端大小，返回实际 (rows, cols)。
 
-        只有主客户端的 resize 生效；非主客户端的 resize 只记录 _client_sizes。
-        低于最小尺寸阈值的请求直接忽略。
+        resize 决策：controller 存在且 != client_id → 仅记录；
+        controller 为 None 或 == client_id → 执行 resize。
+        低于最小尺寸阈值的请求直接忽略，不记入 _client_sizes。
         """
         if not self._client or term_id not in self._known_terms:
             return None
@@ -265,15 +243,12 @@ class TerminalManager:
         if client_id is not None:
             sizes = self._client_sizes.setdefault(term_id, {})
             sizes[client_id] = (rows, cols)
-            # 只有主客户端的 resize 生效
-            primary = self._primary_client.get(term_id)
-            if primary and client_id != primary:
+            # 决策：controller 存在且不是该客户端 → 仅记录
+            controller = self._get_resize_controller(term_id)
+            if controller is not None and client_id != controller:
                 return None
-            eff_rows, eff_cols = rows, cols
-        else:
-            eff_rows, eff_cols = rows, cols
 
-        result = await self._client.resize(term_id, eff_rows, eff_cols)
+        result = await self._client.resize(term_id, rows, cols)
         # 同步 resize pyte Screen
         if result is not None:
             screen = self._screens.get(term_id)
@@ -300,37 +275,16 @@ class TerminalManager:
     def has(self, term_id: str) -> bool:
         return term_id in self._known_terms
 
-    def get_primary_info(self, term_id: str) -> tuple[str, bool]:
-        """返回 (primary_client_id, locked)。"""
-        return (
-            self._primary_client.get(term_id, ""),
-            self._primary_locked.get(term_id, False),
-        )
+    def _get_resize_controller(self, term_id: str) -> str | None:
+        """返回当前 resize 控制者（follow_me 优先，其次 last_input_client）。"""
+        fm = self._follow_me.get(term_id)
+        if fm is not None:
+            return fm
+        return self._last_input_client.get(term_id)
 
-    def try_set_primary(
-        self, term_id: str, client_id: str, *, lock: bool | None = None,
-    ) -> bool:
-        """尝试设为主客户端。locked 时自动模式下不切换。
-
-        lock=None 表示自动模式（输入触发），仅在未锁定时切换。
-        lock=True/False 表示手动操作（claim_resize）。
-        返回 True 表示主客户端发生了变化。
-        """
-        current = self._primary_client.get(term_id)
-        if lock is None:
-            # 自动模式：已锁定时不切换
-            if self._primary_locked.get(term_id, False):
-                return False
-            if current == client_id:
-                return False
-            self._primary_client[term_id] = client_id
-            return True
-        else:
-            # 手动操作
-            self._primary_client[term_id] = client_id
-            self._primary_locked[term_id] = lock
-            changed = current != client_id or self._primary_locked.get(term_id) != lock
-            return changed
+    def get_follow_me(self, term_id: str) -> str | None:
+        """返回当前 follow_me 客户端 ID（None = Auto 模式）。"""
+        return self._follow_me.get(term_id)
 
     def connection_count(self, term_id: str) -> int:
         return len(self._connections.get(term_id, {}))
@@ -463,8 +417,8 @@ class TerminalManager:
         self._connections.clear()
         self._client_sizes.clear()
         self._known_terms.clear()
-        self._primary_client.clear()
-        self._primary_locked.clear()
+        self._follow_me.clear()
+        self._last_input_client.clear()
         for tid in list(self._flush_handles):
             self._cancel_flush_timer(tid)
         self._output_buffers.clear()
@@ -582,18 +536,18 @@ async def _terminal_on_connect(
             channel.send_json(event)
 
         tm.attach(term_id, client_id, on_output, on_exit)
-        # 向新客户端发送当前 resize_owner 状态 + PTY 尺寸
-        primary, locked = tm.get_primary_info(term_id)
-        if primary:
-            channel.send_json({
-                "type": "resize_owner",
-                "client_id": primary,
-                "locked": locked,
-            })
-            # 发送当前 PTY 尺寸，让新客户端同步 xterm
+        # 向新客户端发送当前 resize 状态（新协议格式）
+        follow_me = tm.get_follow_me(term_id)
+        channel.send_json({
+            "type": "resize_owner",
+            "follow_me": follow_me,
+        })
+        # 发送当前 PTY 尺寸，让新客户端同步 xterm
+        controller = tm._get_resize_controller(term_id)
+        if controller:
             sizes = tm._client_sizes.get(term_id, {})
-            if primary in sizes:
-                r, c = sizes[primary]
+            if controller in sizes:
+                r, c = sizes[controller]
                 channel.send_json({"type": "pty_resize", "rows": r, "cols": c})
     else:
         channel.send_json({"type": "ready", "alive": False})
@@ -612,15 +566,12 @@ def _terminal_on_disconnect(
     ext = ChannelTransport.get(channel)
     client_id = ext._client.client_id if ext and ext._client else ""
     if client_id:
-        new_size = tm.detach(term_id, client_id)
-        if new_size is not None:
-            self.broadcast_json({"type": "pty_resize", "rows": new_size[0], "cols": new_size[1]})
-        # 广播新的 resize_owner 状态
-        primary, locked = tm.get_primary_info(term_id)
+        tm.detach(term_id, client_id)
+        # 广播新的 resize_owner 状态（新协议格式）
+        follow_me = tm.get_follow_me(term_id)
         self.broadcast_json({
             "type": "resize_owner",
-            "client_id": primary,
-            "locked": locked,
+            "follow_me": follow_me,
         })
 
 
@@ -628,7 +579,7 @@ def _terminal_on_disconnect(
 async def _terminal_on_message(
     self: TerminalSession, channel: Channel, raw: dict, ctx: ChannelContext,
 ) -> None:
-    """处理 resize / claim_resize。"""
+    """处理 resize / set_resize_mode。"""
     msg_type = raw.get("type")
     tm = ctx.terminal_manager
     term_id = self.config.get("terminal_id", "")
@@ -645,61 +596,58 @@ async def _terminal_on_message(
             if actual is not None:
                 self.broadcast_json({"type": "pty_resize", "rows": actual[0], "cols": actual[1]})
 
-    elif msg_type == "claim_resize":
+    elif msg_type == "set_resize_mode":
         if tm and term_id and tm.has(term_id):
             from mutbot.web.transport import ChannelTransport
             ext = ChannelTransport.get(channel)
             client_id = ext._client.client_id if ext and ext._client else ""
-            lock = bool(raw.get("lock", False))
-            if client_id:
-                if lock:
-                    # 锁定到此客户端
-                    tm.try_set_primary(term_id, client_id, lock=True)
-                else:
-                    # 解锁回自动模式
-                    tm.try_set_primary(term_id, client_id, lock=False)
-                # 广播新状态
-                primary, locked = tm.get_primary_info(term_id)
+            mode = raw.get("mode", "")
+            if client_id and mode == "follow_me":
+                # Follow Me：锁定到此客户端
+                tm._follow_me[term_id] = client_id
+                # 广播 resize_owner + 用该客户端尺寸 resize PTY
                 self.broadcast_json({
                     "type": "resize_owner",
-                    "client_id": primary,
-                    "locked": locked,
+                    "follow_me": client_id,
                 })
-                # 用该客户端尺寸 resize
                 sizes = tm._client_sizes.get(term_id, {})
                 if client_id in sizes:
                     new_rows, new_cols = sizes[client_id]
                     actual = await tm.resize(term_id, new_rows, new_cols)
                     if actual is not None:
                         self.broadcast_json({"type": "pty_resize", "rows": actual[0], "cols": actual[1]})
+            elif client_id and mode == "auto":
+                # Auto：解除 Follow Me
+                tm._follow_me[term_id] = None
+                self.broadcast_json({
+                    "type": "resize_owner",
+                    "follow_me": None,
+                })
 
 
 @impl(TerminalSession.on_data)
 async def _terminal_on_data(
     self: TerminalSession, channel: Channel, payload: bytes, ctx: ChannelContext,
 ) -> None:
-    """键盘输入转发到 PTY + 自动模式下切换主客户端。"""
+    """键盘输入转发到 PTY + Auto 模式下更新 last_input_client。"""
     term_id = self.config.get("terminal_id", "")
     tm = ctx.terminal_manager
     if tm and term_id and tm.has(term_id) and len(payload) > 0:
-        # 输入触发主客户端自动切换
         from mutbot.web.transport import ChannelTransport
         ext = ChannelTransport.get(channel)
         client_id = ext._client.client_id if ext and ext._client else ""
-        if client_id and tm.try_set_primary(term_id, client_id):
-            # 主客户端变更 → 广播 resize_owner
-            primary, locked = tm.get_primary_info(term_id)
-            self.broadcast_json({
-                "type": "resize_owner",
-                "client_id": primary,
-                "locked": locked,
-            })
-            # 用新主客户端的尺寸 resize PTY
-            sizes = tm._client_sizes.get(term_id, {})
-            if client_id in sizes:
-                new_rows, new_cols = sizes[client_id]
-                actual = await tm.resize(term_id, new_rows, new_cols)
-                if actual is not None:
-                    self.broadcast_json({"type": "pty_resize", "rows": actual[0], "cols": actual[1]})
+
+        # Auto 模式下（follow_me 为 None），更新 last_input_client
+        if client_id and tm._follow_me.get(term_id) is None:
+            prev = tm._last_input_client.get(term_id)
+            if prev != client_id:
+                tm._last_input_client[term_id] = client_id
+                # last_input_client 变更 → resize PTY 到该客户端尺寸
+                sizes = tm._client_sizes.get(term_id, {})
+                if client_id in sizes:
+                    new_rows, new_cols = sizes[client_id]
+                    actual = await tm.resize(term_id, new_rows, new_cols)
+                    if actual is not None:
+                        self.broadcast_json({"type": "pty_resize", "rows": actual[0], "cols": actual[1]})
 
         tm.write(term_id, payload)
