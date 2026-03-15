@@ -1,13 +1,13 @@
 """PtyHost ASGI WebSocket 应用。
 
-处理 JSON 命令（create/resize/scrollback/status/list/kill）和 binary I/O。
-binary 帧格式：[16 bytes UUID] [raw data]。
+处理 JSON 命令和 binary I/O。
+新 binary 帧格式：[term_id 16B][view_id 8B][ANSI frame]。
+日志通过 WebSocket 转发到 mutbot，支持 MCP 实时查询。
 """
 
 from __future__ import annotations
 
 import asyncio
-import base64
 import json
 import logging
 from typing import Any
@@ -17,12 +17,36 @@ from mutbot.ptyhost._manager import TerminalManager
 logger = logging.getLogger("mutbot.ptyhost")
 
 
+class _WebSocketLogHandler(logging.Handler):
+    """将 ptyhost 进程的日志通过 WebSocket 转发到 mutbot。"""
+
+    def __init__(self, app: PtyHostApp) -> None:
+        super().__init__()
+        self._app = app
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            msg = json.dumps({
+                "type": "log",
+                "level": record.levelname,
+                "logger": record.name,
+                "message": self.format(record),
+            })
+            loop = self._app._loop
+            if loop is None:
+                return
+            for queue in list(self._app._connections.values()):
+                loop.call_soon_threadsafe(queue.put_nowait, ("text", msg))
+        except Exception:
+            pass  # 日志转发失败不能抛异常
+
+
 class PtyHostApp:
-    """纯 PTY 进程池 ASGI 应用。"""
+    """PTY 进程池 + pyte 渲染引擎 ASGI 应用。"""
 
     def __init__(self) -> None:
         self._manager = TerminalManager(
-            on_output=self._on_output,
+            on_frame=self._on_frame,
             on_exit=self._on_exit,
         )
         # 活跃 WebSocket 连接：conn_id → send queue
@@ -34,6 +58,8 @@ class PtyHostApp:
         self._idle_seconds: float = 60.0
         # 由 __main__ 设置，用于触发退出
         self.should_exit_callback: Any = None
+        # 日志转发 handler
+        self._log_handler: _WebSocketLogHandler | None = None
 
     # ------------------------------------------------------------------
     # ASGI 入口
@@ -54,9 +80,19 @@ class PtyHostApp:
             msg = await receive()
             if msg["type"] == "lifespan.startup":
                 self._loop = asyncio.get_running_loop()
+                self._manager.set_loop(self._loop)
+                # 安装日志转发 handler
+                handler = _WebSocketLogHandler(self)
+                handler.setLevel(logging.DEBUG)
+                logging.getLogger("mutbot.ptyhost").addHandler(handler)
+                self._log_handler = handler
                 self._check_idle()
                 await send({"type": "lifespan.startup.complete"})
             elif msg["type"] == "lifespan.shutdown":
+                # 移除日志转发 handler
+                if self._log_handler:
+                    logging.getLogger("mutbot.ptyhost").removeHandler(self._log_handler)
+                    self._log_handler = None
                 self._manager.kill_all()
                 await send({"type": "lifespan.shutdown.complete"})
                 return
@@ -145,12 +181,38 @@ class PtyHostApp:
                 return {"ok": True, "rows": result[0], "cols": result[1]}
             return {"ok": False, "error": "terminal not found"}
 
-        elif action == "scrollback":
-            data = self._manager.get_scrollback(cmd["term_id"])
-            return {
-                "term_id": cmd["term_id"],
-                "data_b64": base64.b64encode(data).decode(),
-            }
+        elif action == "create_view":
+            view_id = self._manager.create_view(cmd["term_id"])
+            if view_id:
+                return {"ok": True, "view_id": view_id}
+            return {"ok": False, "error": "terminal not found"}
+
+        elif action == "destroy_view":
+            self._manager.destroy_view(cmd["view_id"])
+            return {"ok": True}
+
+        elif action == "snapshot":
+            data = self._manager.get_snapshot(cmd["view_id"])
+            view_id = cmd["view_id"]
+            if data:
+                view = self._manager._views.get(view_id)
+                if view:
+                    self._on_frame(view.term_id, view.id, data)
+            return {"ok": True}
+
+        elif action == "scroll":
+            self._manager.scroll_view(cmd["view_id"], cmd["lines"])
+            return {"ok": True}
+
+        elif action == "scroll_to_bottom":
+            self._manager.scroll_view_to_bottom(cmd["view_id"])
+            return {"ok": True}
+
+        elif action == "scroll_state":
+            state = self._manager.get_scroll_state(cmd["view_id"])
+            if state:
+                return state
+            return {"offset": 0, "total": 0, "visible": 0}
 
         elif action == "status":
             info = self._manager.status(cmd["term_id"])
@@ -181,17 +243,19 @@ class PtyHostApp:
         self._manager.write(term_id, payload)
 
     # ------------------------------------------------------------------
-    # PTY 回调（从 reader 线程调用）
+    # 回调（从事件循环线程调用）
     # ------------------------------------------------------------------
 
-    def _on_output(self, term_id: str, data: bytes) -> None:
-        """PTY 输出 → 广播 binary 帧到所有连接。"""
-        frame = bytes.fromhex(term_id) + data
-        loop = self._loop
-        if loop is None:
-            return
+    def _on_frame(self, term_id: str, view_id: str, frame: bytes) -> None:
+        """渲染帧 → 封装为 binary 帧广播到所有连接。
+
+        帧格式：[term_id 16B raw UUID][view_id 8B raw][ANSI frame]
+        """
+        # term_id 是 32 字符 hex → 16 bytes
+        header = bytes.fromhex(term_id) + view_id.encode("ascii").ljust(8, b"\0")[:8]
+        msg = header + frame
         for queue in list(self._connections.values()):
-            loop.call_soon_threadsafe(queue.put_nowait, ("binary", frame))
+            queue.put_nowait(("binary", msg))
 
     def _on_exit(self, term_id: str, exit_code: int | None) -> None:
         """PTY 退出 → 广播 exit 事件到所有连接。"""

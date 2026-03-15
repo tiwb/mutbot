@@ -7,7 +7,6 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 import json
 import logging
 from typing import Any, Callable
@@ -18,7 +17,7 @@ import wsproto.events as ws_events
 logger = logging.getLogger("mutbot.ptyhost.client")
 
 # 回调类型
-OutputCallback = Callable[[str, bytes], None]   # (term_id, data)
+FrameCallback = Callable[[str, str, bytes], None]   # (term_id, view_id, ansi_frame)
 ExitCallback = Callable[[str, int | None], None]  # (term_id, exit_code)
 DisconnectCallback = Callable[[], None]  # ptyhost 连接断开
 
@@ -29,13 +28,14 @@ class PtyHostClient:
     用法::
 
         client = PtyHostClient("127.0.0.1", port)
-        client.on_output = lambda term_id, data: ...
+        client.on_frame = lambda term_id, view_id, data: ...
         client.on_exit = lambda term_id, exit_code: ...
         await client.connect()
 
         term_id = await client.create(24, 80)
+        view_id = await client.create_view(term_id)
         client.write(term_id, b"ls\\n")
-        scrollback = await client.get_scrollback(term_id)
+        snapshot = await client.get_snapshot(view_id)
     """
 
     def __init__(self, host: str, port: int) -> None:
@@ -56,7 +56,7 @@ class PtyHostClient:
         self._bytes_buffer: list[bytes] = []
 
         # 回调
-        self.on_output: OutputCallback | None = None
+        self.on_frame: FrameCallback | None = None
         self.on_exit: ExitCallback | None = None
         self.on_disconnect: DisconnectCallback | None = None
 
@@ -172,11 +172,16 @@ class PtyHostClient:
             self._connected = False
 
     def _on_text(self, msg: dict[str, Any]) -> None:
-        """处理 JSON 消息：区分事件和命令回复。"""
+        """处理 JSON 消息：区分事件、日志转发和命令回复。"""
         if "type" in msg:
-            # 事件（exit）
-            if msg["type"] == "exit" and self.on_exit:
+            msg_type = msg["type"]
+            if msg_type == "exit" and self.on_exit:
                 self.on_exit(msg["term_id"], msg.get("exit_code"))
+            elif msg_type == "log":
+                # ptyhost 日志转发 → 注入本地 logging
+                log_logger = logging.getLogger(msg.get("logger", "mutbot.ptyhost"))
+                level = getattr(logging, msg.get("level", "INFO"), logging.INFO)
+                log_logger.log(level, "[ptyhost] %s", msg.get("message", ""))
         else:
             # 命令回复：按 seq 匹配到 pending future
             seq = msg.pop("seq", None)
@@ -187,15 +192,14 @@ class PtyHostClient:
             # 无 seq 或无匹配 future → 静默丢弃（fire-and-forget 的回复）
 
     def _on_binary(self, data: bytes) -> None:
-        """处理 binary 帧：[16 bytes UUID][PTY 输出数据]。"""
-        if len(data) < 16:
+        """处理 binary 帧：[term_id 16B][view_id 8B][ANSI frame]。"""
+        if len(data) < 24:
             return
         term_id = data[:16].hex()
-        payload = data[16:]
-        # [DIAG] 临时日志：ptyhost → mutbot 单个 WebSocket message 的大小
-        logger.info("pty_msg %s: %d bytes", term_id[:8], len(payload))
-        if self.on_output:
-            self.on_output(term_id, payload)
+        view_id = data[16:24].rstrip(b"\0").decode("ascii")
+        frame = data[24:]
+        if self.on_frame:
+            self.on_frame(term_id, view_id, frame)
 
     # ------------------------------------------------------------------
     # 命令发送
@@ -246,11 +250,32 @@ class PtyHostClient:
             raise RuntimeError(reply.get("error", "create failed"))
         return reply["term_id"]
 
-    async def get_scrollback(self, term_id: str) -> bytes:
-        """获取终端 scrollback 数据。"""
-        reply = await self._send_command({"cmd": "scrollback", "term_id": term_id})
-        data_b64 = reply.get("data_b64", "")
-        return base64.b64decode(data_b64) if data_b64 else b""
+    async def create_view(self, term_id: str) -> str:
+        """创建 view，返回 view_id。"""
+        reply = await self._send_command({"cmd": "create_view", "term_id": term_id})
+        if not reply.get("ok"):
+            raise RuntimeError(reply.get("error", "create_view failed"))
+        return reply["view_id"]
+
+    async def destroy_view(self, view_id: str) -> None:
+        """销毁 view。"""
+        await self._send_command({"cmd": "destroy_view", "view_id": view_id})
+
+    async def get_snapshot(self, view_id: str) -> None:
+        """请求 view 快照（帧通过 on_frame 回调异步到达）。"""
+        await self._send_command({"cmd": "snapshot", "view_id": view_id})
+
+    async def scroll(self, view_id: str, lines: int) -> None:
+        """滚动 view。lines>0 向上，lines<0 向下。"""
+        await self._send_command({"cmd": "scroll", "view_id": view_id, "lines": lines})
+
+    async def scroll_to_bottom(self, view_id: str) -> None:
+        """view 回到 live。"""
+        await self._send_command({"cmd": "scroll_to_bottom", "view_id": view_id})
+
+    async def get_scroll_state(self, view_id: str) -> dict[str, int]:
+        """获取滚动状态。"""
+        return await self._send_command({"cmd": "scroll_state", "view_id": view_id})
 
     async def resize(
         self, term_id: str, rows: int, cols: int,

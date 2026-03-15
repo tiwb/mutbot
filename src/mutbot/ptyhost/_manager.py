@@ -1,13 +1,14 @@
 """PTY 进程池 — ptyhost 守护进程的核心。
 
-从 mutbot.runtime.terminal 提取并简化：
-- 去掉 workspace_id、per-client attach/detach（那是 mutbot 侧的事）
-- term_id 使用 UUID hex (32 chars)
-- 输出/退出通过 manager 级别回调通知上层
+管理 PTY 进程的创建、I/O、销毁。
+内置 pyte HistoryScreen 做 ANSI 状态机，渲染 dirty diff 为 ANSI 帧推送。
+TermView 提供独立滚动视口。
 """
 
 from __future__ import annotations
 
+import asyncio
+import codecs
 import logging
 import os
 import re
@@ -20,17 +21,19 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
+import pyte
+
+from mutbot.ptyhost._screen import _SafeHistoryScreen, TermView
+
 logger = logging.getLogger("mutbot.ptyhost")
 
 IS_WINDOWS = sys.platform == "win32"
 
-SCROLLBACK_MAX = 10 * 1024 * 1024  # 10MB — 内存中保留完整历史，replay 时按需截取
-
 # Strip OSC 0/1/2 (window/icon title) sequences
 _OSC_TITLE_RE = re.compile(rb"\x1b\][012];[^\x07\x1b]*(?:\x07|\x1b\\)")
 
-# 回调类型
-OutputCallback = Callable[[str, bytes], None]   # (term_id, data)
+# 回调类型：(term_id, view_id, ansi_frame)
+FrameCallback = Callable[[str, str, bytes], None]
 ExitCallback = Callable[[str, int | None], None]  # (term_id, exit_code)
 
 
@@ -44,35 +47,55 @@ class TerminalProcess:
     alive: bool = True
     exit_code: int | None = field(default=None, repr=False)
     _fd: int | None = field(default=None, repr=False)
-    _scrollback: bytearray = field(default_factory=bytearray, repr=False)
-    _scrollback_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+    # pyte 状态机
+    screen: _SafeHistoryScreen | None = field(default=None, repr=False)
+    stream: pyte.Stream | None = field(default=None, repr=False)
+    decoder: codecs.IncrementalDecoder | None = field(default=None, repr=False)
+    # view 管理
+    views: dict[str, TermView] = field(default_factory=dict, repr=False)
 
 
 class TerminalManager:
-    """PTY 进程池。
+    """PTY 进程池 + pyte 渲染引擎。
 
-    纯粹管理 PTY 进程的创建、I/O、销毁，不管任何业务逻辑。
-    输出和退出事件通过回调通知上层（PtyHostApp）。
+    管理 PTY 进程的创建、I/O、销毁。
+    内置 pyte 状态机，渲染 dirty diff 为 ANSI 帧推送。
     """
 
     def __init__(
         self,
-        on_output: OutputCallback,
+        on_frame: FrameCallback,
         on_exit: ExitCallback,
     ) -> None:
         self._terminals: dict[str, TerminalProcess] = {}
-        self._on_output = on_output
+        self._on_frame = on_frame
         self._on_exit = on_exit
+        # view_id → TermView 的快速查找
+        self._views: dict[str, TermView] = {}
+        # 渲染管线状态
+        self._output_buffers: dict[str, bytearray] = {}
+        self._flush_handles: dict[str, asyncio.TimerHandle] = {}
+        self._render_pending: dict[str, bool] = {}
+        self._render_handle: asyncio.TimerHandle | None = None
+        self._loop: asyncio.AbstractEventLoop | None = None
 
     # ------------------------------------------------------------------
     # Create
     # ------------------------------------------------------------------
 
     def create(self, rows: int, cols: int, cwd: str | None = None) -> str:
-        """创建 PTY 进程，返回 term_id (UUID hex)。"""
+        """创建 PTY 进程 + pyte 状态机，返回 term_id (UUID hex)。"""
         term_id = uuid.uuid4().hex
         term = TerminalProcess(id=term_id, rows=rows, cols=cols)
         work_dir = cwd or os.getcwd()
+
+        # 初始化 pyte 状态机
+        screen = _SafeHistoryScreen(cols, rows, history=50000, ratio=0.001)
+        stream = pyte.Stream(screen)
+        decoder = codecs.getincrementaldecoder("utf-8")("replace")
+        term.screen = screen
+        term.stream = stream
+        term.decoder = decoder
 
         if IS_WINDOWS:
             self._spawn_windows(term, work_dir)
@@ -80,6 +103,8 @@ class TerminalManager:
             self._spawn_unix(term, work_dir)
 
         self._terminals[term_id] = term
+        self._output_buffers[term_id] = bytearray()
+        self._render_pending[term_id] = False
         self._start_reader(term)
         logger.info("Terminal created: %s, cwd=%s", term_id, work_dir)
         return term_id
@@ -198,14 +223,109 @@ class TerminalManager:
         data = _OSC_TITLE_RE.sub(b"", data)
         if not data:
             return
+        # 投递到事件循环，在主线程中 feed pyte + 触发渲染
+        loop = self._loop
+        if loop is not None:
+            loop.call_soon_threadsafe(self._on_data_from_pty, term.id, data)
 
-        with term._scrollback_lock:
-            term._scrollback.extend(data)
-            overflow = len(term._scrollback) - SCROLLBACK_MAX
-            if overflow > 0:
-                del term._scrollback[:overflow]
+    # ------------------------------------------------------------------
+    # 渲染管线（事件循环线程）
+    # ------------------------------------------------------------------
 
-        self._on_output(term.id, data)
+    _FLUSH_INTERVAL = 0.016   # 16ms flush 缓冲（攒多个 chunk 后再 feed pyte）
+    _FLUSH_MAX_BYTES = 32 * 1024  # 32KB 立即 flush
+    _RENDER_INTERVAL = 0.080  # 80ms 帧间隔
+
+    def set_loop(self, loop: asyncio.AbstractEventLoop) -> None:
+        """由 PtyHostApp 在 startup 时调用，设置事件循环引用。"""
+        self._loop = loop
+
+    def _on_data_from_pty(self, term_id: str, data: bytes) -> None:
+        """事件循环线程：将 PTY 数据放入缓冲区，延迟 feed。"""
+        term = self._terminals.get(term_id)
+        if term is None or term.screen is None:
+            return
+        buf = self._output_buffers.get(term_id)
+        if buf is None:
+            return
+        buf.extend(data)
+
+        if len(buf) >= self._FLUSH_MAX_BYTES:
+            # 超过上限，立即 flush
+            self._cancel_flush_timer(term_id)
+            self._flush_and_feed(term_id)
+        elif term_id not in self._flush_handles:
+            # 首次数据到达，启动 16ms 定时器
+            loop = self._loop
+            if loop is not None:
+                handle = loop.call_later(
+                    self._FLUSH_INTERVAL, self._flush_and_feed, term_id,
+                )
+                self._flush_handles[term_id] = handle
+
+    def _cancel_flush_timer(self, term_id: str) -> None:
+        handle = self._flush_handles.pop(term_id, None)
+        if handle is not None:
+            handle.cancel()
+
+    def _flush_and_feed(self, term_id: str) -> None:
+        """消费 output buffer，feed pyte stream，标记 render pending。"""
+        self._flush_handles.pop(term_id, None)
+        term = self._terminals.get(term_id)
+        if term is None or term.screen is None or term.stream is None or term.decoder is None:
+            return
+        buf = self._output_buffers.get(term_id)
+        if not buf:
+            return
+        data = bytes(buf)
+        buf.clear()
+        try:
+            text = term.decoder.decode(data)
+            if text:
+                term.stream.feed(text)
+        except RuntimeError:
+            logger.warning("pyte stream corrupted for %s, rebuilding", term_id)
+            screen = _SafeHistoryScreen(term.cols, term.rows, history=50000, ratio=0.001)
+            stream = pyte.Stream(screen)
+            term.screen = screen
+            term.stream = stream
+            term.decoder = codecs.getincrementaldecoder("utf-8")("replace")
+            return
+        # 标记需要渲染（仅 live view 需要）
+        has_live = any(v.scroll_offset == 0 for v in term.views.values())
+        if has_live and term.screen.dirty:
+            self._render_pending[term_id] = True
+            self._schedule_render()
+
+    def _schedule_render(self) -> None:
+        """调度渲染定时器（如果尚未调度）。"""
+        if self._render_handle is not None:
+            return
+        loop = self._loop
+        if loop is None:
+            return
+        self._render_handle = loop.call_later(self._RENDER_INTERVAL, self._render_frame)
+
+    def _render_frame(self) -> None:
+        """渲染定时器回调：处理所有 pending 终端的 dirty diff。"""
+        from mutbot.ptyhost.ansi_render import render_dirty
+        self._render_handle = None
+        for term_id in list(self._render_pending):
+            if not self._render_pending.get(term_id):
+                continue
+            self._render_pending[term_id] = False
+            term = self._terminals.get(term_id)
+            if term is None or term.screen is None:
+                continue
+            # 消费剩余 buffer
+            self._flush_and_feed(term_id)
+            frame = render_dirty(term.screen)
+            if not frame:
+                continue
+            # 推送给所有 live view
+            for view in term.views.values():
+                if view.scroll_offset == 0:
+                    self._on_frame(term_id, view.id, frame)
 
     # ------------------------------------------------------------------
     # I/O
@@ -237,6 +357,13 @@ class TerminalManager:
         term.rows = rows
         term.cols = cols
         self._set_pty_size(term, rows, cols)
+        # 同步 resize pyte Screen
+        if term.screen is not None:
+            term.screen.resize(rows, cols)
+            # resize 后全屏 dirty
+            term.screen.dirty.update(range(term.screen.lines))
+            self._render_pending[term_id] = True
+            self._schedule_render()
         return (rows, cols)
 
     def _set_pty_size(self, term: TerminalProcess, rows: int, cols: int) -> None:
@@ -257,15 +384,119 @@ class TerminalManager:
                     logger.debug("Terminal resize failed: %s", term.id)
 
     # ------------------------------------------------------------------
-    # Query
+    # View 管理
     # ------------------------------------------------------------------
 
-    def get_scrollback(self, term_id: str) -> bytes:
+    def create_view(self, term_id: str) -> str | None:
+        """创建 view，返回 view_id。"""
         term = self._terminals.get(term_id)
         if term is None:
+            return None
+        view_id = uuid.uuid4().hex[:16]  # 8 bytes hex
+        view = TermView(id=view_id, term_id=term_id)
+        term.views[view_id] = view
+        self._views[view_id] = view
+        return view_id
+
+    def destroy_view(self, view_id: str) -> None:
+        """销毁 view。"""
+        view = self._views.pop(view_id, None)
+        if view is None:
+            return
+        term = self._terminals.get(view.term_id)
+        if term is not None:
+            term.views.pop(view_id, None)
+
+    def get_snapshot(self, view_id: str) -> bytes:
+        """返回 view 当前可见内容的 ANSI 帧。"""
+        from mutbot.ptyhost.ansi_render import render_full, render_lines
+        view = self._views.get(view_id)
+        if view is None:
             return b""
-        with term._scrollback_lock:
-            return bytes(term._scrollback)
+        term = self._terminals.get(view.term_id)
+        if term is None or term.screen is None:
+            return b""
+        screen = term.screen
+        if view.scroll_offset == 0:
+            return render_full(screen)
+        else:
+            return self._render_scrolled_view(screen, view.scroll_offset)
+
+    def scroll_view(self, view_id: str, lines: int) -> None:
+        """滚动 view。lines>0 向上（看历史），lines<0 向下。"""
+        view = self._views.get(view_id)
+        if view is None:
+            return
+        term = self._terminals.get(view.term_id)
+        if term is None or term.screen is None:
+            return
+        screen = term.screen
+        max_offset = len(screen.history.top)
+        new_offset = max(0, min(view.scroll_offset + lines, max_offset))
+        if new_offset == view.scroll_offset:
+            return
+        view.scroll_offset = new_offset
+        if new_offset == 0:
+            # 回到 live，推送全屏快照
+            from mutbot.ptyhost.ansi_render import render_full
+            frame = render_full(screen)
+        else:
+            frame = self._render_scrolled_view(screen, new_offset)
+        if frame:
+            self._on_frame(view.term_id, view.id, frame)
+
+    def scroll_view_to_bottom(self, view_id: str) -> None:
+        """view 回到 live。"""
+        view = self._views.get(view_id)
+        if view is None:
+            return
+        if view.scroll_offset == 0:
+            return
+        view.scroll_offset = 0
+        term = self._terminals.get(view.term_id)
+        if term is None or term.screen is None:
+            return
+        from mutbot.ptyhost.ansi_render import render_full
+        frame = render_full(term.screen)
+        if frame:
+            self._on_frame(view.term_id, view.id, frame)
+
+    def _render_scrolled_view(self, screen: _SafeHistoryScreen, offset: int) -> bytes:
+        """渲染 scrolled view 的可见内容。"""
+        from mutbot.ptyhost.ansi_render import render_lines
+        history_top = list(screen.history.top)
+        buffer_lines = [screen.buffer[row] for row in range(screen.lines)]
+        all_lines = history_top + buffer_lines
+        total = len(all_lines)
+        visible = screen.lines
+        # offset 是从底部往上偏移
+        end = total - offset
+        start = max(0, end - visible)
+        end = start + visible  # 确保刚好 visible 行
+        lines_slice = all_lines[start:end]
+        # 如果不够 visible 行，用空行补齐
+        while len(lines_slice) < visible:
+            lines_slice.append({})
+        return render_lines(lines_slice, screen.columns, screen.default_char)
+
+    def get_scroll_state(self, view_id: str) -> dict[str, int] | None:
+        """返回滚动状态用于 scrollbar。"""
+        view = self._views.get(view_id)
+        if view is None:
+            return None
+        term = self._terminals.get(view.term_id)
+        if term is None or term.screen is None:
+            return None
+        screen = term.screen
+        return {
+            "offset": view.scroll_offset,
+            "total": len(screen.history.top) + screen.lines,
+            "visible": screen.lines,
+        }
+
+    # ------------------------------------------------------------------
+    # Query
+    # ------------------------------------------------------------------
 
     def status(self, term_id: str) -> dict[str, Any] | None:
         term = self._terminals.get(term_id)
@@ -302,6 +533,17 @@ class TerminalManager:
 
         term.alive = False
         logger.info("Killing terminal: %s", term_id)
+
+        # 清理 pyte + views + 渲染状态
+        for view_id in list(term.views):
+            self._views.pop(view_id, None)
+        term.views.clear()
+        term.screen = None
+        term.stream = None
+        term.decoder = None
+        self._cancel_flush_timer(term_id)
+        self._output_buffers.pop(term_id, None)
+        self._render_pending.pop(term_id, None)
 
         if IS_WINDOWS:
             try:
