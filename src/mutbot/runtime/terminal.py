@@ -49,6 +49,15 @@ class _SafeHistoryScreen(pyte.HistoryScreen):
             and mo.DECTCEM in self.mode
         )
 
+    def resize(self, lines: int | None = None, columns: int | None = None) -> None:
+        # pyte 上游 bug：resize() 收缩行数时，restore_cursor 在 self.lines
+        # 更新前执行，导致光标未被 clamp 到新范围。
+        super().resize(lines, columns)
+        if self.cursor.y >= self.lines:
+            self.cursor.y = self.lines - 1
+        if self.cursor.x >= self.columns:
+            self.cursor.x = self.columns - 1
+
 
 
 class TerminalManager:
