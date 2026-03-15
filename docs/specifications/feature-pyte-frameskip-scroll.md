@@ -114,19 +114,16 @@ screen = _SafeHistoryScreen(cols, rows, history=50000, ratio=0.001)
 
 ### resize 处理
 
-resize 时 pyte Screen 需要同步 resize。Claude Code 会在 resize 后重新输出所有内容，pyte 自然更新。
-
-对于普通程序，resize 前应将当前可见行备份到 history（pyte 默认 resize 不保护历史）：
+resize 时 pyte Screen 同步 resize。验证结论：pyte 原生 resize 行为正确——收缩时顶部行丢弃（不推入 history），展开时底部补空行（程序不重绘就不填满，这是正常终端行为）。无需额外 hack。
 
 ```python
 async def resize(self, term_id, rows, cols, client_id=None):
+    result = await self._client.resize(term_id, rows, cols)
     screen = self._screens.get(term_id)
     if screen:
-        # resize 前保存可见行到 history top
-        for i in range(screen.lines):
-            screen.history.top.append(screen.buffer[i].copy())
-        screen.resize(rows, cols)
-    result = await self._client.resize(term_id, rows, cols)
+        screen.resize(actual_rows, actual_cols)
+        screen.dirty.update(range(screen.lines))
+        self._render_pending[term_id] = True
     return result
 ```
 
@@ -139,7 +136,7 @@ async def resize(self, term_id, rows, cols, client_id=None):
 ```
 实时输出：
   PTY → _on_pty_output → 缓冲 16ms → _flush_output → feed pyte → 标记 pending
-  渲染定时器 80ms → 检查 buffer 是否为空（涌入检测）→ dirty diff → ANSI 帧 → 广播
+  渲染定时器 80ms → render 前 flush all 剩余缓冲 → dirty diff → BSU + ANSI 帧 + ESU → 广播
 
 滚动：
   前端 touch/wheel → scroll 消息 → 后端 history.top + buffer 行级组装 → render_lines → 广播
@@ -150,6 +147,20 @@ async def resize(self, term_id, rows, cols, client_id=None):
 resize：
   前端 resize → 后端 resize PTY + pyte Screen → Claude Code 重绘 → pyte feed → 跳帧渲染
 ```
+
+### 防闪烁：Synchronized Update (DEC Mode 2026)
+
+所有 ANSI 渲染函数（render_dirty / render_lines / render_full）使用 BSU/ESU 包裹输出：
+
+```
+\x1b[?2026h     ← BSU (Begin Synchronized Update)
+\x1b[?25l       ← 隐藏光标
+... 行更新 ...
+\x1b[?25h       ← 显示光标
+\x1b[?2026l     ← ESU (End Synchronized Update)
+```
+
+xterm.js 在 BSU-ESU 之间暂停屏幕渲染，收到 ESU 时一次性刷新。这解决了大帧（多行重绘 4000+ bytes）被 xterm.js 分帧处理导致的可见闪烁。详见 `bugfix-terminal-rendering-flicker.md`。
 
 ## 关键参考
 
@@ -181,7 +192,7 @@ resize：
 
 - **PC 端鼠标滚轮行为待验证**：Claude Code 启用终端鼠标模式后，xterm.js 会将滚轮事件翻译为鼠标序列发给 PTY，导致滚轮变成"翻历史输入"而非滚动终端。已添加 `capture: true` + `stopPropagation` 在捕获阶段拦截 wheel 事件，但尚未在 PC 端实测验证。
 
-- **大屏幕刷新仍可能闪烁**：已实施"数据涌入时推迟渲染"策略（render 时检查 output_buffer 非空则跳过），但效果待实际使用中验证和调优。
+- **scrollback replay 性能**：服务器重启后首次连接需从 ptyhost 获取 scrollback 并通过 pyte 重新 replay。长 session 累积 10MB scrollback → pyte feed 耗时 28.5 秒。优化方向：限制 scrollback 大小、按需加载历史、持久化 pyte 屏幕状态。
 
 ### 相关规范
 

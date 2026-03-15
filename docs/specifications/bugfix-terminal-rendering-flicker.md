@@ -1,7 +1,7 @@
 # 终端渲染闪烁与滚动异常 设计规范
 
-**状态**：🔄 验证中
-**日期**：2025-03-14
+**状态**：✅ 已完成
+**日期**：2025-03-14（完成：2026-03-15）
 **类型**：Bug修复
 
 ## 背景
@@ -162,24 +162,34 @@ PTY 输出 → feed pyte（维护屏幕状态）
   - [x] 保留 scrollback fallback（pyte Screen 不存在时）
   - 状态：✅ 完成
 
-### Phase 3: 验证 [进行中]
+### Phase 3: 验证与最终修复 [完成]
 
-- [ ] **Task 3.1**: 功能验证
+- [x] **Task 3.1**: 功能验证
   - [x] 终端基本交互正常（输入、输出、颜色、光标）
-  - [ ] Claude Code TUI 显示正确
-  - [ ] 连接/刷新后屏幕快照正确恢复
-  - [ ] resize 后屏幕正常
-  - 状态：🔄 进行中
+  - [x] Claude Code TUI 显示正确
+  - [x] 连接/刷新后屏幕快照正确恢复
+  - [x] resize 后屏幕正常
+  - 状态：✅ 完成
 
-- [ ] **Task 3.2**: 闪烁验证
-  - [ ] 长 session 后不再出现闪烁
-  - [ ] SendBuffer 积压量显著下降
-  - [ ] resize 不再导致闪烁
-  - 状态：⏸️ 待开始
+- [x] **Task 3.2**: 闪烁验证与最终修复
+  - [x] pyte diff 模式显著减少闪烁但未完全消除
+  - [x] 根因定位：render_dirty 大帧（4000+ bytes 多行重绘）被 xterm.js 分帧处理，显示新旧内容混合态
+  - [x] 修复：所有 ANSI 渲染函数使用 Synchronized Update (DEC Mode 2026) — BSU `\x1b[?2026h` / ESU `\x1b[?2026l` 包裹输出，xterm.js 暂停渲染直到 ESU 一次性刷新
+  - [x] 用户验证：闪烁彻底消除
+  - 状态：✅ 完成
 
-## 测试验证
+### 最终根因总结
 
-（实施阶段填写）
+闪烁有两层原因，需要两个方案叠加解决：
+
+1. **传输层闪烁**（pyte diff 解决）：raw bytes 转发时，PTY 输出按 ~100 bytes 小块到达前端，xterm.js 逐块渲染导致中间态可见
+2. **渲染层闪烁**（BSU/ESU 解决）：pyte `render_dirty()` 的"整行重写"策略对多行重绘产生 4000+ bytes 大帧，xterm.js 为避免阻塞主线程分帧处理，部分行更新完毕而其余行未更新的混合态可见
+
+**为什么 VS Code 不闪烁**：VS Code 的终端 PTY 在同一进程内，数据直接传给 xterm.js。应用自身的增量更新数据量小，且应用自己发出的 BSU/ESU 标记完整包含在单次 write 中。而 pyte 消费了原始 PTY 输出中的 BSU/ESU 序列，必须在 render_dirty 输出中重新添加。
+
+### 已发现的性能问题
+
+- **scrollback replay 性能**：服务器重启后首次连接需从 ptyhost 获取 scrollback 并通过 pyte 重新 replay。长 session 累积 10MB scrollback → pyte feed 耗时 28.5 秒。优化方向：限制 scrollback 大小、按需加载历史、持久化 pyte 屏幕状态。
 
 ## 关键参考
 
