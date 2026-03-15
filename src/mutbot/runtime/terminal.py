@@ -279,15 +279,21 @@ class TerminalManager:
                 )
 
     def _on_pty_exit(self, term_id: str, exit_code: int | None) -> None:
-        """ptyhost 推送的终端退出事件 → 通知已 attach 的前端 channel。"""
+        """ptyhost 推送的终端退出事件 → 通知前端 + 清理内部状态。"""
         conns = self._connections.get(term_id)
-        if not conns:
-            return
-        for _, (_, on_exit) in list(conns.items()):
-            try:
-                on_exit(exit_code)
-            except Exception:
-                pass
+        if conns:
+            for _, (_, on_exit) in list(conns.items()):
+                try:
+                    on_exit(exit_code)
+                except Exception:
+                    pass
+        # 清理内部状态，确保 restart 时不会误判为存活
+        self._known_terms.discard(term_id)
+        self._connections.pop(term_id, None)
+        self._client_sizes.pop(term_id, None)
+        self._follow_me.pop(term_id, None)
+        self._last_input_client.pop(term_id, None)
+        self._view_ids.pop(term_id, None)
 
     def _on_ptyhost_disconnect(self) -> None:
         """ptyhost 连接断开 → 通知所有终端的前端 channel 退出。"""
