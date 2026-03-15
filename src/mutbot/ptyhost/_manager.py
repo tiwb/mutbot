@@ -77,6 +77,7 @@ class TerminalManager:
         self._flush_handles: dict[str, asyncio.TimerHandle] = {}
         self._render_pending: dict[str, bool] = {}
         self._render_handle: asyncio.TimerHandle | None = None
+        self._sync_timeout_handles: dict[str, asyncio.TimerHandle] = {}  # BSU 超时保护
         self._loop: asyncio.AbstractEventLoop | None = None
 
     # ------------------------------------------------------------------
@@ -234,7 +235,7 @@ class TerminalManager:
 
     _FLUSH_INTERVAL = 0.016   # 16ms flush 缓冲（攒多个 chunk 后再 feed pyte）
     _FLUSH_MAX_BYTES = 32 * 1024  # 32KB 立即 flush
-    _RENDER_INTERVAL = 0.080  # 80ms 帧间隔
+    _RENDER_INTERVAL = 0.016  # 16ms 帧间隔 (~60fps)
 
     def set_loop(self, loop: asyncio.AbstractEventLoop) -> None:
         """由 PtyHostApp 在 startup 时调用，设置事件循环引用。"""
@@ -279,6 +280,7 @@ class TerminalManager:
             return
         data = bytes(buf)
         buf.clear()
+        was_synchronized = term.screen.synchronized
         try:
             text = term.decoder.decode(data)
             if text:
@@ -291,11 +293,27 @@ class TerminalManager:
             term.stream = stream
             term.decoder = codecs.getincrementaldecoder("utf-8")("replace")
             return
+        # BSU 期间不调度渲染，等 ESU 到达后一次性渲染
+        if term.screen.synchronized:
+            # 超时保护：BSU 后 500ms 未收到 ESU，强制渲染（程序崩溃等）
+            if term_id not in self._sync_timeout_handles and self._loop:
+                self._sync_timeout_handles[term_id] = self._loop.call_later(
+                    0.5, self._force_end_sync, term_id,
+                )
+            return
+        # ESU 到达，取消超时保护
+        handle = self._sync_timeout_handles.pop(term_id, None)
+        if handle is not None:
+            handle.cancel()
         # 标记需要渲染（仅 live view 需要）
         has_live = any(v.scroll_offset == 0 for v in term.views.values())
         if has_live and term.screen.dirty:
             self._render_pending[term_id] = True
-            self._schedule_render()
+            # ESU 刚结束（was_synchronized → not synchronized）：立即渲染，不等定时器
+            if was_synchronized:
+                self._do_render_term(term_id)
+            else:
+                self._schedule_render()
 
     def _schedule_render(self) -> None:
         """调度渲染定时器（如果尚未调度）。"""
@@ -308,24 +326,48 @@ class TerminalManager:
 
     def _render_frame(self) -> None:
         """渲染定时器回调：处理所有 pending 终端的 dirty diff。"""
-        from mutbot.ptyhost.ansi_render import render_dirty
         self._render_handle = None
         for term_id in list(self._render_pending):
             if not self._render_pending.get(term_id):
                 continue
-            self._render_pending[term_id] = False
             term = self._terminals.get(term_id)
             if term is None or term.screen is None:
+                self._render_pending[term_id] = False
                 continue
-            # 消费剩余 buffer
-            self._flush_and_feed(term_id)
-            frame = render_dirty(term.screen)
-            if not frame:
+            # BSU 期间跳过渲染，保留 pending 状态等 ESU
+            if term.screen.synchronized:
                 continue
-            # 推送给所有 live view
-            for view in term.views.values():
-                if view.scroll_offset == 0:
-                    self._on_frame(term_id, view.id, frame)
+            self._do_render_term(term_id)
+
+    def _do_render_term(self, term_id: str) -> None:
+        """立即渲染单个终端的 dirty diff 并推送。"""
+        from mutbot.ptyhost.ansi_render import render_dirty
+        self._render_pending[term_id] = False
+        term = self._terminals.get(term_id)
+        if term is None or term.screen is None:
+            return
+        # 消费剩余 buffer
+        self._flush_and_feed(term_id)
+        frame = render_dirty(term.screen)
+        if not frame:
+            return
+        # 推送给所有 live view
+        for view in term.views.values():
+            if view.scroll_offset == 0:
+                self._on_frame(term_id, view.id, frame)
+
+    def _force_end_sync(self, term_id: str) -> None:
+        """BSU 超时保护：强制结束 synchronized 状态并渲染。"""
+        self._sync_timeout_handles.pop(term_id, None)
+        term = self._terminals.get(term_id)
+        if term is None or term.screen is None:
+            return
+        if term.screen.synchronized:
+            logger.debug("BSU timeout for %s, forcing render", term_id[:8])
+            term.screen.synchronized = False
+        if term.screen.dirty:
+            self._render_pending[term_id] = True
+            self._do_render_term(term_id)
 
     # ------------------------------------------------------------------
     # I/O

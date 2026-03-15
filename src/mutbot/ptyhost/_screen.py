@@ -18,7 +18,11 @@ class _SafeHistoryScreen(pyte.HistoryScreen):
     保留 before_event 确保 feed 时 screen 在底部。
     简化 after_event（我们不使用 prev_page/next_page 做滚动，
     而是直接从 history.top 读取历史行渲染）。
+    支持 DEC Mode 2026（Synchronized Update）。
     """
+
+    # DEC Private Mode 2026 — Synchronized Update
+    synchronized: bool = False
 
     def after_event(self, event: str) -> None:
         # 只保留光标可见性管理，去掉 prev_page/next_page 的行宽修剪
@@ -26,6 +30,16 @@ class _SafeHistoryScreen(pyte.HistoryScreen):
             self.history.position == self.history.size
             and mo.DECTCEM in self.mode
         )
+
+    def set_mode(self, *modes: int, **kwargs: bool) -> None:
+        if kwargs.get("private") and 2026 in modes:
+            self.synchronized = True
+        super().set_mode(*modes, **kwargs)
+
+    def reset_mode(self, *modes: int, **kwargs: bool) -> None:
+        if kwargs.get("private") and 2026 in modes:
+            self.synchronized = False
+        super().reset_mode(*modes, **kwargs)
 
     def resize(self, lines: int | None = None, columns: int | None = None) -> None:
         # pyte 上游 bug：resize() 收缩行数时，restore_cursor 在 self.lines

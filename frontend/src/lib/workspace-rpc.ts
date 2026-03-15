@@ -127,6 +127,9 @@ export class WorkspaceRpc {
   private channelJsonHandlers = new Map<number, EventHandler>();
   private channelBinaryHandlers = new Map<number, BinaryHandler>();
   private channelClosedHandlers = new Set<ChannelClosedHandler>();
+  // 缓冲 handler 注册前到达的 channel 消息，注册时 flush
+  private channelJsonBuffer = new Map<number, Record<string, unknown>[]>();
+  private channelBinaryBuffer = new Map<number, Uint8Array[]>();
 
   constructor(
     workspaceId: string,
@@ -250,10 +253,12 @@ export class WorkspaceRpc {
   // Channel API
   // -----------------------------------------------------------------------
 
-  /** 清理 Channel 本地 handler（不发送 RPC）。 */
+  /** 清理 Channel 本地 handler 和缓冲（不发送 RPC）。 */
   cleanupChannelHandlers(ch: number) {
     this.channelJsonHandlers.delete(ch);
     this.channelBinaryHandlers.delete(ch);
+    this.channelJsonBuffer.delete(ch);
+    this.channelBinaryBuffer.delete(ch);
   }
 
   /** 向 Channel 发送 JSON 消息（自动注入 ch 字段）。 */
@@ -271,15 +276,39 @@ export class WorkspaceRpc {
     this.sendBinary(frame.buffer);
   }
 
-  /** 注册 Channel JSON 消息回调。 */
+  /** 注册 Channel JSON 消息回调。注册时自动 flush 缓冲的消息。 */
   onChannel(ch: number, handler: EventHandler): () => void {
     this.channelJsonHandlers.set(ch, handler);
+    // flush 缓冲的消息（session.connect RPC 返回前到达的）
+    const buffered = this.channelJsonBuffer.get(ch);
+    if (buffered) {
+      this.channelJsonBuffer.delete(ch);
+      for (const msg of buffered) {
+        try {
+          handler(msg);
+        } catch {
+          // ignore
+        }
+      }
+    }
     return () => this.channelJsonHandlers.delete(ch);
   }
 
-  /** 注册 Channel Binary 消息回调。 */
+  /** 注册 Channel Binary 消息回调。注册时自动 flush 缓冲的消息。 */
   onBinaryChannel(ch: number, handler: BinaryHandler): () => void {
     this.channelBinaryHandlers.set(ch, handler);
+    // flush 缓冲的 binary 消息
+    const buffered = this.channelBinaryBuffer.get(ch);
+    if (buffered) {
+      this.channelBinaryBuffer.delete(ch);
+      for (const payload of buffered) {
+        try {
+          handler(payload);
+        } catch {
+          // ignore
+        }
+      }
+    }
     return () => this.channelBinaryHandlers.delete(ch);
   }
 
@@ -401,6 +430,14 @@ export class WorkspaceRpc {
         } catch {
           // ignore
         }
+      } else {
+        // handler 尚未注册（session.connect RPC 未返回），缓冲消息
+        let buf = this.channelJsonBuffer.get(ch);
+        if (!buf) {
+          buf = [];
+          this.channelJsonBuffer.set(ch, buf);
+        }
+        buf.push(msg);
       }
       return;
     }
@@ -480,6 +517,14 @@ export class WorkspaceRpc {
       } catch {
         // ignore
       }
+    } else {
+      // handler 尚未注册，缓冲
+      let buf = this.channelBinaryBuffer.get(ch);
+      if (!buf) {
+        buf = [];
+        this.channelBinaryBuffer.set(ch, buf);
+      }
+      buf.push(payload);
     }
   }
 
@@ -547,6 +592,8 @@ export class WorkspaceRpc {
     const closedChannels = [...this.channelJsonHandlers.keys(), ...this.channelBinaryHandlers.keys()];
     this.channelJsonHandlers.clear();
     this.channelBinaryHandlers.clear();
+    this.channelJsonBuffer.clear();
+    this.channelBinaryBuffer.clear();
     for (const ch of new Set(closedChannels)) {
       for (const handler of this.channelClosedHandlers) {
         try {
