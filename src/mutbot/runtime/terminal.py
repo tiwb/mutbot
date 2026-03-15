@@ -160,6 +160,7 @@ class TerminalManager:
         self._output_buffers.pop(term_id, None)
         self._render_pending.pop(term_id, None)
         self._scroll_offsets.pop(term_id, None)
+
         # 清理 pyte 实例
         self._screens.pop(term_id, None)
         self._streams.pop(term_id, None)
@@ -253,23 +254,33 @@ class TerminalManager:
             if controller is not None and client_id != controller:
                 return None
 
+        # --- 最简 resize：resize PTY → resize pyte → 正常渲染周期处理 ---
         result = await self._client.resize(term_id, rows, cols)
-        # 同步 resize pyte HistoryScreen（保护可见行到历史）
+
+        actual_rows, actual_cols = rows, cols
         if result is not None:
-            screen = self._screens.get(term_id)
-            if screen:
-                # resize 前将可见行备份到 history top
-                for i in range(screen.lines):
-                    screen.history.top.append(screen.buffer[i].copy())
-                screen.resize(result[0], result[1])
-                # resize 后标记全部行 dirty
+            actual_rows, actual_cols = result
+
+        screen = self._screens.get(term_id)
+        if screen:
+            old_rows, old_cols = screen.lines, screen.columns
+            if actual_rows != old_rows or actual_cols != old_cols:
+                logger.info(
+                    "resize %s: pyte %dx%d → %dx%d, history_top=%d (client=%s)",
+                    term_id[:8], old_cols, old_rows,
+                    actual_cols, actual_rows, len(screen.history.top),
+                    client_id[:8] if client_id else "direct",
+                )
+                screen.resize(actual_rows, actual_cols)
                 screen.dirty.update(range(screen.lines))
                 self._render_pending[term_id] = True
-            logger.debug(
-                "resize %s: %dx%d (client=%s)",
-                term_id[:8], result[1], result[0],
+        else:
+            logger.info(
+                "resize %s: %dx%d, no pyte screen (client=%s)",
+                term_id[:8], actual_cols, actual_rows,
                 client_id[:8] if client_id else "direct",
             )
+
         return result
 
     # ------------------------------------------------------------------
@@ -355,16 +366,8 @@ class TerminalManager:
             )
             self._flush_handles[term_id] = handle
 
-    def _flush_output(self, term_id: str) -> None:
-        """将缓冲区数据 feed 给 pyte，调度渲染定时器（跳帧）。"""
-        self._flush_handles.pop(term_id, None)
-        buf = self._output_buffers.pop(term_id, None)
-        if not buf:
-            return
-
-        data = bytes(buf)
-
-        # feed pyte（懒创建 pyte 实例）
+    def _feed_pyte(self, term_id: str, data: bytes) -> None:
+        """将原始 PTY 数据 feed 给 pyte（解码 + stream.feed）。"""
         screen = self._ensure_pyte(term_id)
         stream = self._streams.get(term_id)
         decoder = self._decoders.get(term_id)
@@ -374,19 +377,26 @@ class TerminalManager:
                 try:
                     stream.feed(text)
                 except RuntimeError:
-                    # pyte HistoryScreen 的 before_event/after_event 在快速数据流中
-                    # 可能出现 "dictionary changed size during iteration"，
-                    # 重建 pyte 实例恢复
                     logger.warning("pyte feed RuntimeError for %s, rebuilding", term_id[:8])
                     self._screens.pop(term_id, None)
                     self._streams.pop(term_id, None)
                     self._decoders.pop(term_id, None)
-                    screen = self._ensure_pyte(term_id)
+                    self._ensure_pyte(term_id)
 
-        # 新数据到达：pyte 已在 before_event 中回到底部处理，
-        # 但如果用户正在查看历史（scroll_offset > 0），不强制回到底部
+    def _flush_output(self, term_id: str) -> None:
+        """将缓冲区数据 feed 给 pyte，调度渲染定时器（跳帧）。"""
+        self._flush_handles.pop(term_id, None)
+        buf = self._output_buffers.pop(term_id, None)
+        if not buf:
+            return
+
+        nbytes = len(buf)
+        self._feed_pyte(term_id, bytes(buf))
+        # [DIAG] 临时 INFO 日志
+        logger.info("flush %s: %d bytes", term_id[:8], nbytes)
+
+        # 如果用户正在查看历史（scroll_offset > 0），不触发渲染
         if self._scroll_offsets.get(term_id, 0) == 0:
-            # 用户在底部，正常渲染
             self._render_pending[term_id] = True
             if term_id not in self._render_handles:
                 loop = asyncio.get_event_loop()
@@ -396,21 +406,18 @@ class TerminalManager:
                 self._render_handles[term_id] = handle
 
     def _render_frame(self, term_id: str) -> None:
-        """渲染定时器回调：计算 dirty diff，广播 ANSI 帧。
-
-        如果 output_buffer 仍有数据（PTY 还在输出），跳过本次渲染，
-        等下一个 flush → render 周期再画，避免渲染大屏幕刷新的中间态。
-        """
+        """渲染定时器回调：先 flush 所有已到达数据，再计算 dirty diff 广播。"""
         self._render_handles.pop(term_id, None)
         if not self._render_pending.pop(term_id, False):
             return
 
-        # 数据还在涌入 → 推迟渲染（模拟本地终端"读完所有数据再 paint"）
-        buf = self._output_buffers.get(term_id)
+        # 渲染前：消费所有已到达但尚未 feed 的数据，确保 pyte 状态尽可能完整
+        buf = self._output_buffers.pop(term_id, None)
+        extra = 0
         if buf:
-            self._render_pending[term_id] = True
-            # 不在这里调度 timer — 下次 _flush_output 会调度
-            return
+            extra = len(buf)
+            self._cancel_flush_timer(term_id)
+            self._feed_pyte(term_id, bytes(buf))
 
         conns = self._connections.get(term_id)
         if not conns:
@@ -419,21 +426,25 @@ class TerminalManager:
         if screen is None:
             return
 
-        # 计算 dirty diff 帧
         frame = render_dirty(screen)
-
         if not frame:
             return
 
+        # [DIAG] 临时 INFO 日志
+        logger.info(
+            "render %s: frame=%d bytes, extra_flush=%d bytes",
+            term_id[:8], len(frame), extra,
+        )
+
         # 广播 ANSI 帧
-        dead: list[str] = []
         for client_id, (on_output, _) in list(conns.items()):
             try:
                 on_output(frame)
             except Exception:
-                dead.append(client_id)
-        for client_id in dead:
-            conns.pop(client_id, None)
+                logger.warning(
+                    "send_binary failed for client %s on term %s, keeping connection",
+                    client_id[:8], term_id[:8], exc_info=True,
+                )
 
     def _cancel_render_timer(self, term_id: str) -> None:
         handle = self._render_handles.pop(term_id, None)
@@ -450,11 +461,7 @@ class TerminalManager:
         return {"offset": offset, "total": total, "visible": screen.lines}
 
     def scroll_terminal(self, term_id: str, lines: int) -> None:
-        """服务端滚动：正数=向上（看历史），负数=向下。
-
-        不修改 pyte screen buffer（prev_page/next_page 是整页跳跃且有副作用）。
-        直接从 history.top + buffer 组装可见行，逐行精确滚动。
-        """
+        """服务端滚动：正数=向上（看历史），负数=向下。"""
         screen = self._screens.get(term_id)
         if screen is None:
             return
@@ -511,14 +518,14 @@ class TerminalManager:
         if not frame:
             return
 
-        dead: list[str] = []
         for client_id, (on_output, _) in list(conns.items()):
             try:
                 on_output(frame)
             except Exception:
-                dead.append(client_id)
-        for client_id in dead:
-            conns.pop(client_id, None)
+                logger.warning(
+                    "send_binary failed for client %s on term %s (scroll), keeping connection",
+                    client_id[:8], term_id[:8], exc_info=True,
+                )
 
     def _cancel_flush_timer(self, term_id: str) -> None:
         handle = self._flush_handles.pop(term_id, None)
@@ -561,6 +568,7 @@ class TerminalManager:
         self._output_buffers.clear()
         self._render_pending.clear()
         self._scroll_offsets.clear()
+
         self._screens.clear()
         self._streams.clear()
         self._decoders.clear()
@@ -650,6 +658,9 @@ async def _terminal_on_connect(
         # 发送 pyte 当前屏幕快照（连接/重连时恢复显示）
         # 如果 pyte 屏幕不存在（服务器重启后），先获取 scrollback 再 attach，
         # 避免 await 期间实时 PTY 数据和 scrollback 重叠导致内容重复
+        import time as _time
+        t0 = _time.monotonic()
+
         screen = tm._screens.get(term_id)
         if screen is None:
             # 先获取 scrollback（此时尚未 attach，_on_pty_output 无连接会直接跳过）
@@ -659,19 +670,23 @@ async def _terminal_on_connect(
             except Exception:
                 logger.debug("Failed to fetch scrollback for snapshot", exc_info=True)
 
+            t1 = _time.monotonic()
+            logger.info(
+                "on_connect %s: scrollback=%d bytes, fetch=%.1fms",
+                term_id[:8], len(scrollback), (t1 - t0) * 1000,
+            )
+
             # 创建 pyte 并 feed scrollback
             screen = tm._ensure_pyte(term_id)
             if scrollback:
-                stream = tm._streams.get(term_id)
-                decoder = tm._decoders.get(term_id)
-                if stream and decoder:
-                    text = decoder.decode(scrollback, False)
-                    if text:
-                        try:
-                            stream.feed(text)
-                        except RuntimeError:
-                            pass
-                    screen.dirty.clear()
+                tm._feed_pyte(term_id, scrollback)
+                screen.dirty.clear()
+
+            t2 = _time.monotonic()
+            logger.info(
+                "on_connect %s: pyte_feed=%.1fms",
+                term_id[:8], (t2 - t1) * 1000,
+            )
 
             # scrollback 恢复完成后再 attach，实时数据从此刻开始进入 pyte
             tm.attach(term_id, client_id, on_output, on_exit)
@@ -680,6 +695,11 @@ async def _terminal_on_connect(
             tm.attach(term_id, client_id, on_output, on_exit)
 
         snapshot = render_full(screen)
+        t3 = _time.monotonic()
+        logger.info(
+            "on_connect %s: snapshot=%d bytes, total=%.1fms",
+            term_id[:8], len(snapshot), (t3 - t0) * 1000,
+        )
         if snapshot:
             channel.send_binary(snapshot)
 

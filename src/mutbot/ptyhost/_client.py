@@ -131,7 +131,7 @@ class PtyHostClient:
         """后台任务：接收 ptyhost 推送的输出和事件。"""
         try:
             while True:
-                data = await self._reader.read(4096)  # type: ignore[union-attr]
+                data = await self._reader.read(65536)  # type: ignore[union-attr]
                 if not data:
                     break
                 self._ws.receive_data(data)  # type: ignore[union-attr]
@@ -192,6 +192,8 @@ class PtyHostClient:
             return
         term_id = data[:16].hex()
         payload = data[16:]
+        # [DIAG] 临时日志：ptyhost → mutbot 单个 WebSocket message 的大小
+        logger.info("pty_msg %s: %d bytes", term_id[:8], len(payload))
         if self.on_output:
             self.on_output(term_id, payload)
 

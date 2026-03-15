@@ -144,7 +144,7 @@ class TerminalManager:
                     proc = term.process
                     while term.alive:
                         try:
-                            data = proc.read(4096)
+                            data = proc.read(65536)
                             if not data:
                                 break
                             if isinstance(data, str):
@@ -165,7 +165,7 @@ class TerminalManager:
                             if not rlist:
                                 fd = term._fd
                                 continue
-                            data = os.read(fd, 4096)
+                            data = os.read(fd, 65536)
                             if not data:
                                 break
                             self._on_pty_output(term, data)

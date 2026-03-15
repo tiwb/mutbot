@@ -115,8 +115,10 @@ def render_dirty(screen: pyte.Screen) -> bytes:
         return b""
 
     parts: list[str] = []
-    # 隐藏光标，避免渲染过程中光标闪烁
-    parts.append("\x1b[?25l")
+    # 同步更新：xterm.js 在收到 BSU 后暂停渲染，直到 ESU 时一次性刷新，
+    # 防止大帧被分帧处理导致的闪烁
+    parts.append("\x1b[?2026h")  # BSU (Begin Synchronized Update)
+    parts.append("\x1b[?25l")    # 隐藏光标
 
     for row in sorted(screen.dirty):
         if 0 <= row < screen.lines:
@@ -125,7 +127,8 @@ def render_dirty(screen: pyte.Screen) -> bytes:
     # 恢复光标位置并显示
     cx, cy = screen.cursor.x, screen.cursor.y
     parts.append(f"\x1b[{cy + 1};{cx + 1}H")
-    parts.append("\x1b[?25h")
+    parts.append("\x1b[?25h")    # 显示光标
+    parts.append("\x1b[?2026l")  # ESU (End Synchronized Update)
 
     screen.dirty.clear()
     return "".join(parts).encode("utf-8")
@@ -139,7 +142,8 @@ def render_lines(lines: list, cols: int, default_char: "pyte.screens.Char") -> b
     default_char: 默认空白字符
     """
     parts: list[str] = []
-    parts.append("\x1b[?25l")  # 隐藏光标
+    parts.append("\x1b[?2026h")  # BSU
+    parts.append("\x1b[?25l")    # 隐藏光标
 
     for row_idx, line in enumerate(lines):
         # 光标定位到行首
@@ -162,6 +166,7 @@ def render_lines(lines: list, cols: int, default_char: "pyte.screens.Char") -> b
 
     # 隐藏光标（滚动浏览时不显示光标）
     parts.append(f"\x1b[{len(lines)};1H")
+    parts.append("\x1b[?2026l")  # ESU
 
     return "".join(parts).encode("utf-8")
 
@@ -171,8 +176,8 @@ def render_full(screen: pyte.Screen) -> bytes:
     parts: list[str] = []
     # 重置 + 清屏 + 光标归位
     parts.append("\x1b[0m\x1b[2J\x1b[H")
-    # 隐藏光标
-    parts.append("\x1b[?25l")
+    parts.append("\x1b[?2026h")  # BSU
+    parts.append("\x1b[?25l")    # 隐藏光标
 
     for row in range(screen.lines):
         parts.append(_render_line(screen, row))
@@ -180,6 +185,7 @@ def render_full(screen: pyte.Screen) -> bytes:
     # 恢复光标位置并显示
     cx, cy = screen.cursor.x, screen.cursor.y
     parts.append(f"\x1b[{cy + 1};{cx + 1}H")
-    parts.append("\x1b[?25h")
+    parts.append("\x1b[?25h")    # 显示光标
+    parts.append("\x1b[?2026l")  # ESU
 
     return "".join(parts).encode("utf-8")

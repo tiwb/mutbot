@@ -133,3 +133,44 @@ PTY 进程（通常为 bash）使用以下环境配置：
 - 其余环境变量继承自 mutbot server 进程
 
 PTY 输出中的 OSC 0/1/2 序列（终端标题变更）在服务端被过滤，不写入 scrollback，不发送给客户端。其他 OSC 序列（超链接、颜色等）正常透传。
+
+## pyte 虚拟终端渲染
+
+### 架构
+
+服务端使用 pyte HistoryScreen 作为虚拟终端模拟器。PTY 原始输出不再直接转发给前端，而是经过以下管线：
+
+```
+PTY → ptyhost → mutbot → pyte Screen → render_dirty() → ANSI 帧 → 前端 xterm.js
+```
+
+pyte 消费所有原始 ANSI 转义序列，维护一个虚拟屏幕 buffer。`render_dirty()` 只渲染变化的行（dirty lines），生成紧凑的 ANSI 帧发送给前端。
+
+### 渲染节奏
+
+- **Flush 定时器**（16ms）：将缓冲的 PTY 数据喂给 pyte
+- **Render 定时器**（80ms）：render 前先 flush 所有剩余缓冲数据，再调用 `render_dirty()` 生成帧
+
+Render 前 flush all 确保 pyte 看到尽可能完整的状态，避免渲染中间态。
+
+### 防闪烁：Synchronized Update (DEC Mode 2026)
+
+`render_dirty()` 生成的 ANSI 帧使用 **Synchronized Update** 协议包裹：
+
+```
+\x1b[?2026h     ← BSU (Begin Synchronized Update)
+\x1b[?25l       ← 隐藏光标
+... dirty lines 更新 ...
+\x1b[?25h       ← 显示光标
+\x1b[?2026l     ← ESU (End Synchronized Update)
+```
+
+xterm.js 在收到 BSU 后暂停屏幕渲染，缓冲所有后续 ANSI 处理，直到 ESU 时一次性刷新。这解决了大帧（多行重绘，4000+ bytes）被 xterm.js 分帧处理导致的可见闪烁——部分行已更新、其余行仍是旧内容的混合状态。
+
+**为什么需要这个协议**：pyte 的 `render_dirty()` 采用"整行重写"策略，每个 dirty 行都从行首定位、写入全部字符、清除行尾。对于全屏重绘（如 TUI 应用状态切换），产生的数据量远大于应用原始的增量 PTY 输出，触发 xterm.js 的输入分帧处理机制。
+
+**注意**：pyte 会消费原始 PTY 输出中的 `?2026h`/`?2026l` 序列（如果应用自身发出了这些标记），不会透传给前端。因此必须在 `render_dirty()` 的输出中重新添加。
+
+### 已知性能问题
+
+服务器重启后首次连接需要从 ptyhost 获取 scrollback 数据并通过 pyte 重新 replay。scrollback 累积较大时（如 10MB），pyte 逐字符解析需要数十秒。后续优化方向：限制 scrollback 大小、按需加载历史、或持久化 pyte 屏幕状态。
