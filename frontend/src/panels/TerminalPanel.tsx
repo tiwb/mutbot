@@ -48,6 +48,9 @@ const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPa
   const [expired, setExpired] = useState(false);
   const [connected, setConnected] = useState(false);
   const [ctrlVPaste, setCtrlVPaste] = useState(true);
+  // 服务端滚动条状态
+  const [scrollState, setScrollState] = useState<{ offset: number; total: number; visible: number } | null>(null);
+  const scrollFadeRef = useRef<number>(0);
   // follow_me 客户端 ID（null = Auto 模式）
   const [followMe, setFollowMe] = useState<string | null>(null);
 
@@ -57,6 +60,8 @@ const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPa
 
   // Expose init() via ref so handleRecreate can call it
   const initRef = useRef<(() => void) | null>(null);
+  // Expose sendScrollToBottom for imperative handle
+  const sendScrollToBottomRef = useRef<(() => void) | null>(null);
 
   // Expose writeInput / focusTerminal / scrollToBottom to parent via ref
   useImperativeHandle(ref, () => ({
@@ -67,13 +72,13 @@ const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPa
         rpc.sendBinaryToChannel(ch, encoder.encode(data));
       }
       // Auto-scroll to bottom when sending input
-      termRef.current?.scrollToBottom();
+      sendScrollToBottomRef.current?.();
     },
     focusTerminal() {
       termRef.current?.focus();
     },
     scrollToBottom() {
-      termRef.current?.scrollToBottom();
+      sendScrollToBottomRef.current?.();
     },
   }), [rpc]);
 
@@ -114,6 +119,7 @@ const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPa
       fontFamily: '"SF Mono", "Cascadia Code", Consolas, monospace',
       fontSize: 13,
       cursorBlink: true,
+      scrollback: 0,  // 禁用 xterm 内部 scrollback，由服务端 pyte 管理
     });
 
     const fitAddon = new FitAddon();
@@ -146,6 +152,20 @@ const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPa
         rpc.sendToChannel(ch, { type: "resize", rows: r, cols: c });
       }
     }
+
+    function sendScroll(lines: number) {
+      if (ch > 0 && rpc && lines !== 0) {
+        rpc.sendToChannel(ch, { type: "scroll", lines });
+      }
+    }
+
+    function sendScrollToBottom() {
+      if (ch > 0 && rpc) {
+        rpc.sendToChannel(ch, { type: "scroll_to_bottom" });
+      }
+    }
+
+    sendScrollToBottomRef.current = sendScrollToBottom;
 
     function handleBinaryData(payload: Uint8Array) {
       if (!active) return;
@@ -209,6 +229,23 @@ const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPa
       if (msgType === "resize_owner") {
         const fm = msg.follow_me as string | null;
         setFollowMe(fm);
+        return;
+      }
+
+      if (msgType === "scroll_state") {
+        const offset = msg.offset as number;
+        const total = msg.total as number;
+        const visible = msg.visible as number;
+        if (offset > 0 && total > 0) {
+          setScrollState({ offset, total, visible });
+        } else {
+          setScrollState(null);
+        }
+        // 自动隐藏：2 秒后淡出
+        clearTimeout(scrollFadeRef.current);
+        scrollFadeRef.current = window.setTimeout(() => {
+          setScrollState(null);
+        }, 2000);
         return;
       }
     }
@@ -418,7 +455,7 @@ const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPa
         accum += velocity;
         const lines = Math.trunc(accum / lineHeight);
         if (lines !== 0) {
-          term.scrollLines(lines);
+          sendScroll(-lines);  // 惯性：与触摸同向，取反
           accum -= lines * lineHeight;
         }
         inertiaRaf = requestAnimationFrame(tick);
@@ -472,6 +509,8 @@ const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPa
 
       if (!isTouchScrolling && Math.abs(deltaY) < TOUCH_THRESHOLD) return;
       isTouchScrolling = true;
+      // 只在滚动时阻止默认行为（防止页面滚动），不影响 tap 聚焦和 IME 输入
+      e.preventDefault();
 
       const now = performance.now();
       const dt = now - lastTouchTime;
@@ -486,10 +525,9 @@ const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPa
       touchAccum += deltaY;
       const lines = Math.trunc(touchAccum / lineHeight);
       if (lines !== 0) {
-        term.scrollLines(lines);
+        sendScroll(-lines);  // 触摸：上滑 deltaY>0 期望向下滚，后端 lines>0=向上，取反
         touchAccum -= lines * lineHeight;
       }
-      e.preventDefault();
     };
 
     const onTouchEnd = (e: TouchEvent) => {
@@ -513,11 +551,29 @@ const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPa
     container.addEventListener("touchmove", onTouchMove, { passive: false });
     container.addEventListener("touchend", onTouchEnd, { passive: false });
 
+    // PC 端鼠标滚轮 → 服务端滚动
+    // 使用捕获阶段拦截，在 xterm.js 处理之前阻止事件
+    // （xterm.js 在鼠标模式下会把 wheel 转成鼠标序列发给 PTY）
+    let wheelAccum = 0;
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const lineHeight = getLineHeight();
+      wheelAccum += e.deltaY;
+      const lines = Math.trunc(wheelAccum / lineHeight);
+      if (lines !== 0) {
+        sendScroll(-lines);  // wheel deltaY>0=向下，后端 lines>0=向上，取反
+        wheelAccum -= lines * lineHeight;
+      }
+    };
+    container.addEventListener("wheel", onWheel, { passive: false, capture: true });
+
     init();
 
     return () => {
       active = false;
       initRef.current = null;
+      sendScrollToBottomRef.current = null;
       inputDisposable.dispose();
       resizeDisposable.dispose();
       resizeObserver.disconnect();
@@ -527,6 +583,7 @@ const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPa
       container.removeEventListener("touchstart", onTouchStart);
       container.removeEventListener("touchmove", onTouchMove);
       container.removeEventListener("touchend", onTouchEnd);
+      container.removeEventListener("wheel", onWheel, { capture: true });
       unsubClosed();
       // Close channel on cleanup
       if (ch > 0 && rpc) {
@@ -630,8 +687,32 @@ const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPa
     },
   ];
 
+  // 滚动条：thumb 位置和大小
+  const scrollbar = scrollState && scrollState.total > 0 ? (() => {
+    const { offset, total, visible } = scrollState;
+    const totalRange = total + visible;
+    const thumbSize = Math.max(visible / totalRange * 100, 5); // 最小 5%
+    // offset=0 → 底部, offset=total → 顶部
+    const thumbTop = (1 - offset / total) * (100 - thumbSize);
+    return { thumbSize, thumbTop };
+  })() : null;
+
   return (
     <div ref={containerRef} className="terminal-panel" onContextMenu={handleContextMenu}>
+      {scrollbar && (
+        <div style={{
+          position: "absolute", right: 2, top: 0, bottom: 0, width: 6,
+          pointerEvents: "none", zIndex: 10,
+        }}>
+          <div style={{
+            position: "absolute", right: 0, width: 6, borderRadius: 3,
+            backgroundColor: "rgba(255,255,255,0.35)",
+            top: `${scrollbar.thumbTop}%`,
+            height: `${scrollbar.thumbSize}%`,
+            transition: "top 0.05s linear, height 0.05s linear",
+          }} />
+        </div>
+      )}
       {(!connected || expired) && (
         <div className="terminal-expired-overlay">
           <div className="terminal-expired-content">

@@ -7,10 +7,8 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+import pyte
 
-if TYPE_CHECKING:
-    import pyte
 
 # pyte 命名色 → SGR 前景色编号
 _FG_NAMED: dict[str, int] = {
@@ -83,9 +81,13 @@ def _render_line(screen: pyte.Screen, row: int) -> str:
     # 光标定位到行首（1-based）
     parts.append(f"\x1b[{row + 1};1H")
 
+    # HistoryScreen 滚动后 buffer 行可能是普通 dict（非 StaticDefaultDict），
+    # 缺失的 key 需要用默认空白字符填充
+    default_char = screen.default_char
+
     prev_key: tuple = ()
     for col in range(cols):
-        char = line[col]
+        char = line.get(col, default_char) if isinstance(line, dict) else line[col]
         # 跳过宽字符占位列（pyte 在宽字符后紧跟一个 data="" 的占位 Char）
         if char.data == "":
             continue
@@ -126,6 +128,41 @@ def render_dirty(screen: pyte.Screen) -> bytes:
     parts.append("\x1b[?25h")
 
     screen.dirty.clear()
+    return "".join(parts).encode("utf-8")
+
+
+def render_lines(lines: list, cols: int, default_char: "pyte.screens.Char") -> bytes:
+    """渲染任意行列表为全屏 ANSI 帧（用于滚动视图）。
+
+    lines: list of line dicts (pyte buffer row or history row)
+    cols: 终端列数
+    default_char: 默认空白字符
+    """
+    parts: list[str] = []
+    parts.append("\x1b[?25l")  # 隐藏光标
+
+    for row_idx, line in enumerate(lines):
+        # 光标定位到行首
+        parts.append(f"\x1b[{row_idx + 1};1H")
+        prev_key: tuple = ()
+        for col in range(cols):
+            char = line.get(col, default_char) if isinstance(line, dict) else line[col]
+            if char.data == "":
+                continue
+            key = _char_sgr_key(char)
+            if key != prev_key:
+                sgr = _sgr_params_for_char(char)
+                if sgr:
+                    parts.append(f"\x1b[0;{';'.join(str(p) for p in sgr)}m")
+                else:
+                    parts.append("\x1b[0m")
+                prev_key = key
+            parts.append(char.data or " ")
+        parts.append("\x1b[0m\x1b[K")
+
+    # 隐藏光标（滚动浏览时不显示光标）
+    parts.append(f"\x1b[{len(lines)};1H")
+
     return "".join(parts).encode("utf-8")
 
 
