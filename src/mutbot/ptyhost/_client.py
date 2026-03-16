@@ -269,6 +269,10 @@ class PtyHostClient:
         """滚动 view。lines>0 向上，lines<0 向下。"""
         await self._send_command({"cmd": "scroll", "view_id": view_id, "lines": lines})
 
+    async def scroll_to(self, view_id: str, offset: int) -> None:
+        """滚动 view 到绝对偏移。offset=0 为 live，>0 为从底部往上行数。"""
+        await self._send_command({"cmd": "scroll_to", "view_id": view_id, "offset": offset})
+
     async def scroll_to_bottom(self, view_id: str) -> None:
         """view 回到 live。"""
         await self._send_command({"cmd": "scroll_to_bottom", "view_id": view_id})

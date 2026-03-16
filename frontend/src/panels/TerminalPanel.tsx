@@ -48,9 +48,13 @@ const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPa
   const [expired, setExpired] = useState(false);
   const [connected, setConnected] = useState(false);
   const [ctrlVPaste, setCtrlVPaste] = useState(true);
-  // 服务端滚动条状态
+  // 服务端滚动条状态（始终保留最新数据，不因 offset=0 而清空）
   const [scrollState, setScrollState] = useState<{ offset: number; total: number; visible: number } | null>(null);
   const scrollFadeRef = useRef<number>(0);
+  // 滚动条临时可见（滚动操作后 2 秒内）
+  const [scrollbarFlash, setScrollbarFlash] = useState(false);
+  // 滚动条拖拽中
+  const scrollbarDraggingRef = useRef(false);
   // follow_me 客户端 ID（null = Auto 模式）
   const [followMe, setFollowMe] = useState<string | null>(null);
 
@@ -62,6 +66,9 @@ const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPa
   const initRef = useRef<(() => void) | null>(null);
   // Expose sendScrollToBottom for imperative handle
   const sendScrollToBottomRef = useRef<(() => void) | null>(null);
+  // Expose sendScrollTo / sendScroll for scrollbar interaction
+  const sendScrollToRef = useRef<((offset: number) => void) | null>(null);
+  const sendScrollRef = useRef<((lines: number) => void) | null>(null);
 
   // Expose writeInput / focusTerminal / scrollToBottom to parent via ref
   useImperativeHandle(ref, () => ({
@@ -165,7 +172,15 @@ const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPa
       }
     }
 
+    function sendScrollTo(offset: number) {
+      if (ch > 0 && rpc) {
+        rpc.sendToChannel(ch, { type: "scroll_to", offset });
+      }
+    }
+
     sendScrollToBottomRef.current = sendScrollToBottom;
+    sendScrollToRef.current = sendScrollTo;
+    sendScrollRef.current = sendScroll;
 
     function handleBinaryData(payload: Uint8Array) {
       if (!active) return;
@@ -236,16 +251,18 @@ const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPa
         const offset = msg.offset as number;
         const total = msg.total as number;
         const visible = msg.visible as number;
-        if (offset > 0 && total > 0) {
+        // 拖拽期间不更新 React state，避免 re-render 干扰 DOM 操作
+        if (!scrollbarDraggingRef.current && total > 0) {
           setScrollState({ offset, total, visible });
-        } else {
-          setScrollState(null);
         }
-        // 自动隐藏：2 秒后淡出
-        clearTimeout(scrollFadeRef.current);
-        scrollFadeRef.current = window.setTimeout(() => {
-          setScrollState(null);
-        }, 2000);
+        // 闪现滚动条：滚动操作后 2 秒可见
+        if (!scrollbarDraggingRef.current) {
+          setScrollbarFlash(true);
+          clearTimeout(scrollFadeRef.current);
+          scrollFadeRef.current = window.setTimeout(() => {
+            setScrollbarFlash(false);
+          }, 2000);
+        }
         return;
       }
     }
@@ -574,6 +591,8 @@ const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPa
       active = false;
       initRef.current = null;
       sendScrollToBottomRef.current = null;
+      sendScrollToRef.current = null;
+      sendScrollRef.current = null;
       inputDisposable.dispose();
       resizeDisposable.dispose();
       resizeObserver.disconnect();
@@ -688,29 +707,141 @@ const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPa
   ];
 
   // 滚动条：thumb 位置和大小
-  const scrollbar = scrollState && scrollState.total > 0 ? (() => {
+  const hasScrollbar = scrollState && scrollState.total > scrollState.visible;
+  const scrollbar = hasScrollbar ? (() => {
     const { offset, total, visible } = scrollState;
-    const totalRange = total + visible;
-    const thumbSize = Math.max(visible / totalRange * 100, 5); // 最小 5%
-    // offset=0 → 底部, offset=total → 顶部
-    const thumbTop = (1 - offset / total) * (100 - thumbSize);
-    return { thumbSize, thumbTop };
+    const thumbSize = Math.max(visible / total * 100, 5); // 可见区域占总内容的比例
+    // maxOffset = total - visible = 历史行数，与后端 len(screen.history.top) 一致
+    const maxOffset = total - visible;
+    // offset=0 → 底部(live), offset=maxOffset → 顶部
+    const thumbTop = maxOffset > 0
+      ? (1 - offset / maxOffset) * (100 - thumbSize)
+      : 100 - thumbSize;
+    return { thumbSize, thumbTop, maxOffset };
   })() : null;
+
+  // 滚动条拖拽处理（直接 DOM 操作，避免 React re-render）
+  const trackRef = useRef<HTMLDivElement>(null);
+  const thumbRef = useRef<HTMLDivElement>(null);
+
+  const handleThumbPointerDown = useCallback((e: React.PointerEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const track = trackRef.current;
+    const thumb = thumbRef.current;
+    if (!track || !thumb || !scrollState) return;
+
+    scrollbarDraggingRef.current = true;
+    setScrollbarFlash(true);
+    clearTimeout(scrollFadeRef.current);
+
+    const trackRect = track.getBoundingClientRect();
+    const startY = e.clientY;
+    // 从当前 DOM 读取 thumb 位置（比 React state 更准确）
+    const currentTop = parseFloat(thumb.style.top) || 0;
+    const thumbSize = parseFloat(thumb.style.height) || 5;
+    const { total } = scrollState;
+    // maxOffset = 历史行数，与后端一致
+    const maxOffset = total - scrollState.visible;
+    const pointerId = e.pointerId;
+
+    thumb.setPointerCapture(pointerId);
+
+    // 节流服务端请求
+    let lastSendTime = 0;
+    let pendingOffset = -1;
+    let sendTimerId = 0;
+
+    const flushToServer = (offset: number) => {
+      sendScrollToRef.current?.(offset);
+      lastSendTime = performance.now();
+      pendingOffset = -1;
+    };
+
+    const onPointerMove = (ev: PointerEvent) => {
+      const deltaY = ev.clientY - startY;
+      const deltaPct = (deltaY / trackRect.height) * 100;
+      const newThumbTop = Math.max(0, Math.min(100 - thumbSize, currentTop + deltaPct));
+
+      // 直接操作 DOM — 即时跟手，无 React re-render
+      thumb.style.top = `${newThumbTop}%`;
+
+      // 映射回 offset（maxOffset = 历史行数）
+      const ratio = maxOffset > 0 ? 1 - newThumbTop / (100 - thumbSize) : 0;
+      const newOffset = Math.round(ratio * maxOffset);
+
+      // 节流发送到服务端（每 50ms）
+      const now = performance.now();
+      if (now - lastSendTime >= 50) {
+        flushToServer(newOffset);
+      } else {
+        pendingOffset = newOffset;
+        if (!sendTimerId) {
+          const delay = 50 - (now - lastSendTime);
+          sendTimerId = window.setTimeout(() => {
+            sendTimerId = 0;
+            if (pendingOffset >= 0) flushToServer(pendingOffset);
+          }, delay);
+        }
+      }
+    };
+
+    const onPointerUp = () => {
+      scrollbarDraggingRef.current = false;
+      thumb.releasePointerCapture(pointerId);
+      thumb.removeEventListener("pointermove", onPointerMove);
+      thumb.removeEventListener("pointerup", onPointerUp);
+      if (sendTimerId) clearTimeout(sendTimerId);
+      // 发送最终位置
+      if (pendingOffset >= 0) flushToServer(pendingOffset);
+      // 拖拽结束后启动 2 秒隐藏
+      clearTimeout(scrollFadeRef.current);
+      scrollFadeRef.current = window.setTimeout(() => {
+        setScrollbarFlash(false);
+      }, 2000);
+    };
+
+    thumb.addEventListener("pointermove", onPointerMove);
+    thumb.addEventListener("pointerup", onPointerUp);
+  }, [scrollState]);
+
+  const handleTrackClick = useCallback((e: React.MouseEvent) => {
+    // 点击轨道（非滑块）→ 翻页
+    const track = trackRef.current;
+    const thumb = thumbRef.current;
+    if (!track || !thumb || !scrollState) return;
+    // 忽略点击在 thumb 上的事件
+    if (e.target === thumb) return;
+    const trackRect = track.getBoundingClientRect();
+    const thumbRect = thumb.getBoundingClientRect();
+    const thumbCenter = thumbRect.top + thumbRect.height / 2 - trackRect.top;
+    const clickY = e.clientY - trackRect.top;
+    // 点击在 thumb 上方 → 向上翻页（offset 增大），点击在下方 → 向下翻页
+    const pageLines = scrollState.visible;
+    if (clickY < thumbCenter) {
+      sendScrollRef.current?.(pageLines);
+    } else {
+      sendScrollRef.current?.(-pageLines);
+    }
+  }, [scrollState]);
 
   return (
     <div ref={containerRef} className="terminal-panel" onContextMenu={handleContextMenu}>
       {scrollbar && (
-        <div style={{
-          position: "absolute", right: 2, top: 0, bottom: 0, width: 6,
-          pointerEvents: "none", zIndex: 10,
-        }}>
-          <div style={{
-            position: "absolute", right: 0, width: 6, borderRadius: 3,
-            backgroundColor: "rgba(255,255,255,0.35)",
-            top: `${scrollbar.thumbTop}%`,
-            height: `${scrollbar.thumbSize}%`,
-            transition: "top 0.05s linear, height 0.05s linear",
-          }} />
+        <div
+          ref={trackRef}
+          className={`terminal-scrollbar-track${scrollbarFlash || scrollbarDraggingRef.current ? " active" : ""}`}
+          onClick={handleTrackClick}
+        >
+          <div
+            ref={thumbRef}
+            className="terminal-scrollbar-thumb"
+            style={{
+              top: `${scrollbar.thumbTop}%`,
+              height: `${scrollbar.thumbSize}%`,
+            }}
+            onPointerDown={handleThumbPointerDown}
+          />
         </div>
       )}
       {(!connected || expired) && (

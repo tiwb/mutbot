@@ -204,6 +204,10 @@ class PtyHostApp:
             self._manager.scroll_view(cmd["view_id"], cmd["lines"])
             return {"ok": True}
 
+        elif action == "scroll_to":
+            self._manager.scroll_view_to(cmd["view_id"], cmd["offset"])
+            return {"ok": True}
+
         elif action == "scroll_to_bottom":
             self._manager.scroll_view_to_bottom(cmd["view_id"])
             return {"ok": True}

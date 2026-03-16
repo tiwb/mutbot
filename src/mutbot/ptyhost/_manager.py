@@ -487,6 +487,28 @@ class TerminalManager:
         if frame:
             self._on_frame(view.term_id, view.id, frame)
 
+    def scroll_view_to(self, view_id: str, offset: int) -> None:
+        """滚动 view 到绝对偏移。offset=0 为 live（最底部），>0 为从底部往上行数。"""
+        view = self._views.get(view_id)
+        if view is None:
+            return
+        term = self._terminals.get(view.term_id)
+        if term is None or term.screen is None:
+            return
+        screen = term.screen
+        max_offset = len(screen.history.top)
+        new_offset = max(0, min(offset, max_offset))
+        if new_offset == view.scroll_offset:
+            return
+        view.scroll_offset = new_offset
+        if new_offset == 0:
+            from mutbot.ptyhost.ansi_render import render_full
+            frame = render_full(screen)
+        else:
+            frame = self._render_scrolled_view(screen, new_offset)
+        if frame:
+            self._on_frame(view.term_id, view.id, frame)
+
     def scroll_view_to_bottom(self, view_id: str) -> None:
         """view 回到 live。"""
         view = self._views.get(view_id)
