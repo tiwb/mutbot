@@ -10,6 +10,7 @@ import asyncio
 import json
 import logging
 import sys
+import time
 from collections import deque
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -189,10 +190,11 @@ class Client:
     所有发送通过统一的 ``_send_queue`` 串行化，保证全局消息顺序。
     """
 
-    ACK_INTERVAL: float = 5.0        # ACK / 心跳间隔（秒）
-    ACK_BATCH: int = 100             # 高吞吐时每 N 条消息发一次 ACK
+    ACK_INTERVAL: float = 5.0        # 心跳间隔（秒）— 无新内容时的保活信号
+    # ACK_BATCH 已废弃：改为即时 ACK（每收到内容消息立即回复）
     DEAD_TIMEOUT: float = 15.0       # 死连接超时（秒）
     BUFFER_TIMEOUT: float = 30.0     # buffering 超时（秒）
+    BINARY_PAUSE_THRESHOLD: int = 200  # 终端帧背压阈值（pending 消息数）
 
     def __init__(
         self,
@@ -227,6 +229,13 @@ class Client:
         self._recv_since_last_ack: int = 0
         self._closed = False
 
+        # 终端帧背压
+        self._binary_paused = False
+        self._on_binary_resume: list[Any] = []  # callable[Client] → None
+
+        # 诊断：上次收到客户端数据的时间
+        self._last_recv_time: float = time.monotonic()
+
     # -- 属性 ---------------------------------------------------------------
 
     @property
@@ -236,6 +245,25 @@ class Client:
     @property
     def send_buffer(self) -> SendBuffer:
         return self._send_buffer
+
+    def binary_allowed(self) -> bool:
+        """终端帧（binary）是否允许推送。
+
+        buffering/expired 状态或背压超限时返回 False，调用方应丢弃帧。
+        """
+        if self.state != "connected":
+            return False
+        if self._send_buffer.pending_count >= self.BINARY_PAUSE_THRESHOLD:
+            if not self._binary_paused:
+                self._binary_paused = True
+                logger.info("Client %s: binary paused (pending=%d)",
+                            self.client_id, self._send_buffer.pending_count)
+            return False
+        return True
+
+    def on_binary_resume(self, callback: Any) -> None:
+        """注册背压恢复回调（用于触发 snapshot 刷新）。"""
+        self._on_binary_resume.append(callback)
 
     # -- 生命周期 -----------------------------------------------------------
 
@@ -268,12 +296,12 @@ class Client:
     # -- 接收 ---------------------------------------------------------------
 
     def on_content_received(self) -> None:
-        """收到一条内容消息时调用。递增接收计数，重置死连接计时器。"""
+        """收到一条内容消息时调用。递增接收计数，重置死连接计时器，即时回复 ACK。"""
         self._recv_count += 1
         self._recv_since_last_ack += 1
         self._reset_dead_timer()
-        if self._recv_since_last_ack >= self.ACK_BATCH:
-            self._send_ack_now()
+        # 即时 ACK：每收到内容消息立即回复
+        self._send_ack_now()
 
     def on_control_received(self) -> None:
         """收到控制消息（ack/welcome）时调用。仅重置死连接计时器。"""
@@ -283,6 +311,16 @@ class Client:
         """收到对方的 ACK(n)。"""
         self._send_buffer.on_ack(n)
         self._reset_dead_timer()
+        # 背压恢复（滞后阈值 = 1/2，避免频繁切换）
+        if self._binary_paused and self._send_buffer.pending_count < self.BINARY_PAUSE_THRESHOLD // 2:
+            self._binary_paused = False
+            logger.info("Client %s: binary resumed (pending=%d)",
+                        self.client_id, self._send_buffer.pending_count)
+            for cb in self._on_binary_resume:
+                try:
+                    cb(self)
+                except Exception:
+                    logger.exception("binary resume callback error")
 
     # -- 断线 / 重连 --------------------------------------------------------
 
@@ -291,7 +329,11 @@ class Client:
         if self.state == "expired":
             return
         self.state = "buffering"
+        ws = self.ws
         self.ws = None
+        if ws is not None:
+            # 主动关闭 WebSocket，让前端收到 onclose 触发重连
+            asyncio.ensure_future(self._close_ws(ws))
         self._cancel_timers()
         # 启动 buffering 超时
         self._expire_handle = self._get_loop().call_later(
@@ -407,8 +449,17 @@ class Client:
         except Exception:
             logger.debug("Client %s control send failed", self.client_id, exc_info=True)
 
+    @staticmethod
+    async def _close_ws(ws: WebSocket) -> None:
+        """安全关闭 WebSocket。"""
+        try:
+            await ws.close()
+        except Exception:
+            pass
+
     def _reset_dead_timer(self) -> None:
         """重置死连接检测计时器。"""
+        self._last_recv_time = time.monotonic()
         if self._dead_handle:
             self._dead_handle.cancel()
         if self.state == "connected":
@@ -418,7 +469,9 @@ class Client:
 
     def _on_dead_timeout(self) -> None:
         """死连接超时：进入 buffering。"""
-        logger.warning("Client %s dead timeout", self.client_id)
+        silence = time.monotonic() - self._last_recv_time
+        logger.warning("Client %s dead timeout (no data for %.1fs)",
+                       self.client_id, silence)
         self.enter_buffering()
 
     def _expire(self) -> None:
@@ -467,6 +520,9 @@ def _channel_send_json(self: Channel, data: dict) -> None:
 def _channel_send_binary(self: Channel, data: bytes) -> None:
     ext = ChannelTransport.get(self)
     if ext and ext._client:
+        # 终端帧流控：buffering/expired 或背压超限时丢弃
+        if not ext._client.binary_allowed():
+            return
         prefix = encode_varint(self.ch)
         ext._client.enqueue("binary", prefix + data)
 

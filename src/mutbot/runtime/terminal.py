@@ -400,6 +400,15 @@ async def _terminal_on_connect(
         # attach 客户端
         tm.attach(term_id, client_id, on_output, on_exit)
 
+        # 注册背压恢复回调：恢复时发送 snapshot 保证画面正确
+        def on_binary_resume(client: Any) -> None:
+            view_id_ = tm._view_ids.get(term_id)
+            if view_id_ and tm._client:
+                asyncio.ensure_future(tm._client.get_snapshot(view_id_))
+
+        if ext and ext._client:
+            ext._client.on_binary_resume(on_binary_resume)
+
         # 确保有 view（重启后 view 可能丢失，需要重新创建）
         view_id = tm._view_ids.get(term_id)
         if not view_id and tm._client:
@@ -482,6 +491,16 @@ async def _terminal_on_message(
             view_id = tm._view_ids.get(term_id)
             if lines and view_id and tm._client:
                 await tm._client.scroll(view_id, lines)
+                state = await tm._client.get_scroll_state(view_id)
+                if state:
+                    self.broadcast_json({"type": "scroll_state", **state})
+
+    elif msg_type == "scroll_to":
+        if tm and term_id and tm.has(term_id):
+            offset = raw.get("offset", 0)
+            view_id = tm._view_ids.get(term_id)
+            if view_id and tm._client:
+                await tm._client.scroll_to(view_id, offset)
                 state = await tm._client.get_scroll_state(view_id)
                 if state:
                     self.broadcast_json({"type": "scroll_state", **state})

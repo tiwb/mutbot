@@ -367,6 +367,12 @@ class WorkspaceWebSocket(WebSocketView):
                             client.on_control_received()
                             continue
 
+                        if msg_type == "visibility":
+                            client.on_control_received()
+                            logger.debug("Client %s visibility: %s",
+                                         client_id, raw.get("state", "?"))
+                            continue
+
                         client.on_content_received()
 
                         ch = raw.get("ch", 0)

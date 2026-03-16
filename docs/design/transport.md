@@ -121,17 +121,25 @@ WebSocket（TCP）在单次连接内保证有序、不重复、不丢失。但 `
 
 双向累积确认。`ACK(N)` 语义："我已收到你发来的 N 条内容消息"。发送方收到 ACK 后安全丢弃发送缓冲区中已确认的消息。
 
-ACK 同时承担心跳职责：
+ACK 与心跳分离：
 
 | 参数 | 值 | 说明 |
 |------|-----|------|
-| ACK 间隔 | 5 秒 | 空闲时定期发送，保活 + 死连接检测 |
-| 高吞吐 ACK | 每 100 条 | 避免 send buffer 积压 |
+| 即时 ACK | 每条内容消息 | 收到内容消息立即回复 ACK，服务端实时掌握接收进度 |
+| 心跳间隔 | 5 秒 | 无新内容时定期发送，保活 + 死连接检测 |
 | 死连接超时 | 15 秒 | 超时未收到任何消息 → 视为连接死亡 |
 
 ### 发送缓冲区
 
 每一端维护 Send Buffer，保存已发送但未被对方 ACK 确认的消息。缓冲区限制：1000 条 / 1MB，溢出则 Client 过期。
+
+### 终端帧流控
+
+终端帧（Binary）天然可丢弃（有 snapshot 兜底），传输层对其实施背压控制：
+
+- **buffering/expired 状态**：终端帧直接丢弃，不进入 Send Buffer
+- **背压阈值**：pending 消息超过 200 条时暂停推送终端帧，低于 100 条时恢复
+- **恢复时**：触发 snapshot 请求，保证客户端画面正确性
 
 ## 断线重连
 
@@ -147,14 +155,28 @@ ws://host/ws/workspace/{workspace_id}?client_id=xxx&last_seq=3
 ### 重连流程
 
 ```
-Client 断线 → 指数退避重连 → 携带 client_id + last_seq
-                                        │
-                                ┌───────┴───────┐
-                         Server 找到 Client    未找到
-                         且 buffer 可覆盖      或已过期
-                                │                │
-                       resumed=true         resumed=false
-                       replay 缺失消息       完整重置
+Client 断线 → 前端 onclose 触发
+                    │
+            ┌───────┴───────┐
+      页面 visible       页面 hidden
+            │                │
+    指数退避重连        标记 pendingReconnect
+    (1s, 2s, 4s...     不启动定时器
+     最大 30s)               │
+            │         visibilitychange → visible
+            │         或 online 事件
+            │                │
+            └───────┬────────┘
+                    │ 立即重连（retryCount = 0）
+                    ▼
+         携带 client_id + last_seq
+                    │
+            ┌───────┴───────┐
+     Server 找到 Client    未找到
+     且 buffer 可覆盖      或已过期
+            │                │
+   resumed=true         resumed=false
+   replay 缺失消息       完整重置
 ```
 
 **恢复成功**（`resumed: true`）：服务端从 send buffer 中重发客户端缺失的消息，客户端从自己的 send buffer 中重发服务端缺失的消息。双方计数继续递增，Channel 状态保持。
@@ -167,11 +189,11 @@ Client 断线 → 指数退避重连 → 携带 client_id + last_seq
                        ┌──────────┐
            新连接 ────►│connected │◄──── 重连成功
                        └────┬─────┘
-                            │ WebSocket 断开
+                            │ WebSocket 断开 / dead timeout (15s)
                             ▼
                        ┌──────────┐
-                       │buffering │  服务端继续向 send buffer 写入
-                       └────┬─────┘
+                       │buffering │  主动关闭 WS → 前端收到 onclose
+                       └────┬─────┘  终端帧不再缓冲（直接丢弃）
                             │
                  ┌──────────┼──────────┐
             超时 30s    buffer 溢出  last_seq 不可覆盖

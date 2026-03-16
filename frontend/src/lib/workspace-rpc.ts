@@ -20,8 +20,8 @@ const DEFAULT_TIMEOUT = 30_000;
 /** ACK 间隔 (ms) */
 const ACK_INTERVAL = 5_000;
 
-/** 高吞吐时每 N 条消息发一次 ACK */
-const ACK_BATCH = 100;
+/** @deprecated 即时 ACK 后不再使用批量阈值 */
+// const ACK_BATCH = 100;
 
 /** 重连最大重试次数 */
 const MAX_RETRIES = 10;
@@ -118,10 +118,18 @@ export class WorkspaceRpc {
   private peerAck = 0;
   private ackTimer: ReturnType<typeof setInterval> | null = null;
 
+  // 诊断：visibility / focus 事件监听
+  private visibilityHandler: (() => void) | null = null;
+  private focusHandler: (() => void) | null = null;
+  private blurHandler: (() => void) | null = null;
+  private onlineHandler: (() => void) | null = null;
+
   // 重连
   private retryCount = 0;
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
   private closed = false;
+  /** 断开后等待 visible 时立即重连的标记 */
+  private pendingReconnect = false;
 
   // Channel 多路复用
   private channelJsonHandlers = new Map<number, EventHandler>();
@@ -145,6 +153,37 @@ export class WorkspaceRpc {
     this.onOpenCb = opts?.onOpen;
     this.onCloseCb = opts?.onClose;
     this.onConnectingCb = opts?.onConnecting;
+    this.visibilityHandler = () => {
+      this.sendVisibility();
+      // visibility 驱动重连：visible 时如果有待重连标记，立即重连
+      if (document.visibilityState === "visible" && this.pendingReconnect) {
+        this.pendingReconnect = false;
+        this.retryCount = 0;
+        if (this.retryTimer) {
+          clearTimeout(this.retryTimer);
+          this.retryTimer = null;
+        }
+        this.connect();
+      }
+    };
+    this.focusHandler = () => this.sendFocusState("focus");
+    this.blurHandler = () => this.sendFocusState("blur");
+    this.onlineHandler = () => {
+      // 网络恢复时立即重连
+      if (this.pendingReconnect) {
+        this.pendingReconnect = false;
+        this.retryCount = 0;
+        if (this.retryTimer) {
+          clearTimeout(this.retryTimer);
+          this.retryTimer = null;
+        }
+        this.connect();
+      }
+    };
+    document.addEventListener("visibilitychange", this.visibilityHandler);
+    window.addEventListener("focus", this.focusHandler);
+    window.addEventListener("blur", this.blurHandler);
+    window.addEventListener("online", this.onlineHandler);
     this.connect();
   }
 
@@ -188,9 +227,14 @@ export class WorkspaceRpc {
 
     ws.onclose = () => {
       this.stopAckTimer();
-      // 始终通知 onClose（UI 清理 rpc 引用，触发面板 cleanup）
       this.onCloseCb?.();
       if (!this.closed && this.retryCount < MAX_RETRIES) {
+        // hidden 期间不主动重试（Chrome 会节流 setTimeout）
+        if (document.visibilityState === "hidden") {
+          this.pendingReconnect = true;
+          this.onConnectingCb?.();
+          return;
+        }
         const delay = Math.min(1000 * 2 ** this.retryCount, 30000);
         this.retryCount++;
         this.onConnectingCb?.();
@@ -246,6 +290,22 @@ export class WorkspaceRpc {
     this.closed = true;
     this.stopAckTimer();
     if (this.retryTimer) clearTimeout(this.retryTimer);
+    if (this.visibilityHandler) {
+      document.removeEventListener("visibilitychange", this.visibilityHandler);
+      this.visibilityHandler = null;
+    }
+    if (this.focusHandler) {
+      window.removeEventListener("focus", this.focusHandler);
+      this.focusHandler = null;
+    }
+    if (this.blurHandler) {
+      window.removeEventListener("blur", this.blurHandler);
+      this.blurHandler = null;
+    }
+    if (this.onlineHandler) {
+      window.removeEventListener("online", this.onlineHandler);
+      this.onlineHandler = null;
+    }
     this.ws?.close();
   }
 
@@ -360,6 +420,22 @@ export class WorkspaceRpc {
     }
   }
 
+  private sendVisibility() {
+    if (this.ws?.readyState === WebSocket.OPEN) {
+      this.ws.send(
+        JSON.stringify({ type: "visibility", state: document.visibilityState }),
+      );
+    }
+  }
+
+  private sendFocusState(state: "focus" | "blur") {
+    if (this.ws?.readyState === WebSocket.OPEN) {
+      this.ws.send(
+        JSON.stringify({ type: "visibility", state }),
+      );
+    }
+  }
+
   private startAckTimer() {
     this.stopAckTimer();
     this.ackTimer = setInterval(() => this.sendAck(), ACK_INTERVAL);
@@ -375,9 +451,8 @@ export class WorkspaceRpc {
   private onContentReceived() {
     this.recvCount++;
     this.recvSinceLastAck++;
-    if (this.recvSinceLastAck >= ACK_BATCH) {
-      this.sendAck();
-    }
+    // 即时 ACK：每收到内容消息立即回复，让服务端实时知道接收进度
+    this.sendAck();
   }
 
   // -----------------------------------------------------------------------
