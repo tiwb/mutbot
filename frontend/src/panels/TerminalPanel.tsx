@@ -680,7 +680,10 @@ const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPa
     {
       label: "Clear Terminal",
       onClick: () => {
-        termRef.current?.clear();
+        const ch = chRef.current;
+        if (ch > 0 && rpc) {
+          rpc.sendToChannel(ch, { type: "clear_scrollback" });
+        }
       },
     },
     { label: "", separator: true },

@@ -277,6 +277,10 @@ class PtyHostClient:
         """view 回到 live。"""
         await self._send_command({"cmd": "scroll_to_bottom", "view_id": view_id})
 
+    async def clear_scrollback(self, term_id: str) -> None:
+        """清除终端的 scrollback 历史缓冲。"""
+        await self._send_command({"cmd": "clear_scrollback", "term_id": term_id})
+
     async def get_scroll_state(self, view_id: str) -> dict[str, int]:
         """获取滚动状态。"""
         return await self._send_command({"cmd": "scroll_state", "view_id": view_id})

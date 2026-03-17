@@ -512,6 +512,16 @@ async def _terminal_on_message(
                 await tm._client.scroll_to_bottom(view_id)
             self.broadcast_json({"type": "scroll_state", "offset": 0, "total": 0, "visible": 0})
 
+    elif msg_type == "clear_scrollback":
+        if tm and term_id and tm.has(term_id) and tm._client:
+            await tm._client.clear_scrollback(term_id)
+            # 广播 scroll_state（offset=0，历史已清除）
+            view_id = tm._view_ids.get(term_id)
+            if view_id:
+                state = await tm._client.get_scroll_state(view_id)
+                if state:
+                    self.broadcast_json({"type": "scroll_state", **state})
+
     elif msg_type == "set_resize_mode":
         if tm and term_id and tm.has(term_id):
             from mutbot.web.transport import ChannelTransport

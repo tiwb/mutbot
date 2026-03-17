@@ -569,6 +569,21 @@ class TerminalManager:
             lines_slice.append({})
         return render_lines(lines_slice, screen.columns, screen.default_char)
 
+    def clear_scrollback(self, term_id: str) -> None:
+        """清除终端的 scrollback 历史缓冲，重置所有 view 的滚动偏移。"""
+        term = self._terminals.get(term_id)
+        if term is None or term.screen is None:
+            return
+        term.screen.history.top.clear()
+        for view in term.views.values():
+            view.scroll_offset = 0
+        # 全量渲染推送给所有 view
+        from mutbot.ptyhost.ansi_render import render_full
+        frame = render_full(term.screen)
+        if frame:
+            for view in term.views.values():
+                self._on_frame(term_id, view.id, frame)
+
     def get_scroll_state(self, view_id: str) -> dict[str, int] | None:
         """返回滚动状态用于 scrollbar。"""
         view = self._views.get(view_id)
