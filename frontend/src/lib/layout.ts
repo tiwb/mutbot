@@ -3,7 +3,6 @@ import { Model, type IJsonModel } from "flexlayout-react";
 export const PANEL_AGENT_CHAT = "AgentChat";
 export const PANEL_TERMINAL = "Terminal";
 export const PANEL_CODE_EDITOR = "CodeEditor";
-export const PANEL_CLAUDE_CODE = "ClaudeCode";
 
 export function createDefaultLayout(): IJsonModel {
   return {

@@ -214,7 +214,7 @@ def _build_env() -> dict[str, str]:
 # ClaudeCodeSession @impl — 生命周期
 # ---------------------------------------------------------------------------
 
-from mutbot.session import ClaudeCodeSession
+from mutbot.claude_code.session import ClaudeCodeSession
 
 
 @impl(ClaudeCodeSession.on_create)
