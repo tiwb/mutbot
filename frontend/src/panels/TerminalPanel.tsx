@@ -229,10 +229,12 @@ const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPa
             processExited = false;
             setExpired(false);
             setConnected(true);
-            sendResize(
-              termRef.current?.rows ?? rows,
-              termRef.current?.cols ?? cols,
-            );
+            // 仅注册尺寸，不触发 PTY resize（避免多客户端重连时互相抢占）
+            const r = termRef.current?.rows ?? rows;
+            const c = termRef.current?.cols ?? cols;
+            if (ch > 0 && rpc) {
+              rpc.sendToChannel(ch, { type: "register_size", rows: r, cols: c });
+            }
           } else {
             processExited = true;
             setExpired(true);

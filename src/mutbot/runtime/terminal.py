@@ -509,6 +509,20 @@ async def _terminal_on_message(
             if actual is not None:
                 self.broadcast_json({"type": "pty_resize", "rows": actual[0], "cols": actual[1]})
 
+    elif msg_type == "register_size":
+        # 仅注册客户端尺寸 + 设置 viewport，不 resize PTY
+        # 用于连接时上报尺寸，避免多客户端同时重连时互相抢占
+        if tm and term_id and tm.has(term_id):
+            req_rows, req_cols = raw.get("rows", 24), raw.get("cols", 80)
+            if req_rows >= tm.MIN_ROWS and req_cols >= tm.MIN_COLS:
+                sizes = tm._client_sizes.setdefault(term_id, {})
+                sizes[client_id] = (req_rows, req_cols)
+                view_id = tm._client_views.get(term_id, {}).get(client_id)
+                if view_id and tm._client:
+                    asyncio.ensure_future(
+                        tm._client.set_viewport(view_id, req_rows, req_cols)
+                    )
+
     elif msg_type == "scroll":
         if tm and term_id and tm.has(term_id):
             lines = raw.get("lines", 0)
