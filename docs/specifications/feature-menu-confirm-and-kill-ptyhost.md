@@ -1,6 +1,6 @@
 # PtyHost Kill 菜单 + 菜单通用 confirm 机制 设计规范
 
-**状态**：🔄 实施中
+**状态**：✅ 已完成
 **日期**：2026-03-17
 **类型**：功能设计
 
@@ -106,9 +106,9 @@ async def execute(self, params: dict, context: RpcContext) -> MenuResult:
   - 使用 confirm 机制，确认后调用 `client.shutdown()`
   - 状态：✅ 已完成
 
-### 阶段四：验证 [待开始]
+### 阶段四：验证 [✅ 已完成]
 
-- [ ] **Task 4.1**: 构建前端并手动验证
+- [x] **Task 4.1**: 构建前端并手动验证
   - 启动 mutbot，确认 ptyhost 无窗口弹出
   - 菜单点击 Kill PtyHost，确认弹出确认对话框
   - 确认后 ptyhost 进程终止

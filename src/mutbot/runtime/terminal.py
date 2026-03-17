@@ -537,14 +537,33 @@ async def _terminal_on_message(
                     "follow_me": client_id,
                 })
                 sizes = tm._client_sizes.get(term_id, {})
+                logger.info(
+                    "pin_resize: term=%s client=%s, client_sizes=%s",
+                    term_id[:8], client_id[:8],
+                    {k[:8]: v for k, v in sizes.items()},
+                )
                 if client_id in sizes:
                     new_rows, new_cols = sizes[client_id]
                     actual = await tm.resize(term_id, new_rows, new_cols)
                     if actual is not None:
                         self.broadcast_json({"type": "pty_resize", "rows": actual[0], "cols": actual[1]})
+                    logger.info(
+                        "pin_resize result: requested=%dx%d actual=%s",
+                        new_cols, new_rows,
+                        f"{actual[1]}x{actual[0]}" if actual else "None",
+                    )
+                else:
+                    logger.warning(
+                        "pin_resize: client %s not in client_sizes, skipped resize",
+                        client_id[:8],
+                    )
             elif client_id and mode == "auto":
                 # Auto：解除 Follow Me
                 tm._follow_me[term_id] = None
+                logger.info(
+                    "pin_resize: auto mode, term=%s client=%s",
+                    term_id[:8], client_id[:8],
+                )
                 self.broadcast_json({
                     "type": "resize_owner",
                     "follow_me": None,

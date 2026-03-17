@@ -1,6 +1,6 @@
 # 移动端 Terminal 切换无效 & Pin Resize 不立即生效
 
-**状态**：✅ 已完成
+**状态**：🔄 待复现（问题二）
 **日期**：2026-03-15
 **类型**：Bug修复
 
@@ -89,7 +89,7 @@ React 的 key 变化会导致组件完全卸载并重新挂载，触发 useEffec
 
 ### 状态
 
-经测试多次操作（auto→pin、PC pin→移动端 pin→PC 再 pin）均正常。暂无法稳定复现，搁置等下次复现。
+经测试多次操作（auto→pin、PC pin→移动端 pin→PC 再 pin）均正常。暂无法稳定复现。已在 `set_resize_mode` 处理中添加诊断日志（`pin_resize:` 前缀），记录 `_client_sizes` 快照和 resize 结果，等待下次复现时通过日志定位。
 
 ## 实施步骤清单
 
