@@ -320,12 +320,21 @@ class TerminalManager:
             term.stream = stream
             term.decoder = codecs.getincrementaldecoder("utf-8")("replace")
             return
+        now_synchronized = term.screen.synchronized
         if feed_size > 32768:
             logger.info(
                 "Large feed: %s %dKB (%d dirty lines, sync %s→%s)",
                 term_id[:8], feed_size // 1024,
                 len(term.screen.dirty),
-                was_synchronized, term.screen.synchronized,
+                was_synchronized, now_synchronized,
+            )
+        # BSU/ESU 转换日志（不限大小，捕捉小 feed 的状态变化）
+        if was_synchronized != now_synchronized:
+            logger.info(
+                "Sync change: %s %dB sync %s→%s (%d dirty)",
+                term_id[:8], feed_size,
+                was_synchronized, now_synchronized,
+                len(term.screen.dirty),
             )
         # BSU 期间不调度渲染，等 ESU 到达后一次性渲染
         if term.screen.synchronized:
@@ -387,7 +396,7 @@ class TerminalManager:
         # 此时渲染会输出中间态帧导致闪烁。跳过渲染，等 ESU 到达后再渲染。
         if screen.synchronized:
             self._render_pending[term_id] = True
-            logger.debug(
+            logger.info(
                 "Render deferred (BSU active after flush): %s (%d dirty lines)",
                 term_id[:8], len(screen.dirty),
             )
