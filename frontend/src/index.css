@@ -3481,6 +3481,76 @@ body,
   to   { opacity: 1; transform: translateX(-50%) translateY(0); }
 }
 
+/* ===================================================================
+   Connection Status Bar
+   =================================================================== */
+
+.connection-status-bar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 10001;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  animation: status-bar-slide-down 0.2s ease-out;
+  user-select: none;
+}
+
+.connection-status-bar.status-disconnected {
+  background: #7f1d1d;
+  color: #fca5a5;
+  border-bottom: 1px solid #991b1b;
+}
+
+.connection-status-bar.status-connecting {
+  background: #78350f;
+  color: #fcd34d;
+  border-bottom: 1px solid #92400e;
+}
+
+.connection-status-bar.status-restored {
+  background: #14532d;
+  color: #86efac;
+  border-bottom: 1px solid #166534;
+}
+
+.status-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: 8px;
+  vertical-align: middle;
+}
+
+.status-dot.red { background: #ef4444; }
+.status-dot.yellow { background: #eab308; }
+.status-dot.green { background: #22c55e; }
+
+.status-retry-btn {
+  margin-left: 12px;
+  padding: 2px 12px;
+  border: 1px solid currentColor;
+  border-radius: 3px;
+  background: transparent;
+  color: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.status-retry-btn:hover {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+@keyframes status-bar-slide-down {
+  from { transform: translateY(-100%); }
+  to   { transform: translateY(0); }
+}
+
 /* ====== Remote fallback (degradation UI) ====== */
 
 .remote-fallback {

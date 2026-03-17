@@ -21,7 +21,7 @@ import {
 import { panelFactory } from "./panels/PanelFactory";
 import SessionListPanel from "./panels/SessionListPanel";
 import RpcMenu, { type MenuExecResult } from "./components/RpcMenu";
-import { WorkspaceRpc } from "./lib/workspace-rpc";
+import { WorkspaceRpc, type RetryInfo } from "./lib/workspace-rpc";
 import { AppRpc } from "./lib/app-rpc";
 import { isRemote } from "./lib/connection";
 import { useMobileDetect } from "./lib/useMobileDetect";
@@ -33,6 +33,7 @@ import WorkspaceSelector from "./components/WorkspaceSelector";
 import NewWorkspacePage from "./components/NewWorkspacePage";
 import type { Workspace, Session } from "./lib/types";
 import MobileConnectDialog from "./components/MobileConnectDialog";
+import { ConnectionStatusBar, type ConnectionPhase } from "./components/ConnectionStatusBar";
 
 // ---------- Helpers ----------
 
@@ -136,6 +137,11 @@ export default function App() {
       toastTimerRef.current = setTimeout(() => setToast(null), duration);
     }
   }, []);
+
+  // Connection status bar state
+  const [connPhase, setConnPhase] = useState<ConnectionPhase>("connected");
+  const [connRetry, setConnRetry] = useState<RetryInfo>({ attempt: 0, maxRetries: 10, delay: 0, phase: "connecting" });
+  const hadConnectionRef = useRef(false);
 
   // Workspace RPC 连接
   const rpcRef = useRef<WorkspaceRpc | null>(null);
@@ -274,29 +280,33 @@ export default function App() {
   }, []);
 
   // Initialize WorkspaceRpc when workspace is available
-  const hasConnectedRef = useRef(false);
   useEffect(() => {
     if (!workspace) return;
-    hasConnectedRef.current = false;
+    hadConnectionRef.current = false;
     const wsRpc = new WorkspaceRpc(workspace.id, {
       onOpen: () => {
-        if (hasConnectedRef.current) {
-          showToast("Connection restored.", 3000);
+        if (hadConnectionRef.current) {
+          setConnPhase("connected");
         }
-        hasConnectedRef.current = true;
+        hadConnectionRef.current = true;
         // 连接就绪后再暴露给面板，避免面板在 WS 连接前发 RPC 被 resetState 拒绝
         setRpc(wsRpc);
         // 连接建立后通过 RPC 获取 session 列表
         wsRpc.call<Session[]>("session.list", { workspace_id: workspace.id }).then(setSessions).catch(() => {});
       },
       onClose: () => {
-        if (hasConnectedRef.current) {
-          showToast("Connection lost. Reconnecting...", 0);
-        }
         // 清除 rpc 引用，断线重连时触发面板 useEffect 重新 openChannel
         setRpc(null);
       },
-      onConnecting: () => {},
+      onRetry: (info) => {
+        if (!hadConnectionRef.current) return; // 首次连接不显示状态栏
+        setConnRetry(info);
+        setConnPhase(info.phase);
+      },
+      onUpdate: (delay) => {
+        setConnRetry({ attempt: 0, maxRetries: 0, delay, phase: "connecting" });
+        setConnPhase("updating");
+      },
     });
     rpcRef.current = wsRpc;
 
@@ -1135,6 +1145,13 @@ export default function App() {
             onClose={handleIconPickerClose}
           />
         )}
+        <ConnectionStatusBar
+          phase={connPhase}
+          attempt={connRetry.attempt}
+          maxRetries={connRetry.maxRetries}
+          delay={connRetry.delay}
+          onRetry={() => rpcRef.current?.retry()}
+        />
         {toast && (
           <div className="toast-notification" onClick={() => setToast(null)}>
             {toast}
@@ -1216,6 +1233,13 @@ export default function App() {
           onClose={handleIconPickerClose}
         />
       )}
+      <ConnectionStatusBar
+        phase={connPhase}
+        attempt={connRetry.attempt}
+        maxRetries={connRetry.maxRetries}
+        delay={connRetry.delay}
+        onRetry={() => rpcRef.current?.retry()}
+      />
       {toast && (
         <div className="toast-notification" onClick={() => setToast(null)}>
           {toast}

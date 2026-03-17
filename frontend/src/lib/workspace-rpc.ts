@@ -85,6 +85,14 @@ type EventHandler = (data: Record<string, unknown>) => void;
 type BinaryHandler = (data: Uint8Array) => void;
 type ChannelClosedHandler = (ch: number, reason: string) => void;
 
+/** 重连进度信息 */
+export interface RetryInfo {
+  attempt: number;       // 当前第几次 retry（1-based）
+  maxRetries: number;    // 最大 retry 次数
+  delay: number;         // 本次 retry 等待时间 (ms)，exhausted 时为 0
+  phase: "waiting" | "connecting" | "exhausted";
+}
+
 /** SendBuffer 条目：JSON 或 Binary */
 type BufferEntry =
   | { type: "json"; data: Record<string, unknown> }
@@ -100,7 +108,8 @@ export class WorkspaceRpc {
   private tokenFn?: () => string | null;
   private onOpenCb?: () => void;
   private onCloseCb?: () => void;
-  private onConnectingCb?: () => void;
+  private onRetryCb?: (info: RetryInfo) => void;
+  private onUpdateCb?: (delay: number) => void;
 
   // RPC
   private pending = new Map<string, PendingCall>();
@@ -145,14 +154,16 @@ export class WorkspaceRpc {
       tokenFn?: () => string | null;
       onOpen?: () => void;
       onClose?: () => void;
-      onConnecting?: () => void;
+      onRetry?: (info: RetryInfo) => void;
+      onUpdate?: (delay: number) => void;
     },
   ) {
     this.baseUrl = getWsUrl(`/ws/workspace/${workspaceId}`);
     this.tokenFn = opts?.tokenFn;
     this.onOpenCb = opts?.onOpen;
     this.onCloseCb = opts?.onClose;
-    this.onConnectingCb = opts?.onConnecting;
+    this.onRetryCb = opts?.onRetry;
+    this.onUpdateCb = opts?.onUpdate;
     this.visibilityHandler = () => {
       this.sendVisibility();
       // visibility 驱动重连：visible 时如果有待重连标记，立即重连
@@ -207,7 +218,17 @@ export class WorkspaceRpc {
 
   private connect() {
     if (this.closed) return;
-    this.onConnectingCb?.();
+    // 关闭旧连接（如果有），防止并发多个 WebSocket
+    if (this.ws) {
+      const old = this.ws;
+      this.ws = null;
+      old.onclose = null;
+      old.onerror = null;
+      old.onmessage = null;
+      old.close();
+    }
+    // 通知 UI 进入 connecting 状态
+    this.onRetryCb?.({ attempt: this.retryCount, maxRetries: MAX_RETRIES, delay: 0, phase: "connecting" });
     const url = this.buildUrl();
     const ws = new WebSocket(url);
     ws.binaryType = "arraybuffer";
@@ -226,20 +247,26 @@ export class WorkspaceRpc {
     };
 
     ws.onclose = () => {
+      // 已被新连接替换的旧 ws，不处理
+      if (this.ws !== ws) return;
       this.stopAckTimer();
       this.onCloseCb?.();
-      if (!this.closed && this.retryCount < MAX_RETRIES) {
-        // hidden 期间不主动重试（Chrome 会节流 setTimeout）
-        if (document.visibilityState === "hidden") {
-          this.pendingReconnect = true;
-          this.onConnectingCb?.();
-          return;
-        }
-        const delay = Math.min(1000 * 2 ** this.retryCount, 30000);
-        this.retryCount++;
-        this.onConnectingCb?.();
-        this.retryTimer = setTimeout(() => this.connect(), delay);
+      if (this.closed) return;
+      if (this.retryCount >= MAX_RETRIES) {
+        this.onRetryCb?.({ attempt: MAX_RETRIES, maxRetries: MAX_RETRIES, delay: 0, phase: "exhausted" });
+        return;
       }
+      // hidden 期间不主动重试（Chrome 会节流 setTimeout）
+      if (document.visibilityState === "hidden") {
+        this.pendingReconnect = true;
+        return;
+      }
+      const delay = Math.min(1000 * 2 ** this.retryCount, 30000);
+      this.retryCount++;
+      this.onRetryCb?.({ attempt: this.retryCount, maxRetries: MAX_RETRIES, delay, phase: "waiting" });
+      this.retryTimer = setTimeout(() => {
+        this.connect();
+      }, delay);
     };
 
     ws.onerror = () => {
@@ -283,6 +310,17 @@ export class WorkspaceRpc {
     }
     handlers.add(handler);
     return () => handlers!.delete(handler);
+  }
+
+  /** 手动重试（retry 耗尽后调用）。重置 retry 计数并立即重连。 */
+  retry() {
+    if (this.closed) return;
+    this.retryCount = 0;
+    if (this.retryTimer) {
+      clearTimeout(this.retryTimer);
+      this.retryTimer = null;
+    }
+    this.connect();
   }
 
   /** 关闭连接 */
@@ -630,12 +668,33 @@ export class WorkspaceRpc {
   // -----------------------------------------------------------------------
 
   private handleWelcome(msg: Record<string, unknown>) {
-    // Build hash version check: reload if frontend is stale
+    // Build hash version check: reload if frontend is stale (max 2 times to avoid infinite loop)
     const serverHash = msg.build_hash as string | undefined;
     const localHash = (window as any).__BUILD_HASH__ as string | undefined;
     if (serverHash && localHash && serverHash !== localHash) {
-      location.reload();
-      return;
+      const key = "mutbot_hash_reload";
+      const raw = sessionStorage.getItem(key);
+      const record = raw ? JSON.parse(raw) as { count: number; ts: number } : null;
+      const now = Date.now();
+      // 60 秒内最多 reload 2 次
+      if (record && now - record.ts < 60_000 && record.count >= 2) {
+        console.warn("Build hash mismatch but reload limit reached, skipping reload");
+      } else {
+        const count = (record && now - record.ts < 60_000) ? record.count + 1 : 1;
+        sessionStorage.setItem(key, JSON.stringify({ count, ts: now }));
+        // 延迟刷新：先关闭 WS（避免僵尸连接），通知 UI 显示提示，3 秒后 reload
+        const delay = 3000;
+        this.onUpdateCb?.(delay);
+        this.closed = true;
+        const oldWs = this.ws;
+        this.ws = null;
+        if (oldWs) {
+          oldWs.onclose = null;
+          oldWs.close();
+        }
+        setTimeout(() => location.reload(), delay);
+        return;
+      }
     }
 
     const resumed = msg.resumed as boolean;
