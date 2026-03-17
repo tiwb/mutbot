@@ -608,6 +608,14 @@ export class WorkspaceRpc {
   // -----------------------------------------------------------------------
 
   private handleWelcome(msg: Record<string, unknown>) {
+    // Build hash version check: reload if frontend is stale
+    const serverHash = msg.build_hash as string | undefined;
+    const localHash = (window as any).__BUILD_HASH__ as string | undefined;
+    if (serverHash && localHash && serverHash !== localHash) {
+      location.reload();
+      return;
+    }
+
     const resumed = msg.resumed as boolean;
     this.retryCount = 0;
 

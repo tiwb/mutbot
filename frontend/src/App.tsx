@@ -132,11 +132,10 @@ export default function App() {
   const showToast = useCallback((message: string, duration = 5000) => {
     if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
     setToast(message);
-    toastTimerRef.current = setTimeout(() => setToast(null), duration);
+    if (duration > 0) {
+      toastTimerRef.current = setTimeout(() => setToast(null), duration);
+    }
   }, []);
-
-  // Workspace RPC 连接状态
-  const [wsStatus, setWsStatus] = useState<"connected" | "connecting" | "disconnected">("disconnected");
 
   // Workspace RPC 连接
   const rpcRef = useRef<WorkspaceRpc | null>(null);
@@ -275,24 +274,29 @@ export default function App() {
   }, []);
 
   // Initialize WorkspaceRpc when workspace is available
+  const hasConnectedRef = useRef(false);
   useEffect(() => {
     if (!workspace) return;
+    hasConnectedRef.current = false;
     const wsRpc = new WorkspaceRpc(workspace.id, {
       onOpen: () => {
-        setWsStatus("connected");
+        if (hasConnectedRef.current) {
+          showToast("Connection restored.", 3000);
+        }
+        hasConnectedRef.current = true;
         // 连接就绪后再暴露给面板，避免面板在 WS 连接前发 RPC 被 resetState 拒绝
         setRpc(wsRpc);
         // 连接建立后通过 RPC 获取 session 列表
         wsRpc.call<Session[]>("session.list", { workspace_id: workspace.id }).then(setSessions).catch(() => {});
       },
       onClose: () => {
-        setWsStatus("disconnected");
+        if (hasConnectedRef.current) {
+          showToast("Connection lost. Reconnecting...", 0);
+        }
         // 清除 rpc 引用，断线重连时触发面板 useEffect 重新 openChannel
         setRpc(null);
       },
-      onConnecting: () => {
-        setWsStatus("connecting");
-      },
+      onConnecting: () => {},
     });
     rpcRef.current = wsRpc;
 
@@ -364,7 +368,7 @@ export default function App() {
       }),
 
       wsRpc.on("server_restarting", () => {
-        showToast("Server is restarting... Reconnecting automatically.");
+        showToast("Server is restarting...", 0);
       }),
     ];
 
@@ -1115,7 +1119,6 @@ export default function App() {
           activeSessionId={activeSessionId}
           workspaceId={workspace?.id ?? null}
           rpc={rpc}
-          connectionStatus={wsStatus}
           onSelectSession={handleSelectSession}
           onCreateSession={handleCreateSession}
           onDeleteSessions={handleDeleteSessions}
@@ -1159,7 +1162,6 @@ export default function App() {
             sessions={sessions}
             activeSessionId={activeSessionId}
             rpc={rpc}
-            connectionStatus={wsStatus}
             onSelect={handleSelectSession}
             onModeChange={handleSidebarModeChange}
             onDeleteSessions={handleDeleteSessions}

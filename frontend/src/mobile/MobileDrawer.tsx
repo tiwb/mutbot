@@ -9,7 +9,6 @@ interface Props {
   sessions: Session[];
   activeSessionId: string | null;
   rpc: WorkspaceRpc | null;
-  connectionStatus: "connected" | "connecting" | "disconnected";
   onSelect: (id: string) => void;
   onClose: () => void;
   onCreateSession: (type: string) => void;
@@ -25,7 +24,6 @@ export default function MobileDrawer({
   sessions,
   activeSessionId,
   rpc,
-  connectionStatus,
   onSelect,
   onClose,
   onDeleteSessions,
@@ -51,7 +49,6 @@ export default function MobileDrawer({
           sessions={sessions}
           activeSessionId={activeSessionId}
           rpc={rpc}
-          connectionStatus={connectionStatus}
           onSelect={onSelect}
           onDeleteSessions={onDeleteSessions}
           onRenameSession={onRenameSession}

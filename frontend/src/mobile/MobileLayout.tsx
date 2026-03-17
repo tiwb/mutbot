@@ -21,7 +21,6 @@ interface Props {
   activeSessionId: string | null;
   workspaceId: string | null;
   rpc: WorkspaceRpc | null;
-  connectionStatus: "connected" | "connecting" | "disconnected";
   onSelectSession: (id: string) => void;
   onCreateSession: (type: string) => void;
   onDeleteSessions: (ids: string[]) => void;
@@ -36,7 +35,6 @@ export default function MobileLayout({
   activeSessionId,
   workspaceId,
   rpc,
-  connectionStatus,
   onSelectSession,
   onCreateSession,
   onDeleteSessions,
@@ -339,9 +337,6 @@ export default function MobileLayout({
             <span>MutBot</span>
           </div>
         )}
-        <div className="mobile-topbar-status">
-          <span className={`mobile-status-dot ${connectionStatus}`} />
-        </div>
       </div>
 
       {/* Full-screen panel */}
@@ -431,7 +426,6 @@ export default function MobileLayout({
         sessions={sessions}
         activeSessionId={activeSessionId}
         rpc={rpc}
-        connectionStatus={connectionStatus}
         onSelect={handleSelectSession}
         onClose={() => setDrawerOpen(false)}
         onCreateSession={onCreateSession}

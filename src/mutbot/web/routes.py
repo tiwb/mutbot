@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import json as _json
 import logging
+import re as _re
+from pathlib import Path as _Path
 from typing import Any
 
 from mutagent.net.server import View, WebSocketView, WebSocketConnection, WebSocketDisconnect, json_response, Response
@@ -20,6 +22,19 @@ import mutbot.web.rpc_workspace as _rpc_workspace  # noqa: F401
 import mutbot.web.rpc_session as _rpc_session  # noqa: F401
 
 logger = logging.getLogger(__name__)
+
+
+# --- Frontend build hash (extracted from index.html at import time) ---
+def _extract_build_hash() -> str:
+    index_html = _Path(__file__).resolve().parent / "frontend_dist" / "index.html"
+    try:
+        content = index_html.read_text(encoding="utf-8")
+        m = _re.search(r"assets/index-([A-Za-z0-9_-]+)\.js", content)
+        return m.group(1) if m else ""
+    except FileNotFoundError:
+        return ""
+
+_build_hash: str = _extract_build_hash()
 
 
 # Workspace pending events: events queued before any client connects
@@ -114,6 +129,15 @@ class InternalDrainView(View):
                 except Exception:
                     logger.warning("Failed to persist session %s during drain", session.id, exc_info=True)
             logger.info("Drain complete: stopped %d agent session(s)", stopped)
+
+        # 3. 关闭所有 WebSocket 连接，迫使客户端重连到新 Worker
+        for client in list(_clients.values()):
+            ws = client.ws
+            if ws is not None:
+                try:
+                    await ws.close(code=1012, reason="server restarting")
+                except Exception:
+                    pass
 
         return json_response({"status": "drained"})
 
@@ -293,6 +317,8 @@ class WorkspaceWebSocket(WebSocketView):
 
         # --- 发送 welcome ---
         welcome: dict[str, Any] = {"type": "welcome", "resumed": resumed}
+        if _build_hash:
+            welcome["build_hash"] = _build_hash
         if resumed:
             assert last_seq is not None
             welcome["last_seq"] = client.recv_count
