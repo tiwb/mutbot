@@ -55,6 +55,8 @@ class PtyHostApp:
         # 活跃 WebSocket 连接：conn_id → send queue
         self._connections: dict[int, asyncio.Queue[tuple[str, Any]]] = {}
         self._next_conn_id = 0
+        # 每个连接创建的 view，用于断连时自动回收
+        self._conn_views: dict[int, set[str]] = {}
         self._loop: asyncio.AbstractEventLoop | None = None
         # 空闲退出
         self._idle_task: asyncio.Task[None] | None = None
@@ -116,6 +118,7 @@ class PtyHostApp:
         self._next_conn_id += 1
         queue: asyncio.Queue[tuple[str, Any]] = asyncio.Queue()
         self._connections[conn_id] = queue
+        self._conn_views[conn_id] = set()
         self._cancel_idle()
 
         sender = asyncio.create_task(self._sender(queue, send))
@@ -129,7 +132,7 @@ class PtyHostApp:
                     data = msg.get("bytes")
                     if text:
                         cmd = json.loads(text)
-                        reply = self._handle_command(cmd)
+                        reply = self._handle_command(cmd, conn_id)
                         if "seq" in cmd:
                             reply["seq"] = cmd["seq"]
                         await send({
@@ -141,6 +144,15 @@ class PtyHostApp:
         finally:
             sender.cancel()
             self._connections.pop(conn_id, None)
+            # 回收该连接创建的所有 view
+            orphan_views = self._conn_views.pop(conn_id, set())
+            if orphan_views:
+                logger.info(
+                    "Connection %d closed, destroying %d orphan views",
+                    conn_id, len(orphan_views),
+                )
+                for vid in orphan_views:
+                    self._manager.destroy_view(vid)
             self._check_idle()
 
     async def _sender(
@@ -161,7 +173,7 @@ class PtyHostApp:
     # JSON 命令处理
     # ------------------------------------------------------------------
 
-    def _handle_command(self, cmd: dict[str, Any]) -> dict[str, Any]:
+    def _handle_command(self, cmd: dict[str, Any], conn_id: int) -> dict[str, Any]:
         action = cmd.get("cmd")
 
         if action == "create":
@@ -191,11 +203,16 @@ class PtyHostApp:
                 viewport_cols=cmd.get("viewport_cols", 0),
             )
             if view_id:
+                self._conn_views.get(conn_id, set()).add(view_id)
                 return {"ok": True, "view_id": view_id}
             return {"ok": False, "error": "terminal not found"}
 
         elif action == "destroy_view":
-            self._manager.destroy_view(cmd["view_id"])
+            vid = cmd["view_id"]
+            self._manager.destroy_view(vid)
+            conn_set = self._conn_views.get(conn_id)
+            if conn_set:
+                conn_set.discard(vid)
             return {"ok": True}
 
         elif action == "set_viewport":

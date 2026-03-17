@@ -421,7 +421,11 @@ async def _terminal_on_connect(
         if ext and ext._client:
             ext._client.on_binary_resume(on_binary_resume)
 
-        # 为该客户端创建独立 view
+        # 为该客户端创建独立 view（先清理可能残留的旧 view）
+        old_view = tm._client_views.get(term_id, {}).get(client_id)
+        if old_view and tm._client:
+            asyncio.ensure_future(tm._client.destroy_view(old_view))
+            tm._client_views.get(term_id, {}).pop(client_id, None)
         view_id: str | None = None
         if tm._client:
             try:
