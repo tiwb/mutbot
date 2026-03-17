@@ -8,8 +8,11 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import logging
+import sys
+import traceback
 from typing import Any
 
 from mutbot.ptyhost._manager import TerminalManager
@@ -251,6 +254,34 @@ class PtyHostApp:
             if self.should_exit_callback:
                 self.should_exit_callback()
             return {"ok": True}
+
+        elif action == "eval":
+            code = cmd.get("code", "")
+            namespace: dict[str, Any] = {
+                "__builtins__": __builtins__,
+                "manager": self._manager,
+                "terminals": self._manager._terminals,
+                "views": self._manager._views,
+            }
+            try:
+                result = eval(code, namespace)
+                return {"ok": True, "result": repr(result)}
+            except SyntaxError:
+                pass
+            except Exception:
+                return {"ok": True, "result": traceback.format_exc()}
+            # exec 模式
+            buf = io.StringIO()
+            old_stdout = sys.stdout
+            try:
+                sys.stdout = buf
+                exec(code, namespace)
+                output = buf.getvalue()
+                return {"ok": True, "result": output if output else "(no output)"}
+            except Exception:
+                return {"ok": True, "result": buf.getvalue() + traceback.format_exc()}
+            finally:
+                sys.stdout = old_stdout
 
         return {"ok": False, "error": f"unknown command: {action}"}
 

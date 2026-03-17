@@ -7,6 +7,7 @@ Supervisor 是主进程，绑定公网端口，将流量 TCP 透传给 Worker �
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import logging
 import os
@@ -15,12 +16,13 @@ import socket as _socket
 import subprocess
 import sys
 import time
+import traceback
 from typing import Any
 
 logger = logging.getLogger("mutbot.supervisor")
 
 # 管理路径前缀
-_MANAGEMENT_PATHS = (b"/api/restart", b"/health")
+_MANAGEMENT_PATHS = (b"/api/restart", b"/api/eval", b"/health")
 _INTERNAL_PREFIX = b"/internal/"
 
 # Worker 健康检查
@@ -411,11 +413,14 @@ class Supervisor:
         client_writer: asyncio.StreamWriter,
     ) -> None:
         """处理管理路径请求。"""
-        # 读取并丢弃剩余 HTTP headers
+        # 读取 HTTP headers，提取 Content-Length
+        content_length = 0
         while True:
             line = await asyncio.wait_for(client_reader.readline(), timeout=5.0)
             if line in (b"\r\n", b"\n", b""):
                 break
+            if line.lower().startswith(b"content-length:"):
+                content_length = int(line.split(b":", 1)[1].strip())
 
         method = first_line.split(b" ", 1)[0].upper()
 
@@ -430,6 +435,19 @@ class Supervisor:
                 return
             if method == b"POST":
                 await self._handle_restart(client_writer)
+            else:
+                await self._send_http_response(client_writer, 405, "Method Not Allowed")
+        elif path == b"/api/eval" or path.startswith(b"/api/eval?"):
+            peername = client_writer.get_extra_info("peername")
+            remote_ip = peername[0] if peername else ""
+            if remote_ip not in ("127.0.0.1", "::1"):
+                await self._send_http_response(client_writer, 403, "Forbidden")
+                return
+            if method == b"POST":
+                body = b""
+                if content_length > 0:
+                    body = await asyncio.wait_for(client_reader.readexactly(content_length), timeout=5.0)
+                await self._handle_eval(client_writer, body)
             else:
                 await self._send_http_response(client_writer, 405, "Method Not Allowed")
         else:
@@ -473,6 +491,49 @@ class Supervisor:
 
         # 后台执行重启
         self._restart_task = asyncio.create_task(self._do_restart())
+
+    async def _handle_eval(self, writer: asyncio.StreamWriter, body: bytes) -> None:
+        """POST /api/eval — 在 Supervisor 进程中执行 Python 代码。"""
+        try:
+            data = json.loads(body) if body else {}
+        except json.JSONDecodeError:
+            await self._send_http_response(writer, 400, "Bad Request")
+            return
+
+        code = data.get("code", "")
+        if not code:
+            await self._send_http_response(writer, 400, "Bad Request",
+                                           body=b'{"error":"missing code"}', content_type="application/json")
+            return
+
+        namespace: dict[str, Any] = {
+            "__builtins__": __builtins__,
+            "supervisor": self,
+            "active_worker": self._active_worker,
+            "old_workers": self._old_workers,
+            "generation": self._generation,
+            "restarting": self._restarting,
+        }
+
+        try:
+            result = eval(code, namespace)
+            result_str = repr(result)
+        except SyntaxError:
+            buf = io.StringIO()
+            old_stdout = sys.stdout
+            try:
+                sys.stdout = buf
+                exec(code, namespace)
+                result_str = buf.getvalue() or "(no output)"
+            except Exception:
+                result_str = buf.getvalue() + traceback.format_exc()
+            finally:
+                sys.stdout = old_stdout
+        except Exception:
+            result_str = traceback.format_exc()
+
+        resp_body = result_str.encode("utf-8")
+        await self._send_http_response(writer, 200, "OK", body=resp_body, content_type="text/plain; charset=utf-8")
 
     async def _do_restart(self) -> None:
         """执行完整的热重启流程。"""

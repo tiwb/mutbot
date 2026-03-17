@@ -324,6 +324,10 @@ class PtyHostClient:
         """查询终端状态。"""
         return await self._send_command({"cmd": "status", "term_id": term_id})
 
+    async def eval_code(self, code: str) -> dict[str, Any]:
+        """在 ptyhost 进程中执行 Python 代码。"""
+        return await self._send_command({"cmd": "eval", "code": code})
+
     # ------------------------------------------------------------------
     # Fire-and-forget 命令
     # ------------------------------------------------------------------

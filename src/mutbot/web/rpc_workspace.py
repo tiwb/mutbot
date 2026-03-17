@@ -230,3 +230,22 @@ class ConfigOps(WorkspaceRpc):
             ],
             "default_model": default_model,
         }
+
+
+class DebugRpc(WorkspaceRpc):
+    """调试工具 RPC — 接收浏览器 JS 执行结果。"""
+    namespace = "debug"
+
+    async def eval_result(self, params: dict, ctx: RpcContext) -> dict:
+        """接收前端 eval_js 的执行结果，resolve 对应的 Future。"""
+        from mutbot.web.mcp import _eval_js_pending
+
+        eval_id = params.get("id", "")
+        future = _eval_js_pending.get(eval_id)
+        if future and not future.done():
+            future.set_result({
+                "result": params.get("result"),
+                "error": params.get("error"),
+            })
+            return {"ok": True}
+        return {"error": f"no pending eval: {eval_id}"}

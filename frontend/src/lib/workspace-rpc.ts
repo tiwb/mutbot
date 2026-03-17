@@ -558,6 +558,28 @@ export class WorkspaceRpc {
         return;
       }
 
+      // eval_js — 服务端请求在浏览器中执行 JS 代码
+      if (eventName === "eval_js") {
+        const data = (msg.data as Record<string, unknown>) || {};
+        const evalId = data.id as string;
+        const code = data.code as string;
+        let result: string | null = null;
+        let error: string | null = null;
+        try {
+          const value = (0, eval)(code);
+          result = typeof value === "object" ? JSON.stringify(value) : String(value);
+        } catch (e) {
+          error = e instanceof Error ? e.message : String(e);
+        }
+        this.sendJson({
+          type: "rpc",
+          id: `eval_${evalId}`,
+          method: "debug.eval_result",
+          params: { id: evalId, result, error },
+        });
+        return;
+      }
+
       const data = (msg.data as Record<string, unknown>) || {};
       const handlers = this.eventHandlers.get(eventName);
       if (handlers) {

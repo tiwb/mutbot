@@ -5,10 +5,15 @@
 
 from __future__ import annotations
 
+import asyncio
+import io
 import json
 import logging
 import os
+import sys
 import time
+import traceback
+import uuid
 from typing import Any
 
 import mutbot
@@ -395,3 +400,189 @@ class ConfigTools(MCPToolSet):
             })
         srv.config.set(key, value, source="mcp")
         return json.dumps({"ok": True, "key": key, "value": value})
+
+
+# ---------------------------------------------------------------------------
+# Exec Tools
+# ---------------------------------------------------------------------------
+
+def _safe_eval(code: str, namespace: dict[str, Any]) -> str:
+    """eval/exec Python 代码，返回结果文本。
+
+    先尝试 eval（表达式），SyntaxError 时回退到 exec（语句）。
+    eval 返回 repr(result)；exec 捕获 stdout 输出。
+    支持 coroutine 结果（自动 await）。
+    """
+    import asyncio
+
+    def _resolve(result: Any) -> str:
+        """如果 result 是 coroutine，调度到当前事件循环执行。"""
+        if asyncio.iscoroutine(result):
+            loop = asyncio.get_event_loop()
+            future = asyncio.ensure_future(result, loop=loop)
+            # 不能 await（我们在 sync 上下文），用 Task + callback
+            # 但 MCP handler 本身是 async 的，所以不能阻塞
+            # 改用：直接返回 Task，由调用方 await
+            raise _AsyncResult(future)
+        return repr(result)
+
+    try:
+        result = eval(code, namespace)
+        return _resolve(result)
+    except _AsyncResult:
+        raise
+    except SyntaxError:
+        pass
+    except Exception:
+        return traceback.format_exc()
+
+    # exec 模式：捕获 stdout
+    buf = io.StringIO()
+    old_stdout = sys.stdout
+    try:
+        sys.stdout = buf
+        exec(code, namespace)
+        output = buf.getvalue()
+        return output if output else "(no output)"
+    except Exception:
+        return buf.getvalue() + traceback.format_exc()
+    finally:
+        sys.stdout = old_stdout
+
+
+class _AsyncResult(Exception):
+    """内部异常：eval 结果是 coroutine，需要 await。"""
+    def __init__(self, future: Any) -> None:
+        self.future = future
+
+
+class ExecTools(MCPToolSet):
+    """跨进程 Python 代码执行工具（调试用）。"""
+    path = "/mcp"
+
+    async def exec_python(self, code: str, target: str = "worker") -> str:
+        """在指定进程中执行 Python 代码。target: worker（默认）、ptyhost、supervisor。eval 返回表达式值，exec 捕获 print 输出。错误返回 traceback。支持 async 表达式（自动 await）。"""
+        target = target.strip().lower()
+        if target == "worker":
+            return await self._exec_in_worker(code)
+        elif target == "ptyhost":
+            return await self._exec_in_ptyhost(code)
+        elif target == "supervisor":
+            return await self._exec_in_supervisor(code)
+        else:
+            return json.dumps({"error": f"unknown target: {target}, expected: worker/ptyhost/supervisor"})
+
+    async def _exec_in_worker(self, code: str) -> str:
+        srv = _get_managers()
+        namespace: dict[str, Any] = {
+            "__builtins__": __builtins__,
+            "srv": srv,
+            "tm": getattr(srv, "terminal_manager", None),
+            "sm": getattr(srv, "session_manager", None),
+            "wm": getattr(srv, "workspace_manager", None),
+            "cm": getattr(srv, "channel_manager", None),
+            "config": getattr(srv, "config", None),
+        }
+        try:
+            return _safe_eval(code, namespace)
+        except _AsyncResult as ar:
+            try:
+                result = await ar.future
+                return repr(result)
+            except Exception:
+                return traceback.format_exc()
+
+    async def _exec_in_ptyhost(self, code: str) -> str:
+        srv = _get_managers()
+        tm = getattr(srv, "terminal_manager", None)
+        if not tm or not tm._client or not tm._client.connected:
+            return "error: ptyhost not connected"
+        try:
+            reply = await tm._client.eval_code(code)
+            return reply.get("result", repr(reply))
+        except Exception:
+            return traceback.format_exc()
+
+    async def _exec_in_supervisor(self, code: str) -> str:
+        import urllib.request
+        srv = _get_managers()
+        port = 8741
+        if srv.config:
+            listen = srv.config.get("listen", default=[])
+            if listen:
+                addr = listen[0] if isinstance(listen, list) and listen else str(listen)
+                if ":" in str(addr):
+                    port = int(str(addr).rsplit(":", 1)[1])
+                elif str(addr).isdigit():
+                    port = int(addr)
+
+        url = f"http://127.0.0.1:{port}/api/eval"
+        body = json.dumps({"code": code}).encode("utf-8")
+        try:
+            req = urllib.request.Request(
+                url, data=body, method="POST",
+                headers={"Content-Type": "application/json"},
+            )
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                return resp.read().decode("utf-8")
+        except Exception:
+            return traceback.format_exc()
+
+
+# ---------------------------------------------------------------------------
+# Browser Tools — 浏览器 JS 执行
+# ---------------------------------------------------------------------------
+
+# eval_id → Future，MCP exec_js 等待，RPC eval_result 回调 resolve
+_eval_js_pending: dict[str, asyncio.Future[dict[str, Any]]] = {}
+
+
+class BrowserTools(MCPToolSet):
+    """浏览器 JavaScript 执行工具（通过 WebSocket 推送到前端）。"""
+    path = "/mcp"
+
+    async def exec_js(self, code: str, client_id: str = "") -> str:
+        """在浏览器中执行 JavaScript 代码。通过 WebSocket 推送到目标客户端执行，返回结果。client_id 可选，前缀匹配，默认第一个连接的客户端。"""
+        from mutbot.web.routes import _clients
+
+        # 找到目标客户端
+        client = None
+        if client_id:
+            # 前缀匹配
+            for cid, c in _clients.items():
+                if cid.startswith(client_id) and c.state == "connected":
+                    client = c
+                    break
+            if not client:
+                return json.dumps({"error": f"client not found: {client_id}"})
+        else:
+            # 取第一个 connected 的客户端
+            for c in _clients.values():
+                if c.state == "connected":
+                    client = c
+                    break
+            if not client:
+                return json.dumps({"error": "no connected client"})
+
+        # 生成 eval_id，推送到客户端
+        eval_id = uuid.uuid4().hex[:8]
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future[dict[str, Any]] = loop.create_future()
+        _eval_js_pending[eval_id] = future
+
+        client.enqueue("json", {
+            "type": "event",
+            "event": "eval_js",
+            "data": {"id": eval_id, "code": code},
+        })
+
+        # 等待结果
+        try:
+            result = await asyncio.wait_for(future, timeout=10)
+            if result.get("error"):
+                return json.dumps({"error": result["error"]})
+            return result.get("result", "(undefined)")
+        except asyncio.TimeoutError:
+            return json.dumps({"error": "timeout"})
+        finally:
+            _eval_js_pending.pop(eval_id, None)
