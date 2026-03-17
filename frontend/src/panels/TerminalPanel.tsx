@@ -90,12 +90,12 @@ const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPa
     },
   }), [rpc]);
 
+  // ── xterm instance lifecycle (mount-only) ──
+  // xterm 实例只在组件挂载时创建、卸载时销毁。
+  // WS 断连不影响 xterm，终端内容保持冻结显示。
   useEffect(() => {
     const container = containerRef.current;
-    if (!container || !rpc) return;
-
-    // Per-invocation flag — survives React StrictMode's unmount/remount
-    let active = true;
+    if (!container) return;
 
     const term = new Terminal({
       allowProposedApi: true,
@@ -141,6 +141,26 @@ const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPa
 
     termRef.current = term;
     fitRef.current = fitAddon;
+
+    return () => {
+      term.dispose();
+      termRef.current = null;
+      fitRef.current = null;
+    };
+  }, []);
+
+  // ── channel lifecycle (reconnects when rpc changes) ──
+  // rpc 变化时（断连 → null → 重连 → 新实例），重建 channel 但不动 xterm。
+  // 断连期间终端内容冻结，重连后服务端发送 snapshot 恢复。
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!termRef.current || !container || !rpc) return;
+    // Non-null assertion safe: checked above, xterm lifecycle effect guarantees
+    // termRef.current is stable until component unmount.
+    const term = termRef.current;
+
+    // Per-invocation flag — survives React StrictMode's unmount/remount
+    let active = true;
 
     const rows = term.rows;
     const cols = term.cols;
@@ -613,14 +633,12 @@ const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPa
         rpc.cleanupChannelHandlers(ch);
         rpc.call("session.disconnect", { session_id: channelSessionId, ch }).catch(() => {});
       }
-      term.dispose();
-      termRef.current = null;
-      // PTY lifecycle managed by backend session — no deletion on unmount
+      // xterm 实例不在此处 dispose — 由 xterm lifecycle effect 管理
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps -- initialId only used
   // for ref initialization on mount; re-running the effect on prop change would
   // destroy and recreate the terminal (handleRecreate manages recreation).
-  }, [workspaceId, rpc]);
+  }, [rpc]);
 
   const handleRecreate = useCallback(() => {
     setExpired(false);
