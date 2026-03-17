@@ -475,7 +475,7 @@ class TerminalManager:
         term = self._terminals.get(term_id)
         if term is None:
             return None
-        view_id = uuid.uuid4().hex[:16]  # 8 bytes hex
+        view_id = uuid.uuid4().hex[:8]  # 8 字符，匹配二进制帧头字段宽度
         view = TermView(id=view_id, term_id=term_id)
         term.views[view_id] = view
         self._views[view_id] = view

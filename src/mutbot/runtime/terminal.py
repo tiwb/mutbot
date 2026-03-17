@@ -57,8 +57,10 @@ class TerminalManager:
         self._follow_me: dict[str, str | None] = {}        # {term_id: client_id | None}
         # Auto 模式下，最后打字的客户端
         self._last_input_client: dict[str, str | None] = {} # {term_id: client_id | None}
-        # Phase 1：每个终端一个共享 view_id（所有客户端共享）
-        self._view_ids: dict[str, str] = {}  # {term_id: view_id}
+        # Per-client view：每个客户端连接拥有独立的 ptyhost view
+        self._client_views: dict[str, dict[str, str]] = {}  # {term_id: {client_id: view_id}}
+        # 连接锁：防止多个 on_connect 并发触发 _reconnect
+        self._connect_lock: asyncio.Lock = asyncio.Lock()
 
     async def connect(self, host: str, port: int) -> None:
         """连接 ptyhost 守护进程。"""
@@ -72,11 +74,14 @@ class TerminalManager:
 
     async def _reconnect(self) -> None:
         """ptyhost 断开后自动重连（ensure_ptyhost 会 spawn 新实例）。"""
-        from mutbot.ptyhost._bootstrap import ensure_ptyhost
-        logger.info("Reconnecting to ptyhost...")
-        port = await ensure_ptyhost()
-        await self.connect("127.0.0.1", port)
-        logger.info("Reconnected to ptyhost on port %d", port)
+        async with self._connect_lock:
+            if self._client and self._client.connected:
+                return  # 已被其他协程连接
+            from mutbot.ptyhost._bootstrap import ensure_ptyhost
+            logger.info("Reconnecting to ptyhost...")
+            port = await ensure_ptyhost()
+            await self.connect("127.0.0.1", port)
+            logger.info("Reconnected to ptyhost on port %d", port)
 
     async def close(self) -> None:
         """断开 ptyhost 连接（不 kill 任何终端）。"""
@@ -99,9 +104,6 @@ class TerminalManager:
         assert self._client, "not connected to ptyhost"
         term_id = await self._client.create(rows, cols, cwd)
         self._known_terms.add(term_id)
-        # 创建共享 view
-        view_id = await self._client.create_view(term_id)
-        self._view_ids[term_id] = view_id
         return term_id
 
     def kill(self, term_id: str) -> None:
@@ -111,10 +113,11 @@ class TerminalManager:
         self._client_sizes.pop(term_id, None)
         self._follow_me.pop(term_id, None)
         self._last_input_client.pop(term_id, None)
-        # 销毁 view
-        view_id = self._view_ids.pop(term_id, None)
-        if view_id and self._client:
-            asyncio.ensure_future(self._client.destroy_view(view_id))
+        # 销毁所有 client view
+        views = self._client_views.pop(term_id, None)
+        if views and self._client:
+            for vid in views.values():
+                asyncio.ensure_future(self._client.destroy_view(vid))
         if self._client:
             self._client.kill_nowait(term_id)
 
@@ -264,19 +267,24 @@ class TerminalManager:
     # ------------------------------------------------------------------
 
     def _on_pty_frame(self, term_id: str, view_id: str, frame: bytes) -> None:
-        """ptyhost 推送的 ANSI 帧 → 按 view_id 路由到已 attach 的客户端。"""
-        # Phase 1: 共享 view，直接按 term_id 广播
+        """ptyhost 推送的 ANSI 帧 → 按 view_id 路由到拥有该 view 的客户端。"""
         conns = self._connections.get(term_id)
         if not conns:
             return
-        for client_id, (on_output, _) in list(conns.items()):
-            try:
-                on_output(frame)
-            except Exception:
-                logger.warning(
-                    "send_binary failed for client %s on term %s, keeping connection",
-                    client_id[:8], term_id[:8], exc_info=True,
-                )
+        # view_id 来自二进制帧头（截断为 8 字符），用 startswith 匹配完整 view_id
+        views = self._client_views.get(term_id, {})
+        for client_id, vid in views.items():
+            if vid.startswith(view_id):
+                cb = conns.get(client_id)
+                if cb:
+                    try:
+                        cb[0](frame)
+                    except Exception:
+                        logger.warning(
+                            "send_binary failed for client %s on term %s",
+                            client_id[:8], term_id[:8], exc_info=True,
+                        )
+                break
 
     def _on_pty_exit(self, term_id: str, exit_code: int | None) -> None:
         """ptyhost 推送的终端退出事件 → 通知前端 + 清理内部状态。"""
@@ -293,7 +301,7 @@ class TerminalManager:
         self._client_sizes.pop(term_id, None)
         self._follow_me.pop(term_id, None)
         self._last_input_client.pop(term_id, None)
-        self._view_ids.pop(term_id, None)
+        self._client_views.pop(term_id, None)
 
     def _on_ptyhost_disconnect(self) -> None:
         """ptyhost 连接断开 → 通知所有终端的前端 channel 退出。"""
@@ -313,7 +321,7 @@ class TerminalManager:
         self._known_terms.clear()
         self._follow_me.clear()
         self._last_input_client.clear()
-        self._view_ids.clear()
+        self._client_views.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -402,19 +410,20 @@ async def _terminal_on_connect(
 
         # 注册背压恢复回调：恢复时发送 snapshot 保证画面正确
         def on_binary_resume(client: Any) -> None:
-            view_id_ = tm._view_ids.get(term_id)
+            view_id_ = tm._client_views.get(term_id, {}).get(client_id)
             if view_id_ and tm._client:
                 asyncio.ensure_future(tm._client.get_snapshot(view_id_))
 
         if ext and ext._client:
             ext._client.on_binary_resume(on_binary_resume)
 
-        # 确保有 view（重启后 view 可能丢失，需要重新创建）
-        view_id = tm._view_ids.get(term_id)
-        if not view_id and tm._client:
+        # 为该客户端创建独立 view
+        view_id: str | None = None
+        if tm._client:
             try:
                 view_id = await tm._client.create_view(term_id)
-                tm._view_ids[term_id] = view_id
+                if view_id:
+                    tm._client_views.setdefault(term_id, {})[client_id] = view_id
             except Exception:
                 logger.warning("Failed to create view for term %s", term_id[:8], exc_info=True)
 
@@ -455,6 +464,11 @@ def _terminal_on_disconnect(
     ext = ChannelTransport.get(channel)
     client_id = ext._client.client_id if ext and ext._client else ""
     if client_id:
+        # 销毁该客户端的 view
+        views = tm._client_views.get(term_id, {})
+        view_id = views.pop(client_id, None)
+        if view_id and tm._client:
+            asyncio.ensure_future(tm._client.destroy_view(view_id))
         tm.detach(term_id, client_id)
         # 广播新的 resize_owner 状态（新协议格式）
         follow_me = tm.get_follow_me(term_id)
@@ -473,11 +487,13 @@ async def _terminal_on_message(
     tm = ctx.terminal_manager
     term_id = self.config.get("terminal_id", "")
 
+    # 获取 client_id（scroll 等命令需要路由到 per-client view）
+    from mutbot.web.transport import ChannelTransport
+    ext = ChannelTransport.get(channel)
+    client_id = ext._client.client_id if ext and ext._client else ""
+
     if msg_type == "resize":
         if tm and term_id and tm.has(term_id):
-            from mutbot.web.transport import ChannelTransport
-            ext = ChannelTransport.get(channel)
-            client_id = ext._client.client_id if ext and ext._client else ""
             req_rows, req_cols = raw.get("rows", 24), raw.get("cols", 80)
             actual = await tm.resize(
                 term_id, req_rows, req_cols, client_id=client_id,
@@ -488,39 +504,39 @@ async def _terminal_on_message(
     elif msg_type == "scroll":
         if tm and term_id and tm.has(term_id):
             lines = raw.get("lines", 0)
-            view_id = tm._view_ids.get(term_id)
+            view_id = tm._client_views.get(term_id, {}).get(client_id)
             if lines and view_id and tm._client:
                 await tm._client.scroll(view_id, lines)
                 state = await tm._client.get_scroll_state(view_id)
                 if state:
-                    self.broadcast_json({"type": "scroll_state", **state})
+                    channel.send_json({"type": "scroll_state", **state})
 
     elif msg_type == "scroll_to":
         if tm and term_id and tm.has(term_id):
             offset = raw.get("offset", 0)
-            view_id = tm._view_ids.get(term_id)
+            view_id = tm._client_views.get(term_id, {}).get(client_id)
             if view_id and tm._client:
                 await tm._client.scroll_to(view_id, offset)
                 state = await tm._client.get_scroll_state(view_id)
                 if state:
-                    self.broadcast_json({"type": "scroll_state", **state})
+                    channel.send_json({"type": "scroll_state", **state})
 
     elif msg_type == "scroll_to_bottom":
         if tm and term_id and tm.has(term_id):
-            view_id = tm._view_ids.get(term_id)
+            view_id = tm._client_views.get(term_id, {}).get(client_id)
             if view_id and tm._client:
                 await tm._client.scroll_to_bottom(view_id)
-            self.broadcast_json({"type": "scroll_state", "offset": 0, "total": 0, "visible": 0})
+            channel.send_json({"type": "scroll_state", "offset": 0, "total": 0, "visible": 0})
 
     elif msg_type == "clear_scrollback":
         if tm and term_id and tm.has(term_id) and tm._client:
             await tm._client.clear_scrollback(term_id)
-            # 广播 scroll_state（offset=0，历史已清除）
-            view_id = tm._view_ids.get(term_id)
+            # 发送 scroll_state 给当前客户端
+            view_id = tm._client_views.get(term_id, {}).get(client_id)
             if view_id:
                 state = await tm._client.get_scroll_state(view_id)
                 if state:
-                    self.broadcast_json({"type": "scroll_state", **state})
+                    channel.send_json({"type": "scroll_state", **state})
 
     elif msg_type == "set_resize_mode":
         if tm and term_id and tm.has(term_id):
@@ -596,7 +612,7 @@ async def _terminal_on_data(
                         self.broadcast_json({"type": "pty_resize", "rows": actual[0], "cols": actual[1]})
 
         # 用户输入时自动回到底部
-        view_id = tm._view_ids.get(term_id)
+        view_id = tm._client_views.get(term_id, {}).get(client_id)
         if view_id and tm._client:
             # fire-and-forget：不等结果
             asyncio.ensure_future(tm._client.scroll_to_bottom(view_id))
