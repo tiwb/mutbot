@@ -322,9 +322,10 @@ class TerminalManager:
             return
         if feed_size > 32768:
             logger.info(
-                "Large feed: %s %dKB (%d dirty lines)",
+                "Large feed: %s %dKB (%d dirty lines, sync %s→%s)",
                 term_id[:8], feed_size // 1024,
                 len(term.screen.dirty),
+                was_synchronized, term.screen.synchronized,
             )
         # BSU 期间不调度渲染，等 ESU 到达后一次性渲染
         if term.screen.synchronized:
@@ -382,6 +383,15 @@ class TerminalManager:
         # 消费剩余 buffer
         self._flush_and_feed(term_id)
         screen = term.screen
+        # BSU 保护：_flush_and_feed 可能消费了含 BSU 的新数据，
+        # 此时渲染会输出中间态帧导致闪烁。跳过渲染，等 ESU 到达后再渲染。
+        if screen.synchronized:
+            self._render_pending[term_id] = True
+            logger.debug(
+                "Render deferred (BSU active after flush): %s (%d dirty lines)",
+                term_id[:8], len(screen.dirty),
+            )
+            return
         dirty_count = len(screen.dirty)
         # 增量帧：给全屏 view (viewport_rows >= screen.lines) 使用
         frame = render_dirty(screen)

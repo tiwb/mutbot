@@ -67,8 +67,9 @@ Claude Code 全量重绘 200KB（burst 持续 ~50ms）：
 | 日志 | 级别 | 触发条件 | 用途 |
 |------|------|----------|------|
 | `Flush max delay` | WARNING | 300ms 保底触发 | 检测持续输出导致的强制 flush |
-| `Large feed` | INFO | feed > 32KB | 检测大块数据进入 pyte |
+| `Large feed` | INFO | feed > 32KB | 检测大块数据进入 pyte（含 sync 状态变化） |
 | `Large frame` | INFO | 帧 > 4KB | 检测大帧渲染（可能引起闪烁） |
+| `Render deferred (BSU active after flush)` | DEBUG | `_do_render_term` 内 flush 后 BSU 活跃 | 检测 BSU 保护是否生效 |
 
 ## 实施步骤清单
 
@@ -158,7 +159,27 @@ Per-View Viewport 之后：
   - [ ] 页面刷新后终端显示正确（viewport 接管）
   - 状态：⏸️ 待开始
 
-### Phase 4: 日志清理 [✅ 已完成]
+### Phase 4: _do_render_term BSU 保护 [🔄 进行中]
+
+`_do_render_term` 内部调用 `_flush_and_feed` 消费剩余 buffer 时，可能 feed 到下一轮 ink render 的 BSU 开头。原代码不检查 `synchronized`，直接渲染 BSU 期间的中间态帧，导致闪烁。
+
+- [x] **Task 4.1**: `_do_render_term` 增加 BSU 检查
+  - [x] `_flush_and_feed` 之后检查 `screen.synchronized`
+  - [x] BSU 活跃时跳过渲染、恢复 `render_pending = True`
+  - [x] 添加 DEBUG 日志 `Render deferred (BSU active after flush)`
+  - 状态：✅ 已完成
+
+- [x] **Task 4.2**: Large feed 日志增加 sync 状态变化
+  - [x] 格式改为 `sync False→True` 显示 feed 前后的 synchronized 变化
+  - 状态：✅ 已完成
+
+- [ ] **Task 4.3**: 验证修复效果
+  - [ ] Claude Code 长历史流式输出时观察闪烁
+  - [ ] 日志中确认 `Render deferred` 有触发（证明 BSU 保护生效）
+  - [ ] 确认无副作用（不卡顿、不丢帧）
+  - 状态：⏸️ 待开始
+
+### Phase 5: 日志清理 [✅ 已完成]
 
 - [x] **Task 4.1**: 清理诊断日志
   - [x] `Flush max delay` WARNING 永久保留
