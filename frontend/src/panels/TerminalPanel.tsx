@@ -2,6 +2,7 @@ import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useSta
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
 import { WebLinksAddon } from "@xterm/addon-web-links";
+import { UnicodeGraphemesAddon } from "@xterm/addon-unicode-graphemes";
 import "@xterm/xterm/css/xterm.css";
 import type { WorkspaceRpc } from "../lib/workspace-rpc";
 import ContextMenu, { type ContextMenuItem } from "../components/ContextMenu";
@@ -97,6 +98,7 @@ const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPa
     let active = true;
 
     const term = new Terminal({
+      allowProposedApi: true,
       theme: {
         background: "#1e1e1e",
         foreground: "#cccccc",
@@ -132,6 +134,8 @@ const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPa
     const fitAddon = new FitAddon();
     term.loadAddon(fitAddon);
     term.loadAddon(new WebLinksAddon());
+    term.loadAddon(new UnicodeGraphemesAddon());
+    // UnicodeGraphemesAddon 会自动设置 activeVersion = "15-graphemes"
     term.open(container);
     fitAddon.fit();
 

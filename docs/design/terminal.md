@@ -174,3 +174,17 @@ xterm.js 在收到 BSU 后暂停屏幕渲染，缓冲所有后续 ANSI 处理，
 ### 已知性能问题
 
 服务器重启后首次连接需要从 ptyhost 获取 scrollback 数据并通过 pyte 重新 replay。scrollback 累积较大时（如 10MB），pyte 逐字符解析需要数十秒。后续优化方向：限制 scrollback 大小、按需加载历史、或持久化 pyte 屏幕状态。
+
+### 宽字符与 Emoji 渲染
+
+pyte 的 `draw()` 通过 `wcwidth` 判断字符宽度。CJK 和多数 Emoji（wcwidth=2）会在下一列生成 `data=""` 占位符。`_render_line()` 跳过占位列，依赖终端自然光标推进。
+
+**Variation Selectors 处理**（pyte 0.8.2 上游 bug）：
+
+pyte 对 `wcwidth=0` 且 `unicodedata.combining()=0` 的字符执行 `else: break`，丢弃同批次后续字符。Variation Selectors (U+FE00-FE0F) 满足此条件。`_SafeHistoryScreen.draw()` 覆写修复：
+
+1. **pyte 层**（`_screen.py`）：剥离 VS 防止 break；VS16 (U+FE0F) 将前一个 wcwidth=1 字符提升为 width-2（添加占位符）
+2. **渲染层**（`ansi_render.py`）：检测 wcwidth=1 但有占位符的字符，输出时补回 `\uFE0F`，让 xterm.js 使用 emoji presentation
+3. **前端层**（`TerminalPanel.tsx`）：加载 `@xterm/addon-unicode-graphemes`（基于 `Intl.Segmenter`），正确处理 emoji grapheme cluster 宽度
+
+上游 PR #201 已合并到 master 但未发版。若 pyte 升级到含该修复的版本，可移除 `draw()` 覆写，但渲染层 VS16 补回和前端 addon 仍需保留。

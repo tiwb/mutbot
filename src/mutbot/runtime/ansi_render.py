@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import pyte
+from wcwidth import wcwidth
 
 
 # pyte 命名色 → SGR 前景色编号
@@ -99,7 +100,14 @@ def _render_line(screen: pyte.Screen, row: int) -> str:
             else:
                 parts.append("\x1b[0m")
             prev_key = key
-        parts.append(char.data or " ")
+        # 如果下一列是占位符但字符本身 wcwidth=1，说明是 VS16 提升的 emoji，
+        # 补回 VS16 让 xterm.js 也使用 emoji presentation (width=2)
+        ch = char.data or " "
+        if (col + 1 < cols and ch != " " and wcwidth(ch) == 1):
+            next_char = line.get(col + 1, default_char) if isinstance(line, dict) else line[col + 1]
+            if next_char.data == "":
+                ch += "\uFE0F"
+        parts.append(ch)
 
     # 重置属性 + 清除行尾（处理行内容短于终端宽度的情况）
     parts.append("\x1b[0m\x1b[K")
@@ -161,7 +169,12 @@ def render_lines(lines: list, cols: int, default_char: "pyte.screens.Char") -> b
                 else:
                     parts.append("\x1b[0m")
                 prev_key = key
-            parts.append(char.data or " ")
+            ch = char.data or " "
+            if (col + 1 < cols and ch != " " and wcwidth(ch) == 1):
+                next_char = line.get(col + 1, default_char) if isinstance(line, dict) else line[col + 1]
+                if next_char.data == "":
+                    ch += "\uFE0F"
+            parts.append(ch)
         parts.append("\x1b[0m\x1b[K")
 
     # 隐藏光标（滚动浏览时不显示光标）
