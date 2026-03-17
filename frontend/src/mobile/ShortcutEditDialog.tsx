@@ -1,69 +1,206 @@
-import { useState } from "react";
+import { useState, useCallback } from "react";
 import type { ShortcutSlot } from "./ShortcutGrid";
 
-/** Preset shortcut categories for the edit dialog. */
-const PRESETS: { category: string; items: ShortcutSlot[] }[] = [
-  {
-    category: "Ctrl 组合",
-    items: [
-      { label: "Ctrl+C", sequence: "\x03" },
-      { label: "Ctrl+D", sequence: "\x04" },
-      { label: "Ctrl+Z", sequence: "\x1a" },
-      { label: "Ctrl+L", sequence: "\x0c" },
-      { label: "Ctrl+A", sequence: "\x01" },
-      { label: "Ctrl+E", sequence: "\x05" },
-      { label: "Ctrl+U", sequence: "\x15" },
-      { label: "Ctrl+K", sequence: "\x0b" },
-      { label: "Ctrl+W", sequence: "\x17" },
-      { label: "Ctrl+R", sequence: "\x12" },
-    ],
-  },
-  {
-    category: "方向键",
-    items: [
-      { label: "↑", sequence: "\x1b[A" },
-      { label: "↓", sequence: "\x1b[B" },
-      { label: "→", sequence: "\x1b[C" },
-      { label: "←", sequence: "\x1b[D" },
-    ],
-  },
-  {
-    category: "功能键",
-    items: [
-      { label: "Esc", sequence: "\x1b" },
-      { label: "Tab", sequence: "\t" },
-      { label: "Enter", sequence: "\r" },
-      { label: "Back", sequence: "\x7f" },
-      { label: "Space", sequence: " " },
-      { label: "Del", sequence: "\x1b[3~" },
-      { label: "Home", sequence: "\x1b[H" },
-      { label: "End", sequence: "\x1b[F" },
-      { label: "PgUp", sequence: "\x1b[5~" },
-      { label: "PgDn", sequence: "\x1b[6~" },
-    ],
-  },
+// ── Format conversion ────────────────────────────────────────────────
+
+/** Convert runtime bytes to display text: \x03 → "\\x03", \t → "\\t" */
+function runtimeToDisplay(s: string): string {
+  let result = "";
+  for (let i = 0; i < s.length; i++) {
+    const code = s.charCodeAt(i);
+    if (code === 0x09) result += "\\t";
+    else if (code === 0x0d) result += "\\r";
+    else if (code === 0x0a) result += "\\n";
+    else if (code < 0x20 || code === 0x7f) {
+      result += "\\x" + code.toString(16).padStart(2, "0");
+    } else {
+      result += s[i];
+    }
+  }
+  return result;
+}
+
+/** Convert display text to runtime bytes: "\\x03" → \x03, "\\t" → \t */
+function displayToRuntime(s: string): string {
+  let result = "";
+  let i = 0;
+  while (i < s.length) {
+    if (s[i] === "\\" && i + 1 < s.length) {
+      const next = s[i + 1];
+      if (next === "x" && i + 3 < s.length) {
+        const hex = s.substring(i + 2, i + 4);
+        const code = parseInt(hex, 16);
+        if (!isNaN(code)) {
+          result += String.fromCharCode(code);
+          i += 4;
+          continue;
+        }
+      }
+      if (next === "t") { result += "\t"; i += 2; continue; }
+      if (next === "r") { result += "\r"; i += 2; continue; }
+      if (next === "n") { result += "\n"; i += 2; continue; }
+      if (next === "\\") { result += "\\"; i += 2; continue; }
+    }
+    result += s[i];
+    i++;
+  }
+  return result;
+}
+
+// ── Escape sequence mapping ──────────────────────────────────────────
+
+interface BaseKey {
+  id: string;
+  label: string;
+  /** Display-format sequence */
+  seq: string;
+  type: "letter" | "digit" | "func" | "special";
+}
+
+/** Map modifier set + base key → display-format sequence and label. */
+function buildSequence(
+  base: BaseKey,
+  modifiers: { ctrl: boolean; alt: boolean; shift: boolean },
+): { label: string; sequence: string } {
+  const { ctrl, alt, shift } = modifiers;
+
+  // Shift-only combos
+  if (shift && !ctrl && !alt) {
+    if (base.id === "Tab") return { label: "S+Tab", sequence: "\\x1b[Z" };
+    if (base.type === "letter")
+      return { label: `S+${base.id}`, sequence: base.id.toUpperCase() };
+  }
+
+  // Ctrl+letter
+  if (ctrl && !alt && base.type === "letter") {
+    const code = base.id.toUpperCase().charCodeAt(0) - 64;
+    const hex = code.toString(16).padStart(2, "0");
+    return { label: `Ctrl+${base.id.toUpperCase()}`, sequence: `\\x${hex}` };
+  }
+
+  // Ctrl+special chars
+  if (ctrl && !alt) {
+    if (base.id === "[") return { label: "Ctrl+[", sequence: "\\x1b" };
+    if (base.id === "\\") return { label: "Ctrl+\\", sequence: "\\x1c" };
+    if (base.id === "]") return { label: "Ctrl+]", sequence: "\\x1d" };
+  }
+
+  // Alt combos
+  if (alt && !ctrl) {
+    if (base.type === "letter" || base.type === "digit" || base.id.length === 1) {
+      const ch = shift && base.type === "letter" ? base.id.toUpperCase() : base.id.toLowerCase();
+      return { label: `Alt+${base.id.toUpperCase()}`, sequence: `\\x1b${ch}` };
+    }
+  }
+
+  // No modifier — use base key's own sequence
+  if (!ctrl && !alt && !shift) {
+    return { label: base.label, sequence: base.seq };
+  }
+
+  // Unsupported combo fallback
+  return { label: base.label, sequence: base.seq };
+}
+
+const LETTERS: BaseKey[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("").map((c) => ({
+  id: c, label: c, seq: c.toLowerCase(), type: "letter",
+}));
+
+const DIGITS: BaseKey[] = "0123456789".split("").map((c) => ({
+  id: c, label: c, seq: c, type: "digit",
+}));
+
+const SPECIAL_KEYS: BaseKey[] = [
+  { id: "Esc", label: "Esc", seq: "\\x1b", type: "special" },
+  { id: "Tab", label: "Tab", seq: "\\t", type: "special" },
+  { id: "Enter", label: "Enter", seq: "\\r", type: "special" },
+  { id: "Space", label: "Space", seq: " ", type: "special" },
+  { id: "Back", label: "Back", seq: "\\x7f", type: "special" },
+  { id: "Del", label: "Del", seq: "\\x1b[3~", type: "special" },
+  { id: "↑", label: "↑", seq: "\\x1b[A", type: "special" },
+  { id: "↓", label: "↓", seq: "\\x1b[B", type: "special" },
+  { id: "←", label: "←", seq: "\\x1b[D", type: "special" },
+  { id: "→", label: "→", seq: "\\x1b[C", type: "special" },
+  { id: "Home", label: "Home", seq: "\\x1b[H", type: "special" },
+  { id: "End", label: "End", seq: "\\x1b[F", type: "special" },
+  { id: "PgUp", label: "PgUp", seq: "\\x1b[5~", type: "special" },
+  { id: "PgDn", label: "PgDn", seq: "\\x1b[6~", type: "special" },
+  { id: "Ins", label: "Ins", seq: "\\x1b[2~", type: "special" },
 ];
 
+const F_KEYS: BaseKey[] = [
+  { id: "F1", label: "F1", seq: "\\x1bOP", type: "func" },
+  { id: "F2", label: "F2", seq: "\\x1bOQ", type: "func" },
+  { id: "F3", label: "F3", seq: "\\x1bOR", type: "func" },
+  { id: "F4", label: "F4", seq: "\\x1bOS", type: "func" },
+  { id: "F5", label: "F5", seq: "\\x1b[15~", type: "func" },
+  { id: "F6", label: "F6", seq: "\\x1b[17~", type: "func" },
+  { id: "F7", label: "F7", seq: "\\x1b[18~", type: "func" },
+  { id: "F8", label: "F8", seq: "\\x1b[19~", type: "func" },
+  { id: "F9", label: "F9", seq: "\\x1b[20~", type: "func" },
+  { id: "F10", label: "F10", seq: "\\x1b[21~", type: "func" },
+  { id: "F11", label: "F11", seq: "\\x1b[23~", type: "func" },
+  { id: "F12", label: "F12", seq: "\\x1b[24~", type: "func" },
+];
+
+// ── Delete last sequence token ───────────────────────────────────────
+
+/** Remove the last escape-sequence token from a display-format string. */
+function deleteLastToken(s: string): string {
+  if (!s) return s;
+  // Priority: longest match first
+  const patterns = [
+    /\\x1b\[\d+~$/,       // CSI func key: \x1b[3~
+    /\\x1bO[A-Za-z]$/,    // SS3 func key: \x1bOP
+    /\\x1b\[[A-Za-z]$/,   // CSI cursor/Shift+Tab: \x1b[A, \x1b[Z
+    /\\x1b.$/,            // Alt combo: \x1bb
+    /\\x[0-9a-fA-F]{2}$/, // single byte: \x01
+    /\\[trn]$/,           // special escape: \t \r \n
+    /.$/,                 // single char
+  ];
+  for (const p of patterns) {
+    const m = s.match(p);
+    if (m) return s.slice(0, s.length - m[0].length);
+  }
+  return s.slice(0, -1);
+}
+
+// ── Component ────────────────────────────────────────────────────────
+
 interface Props {
-  /** Current slot value (null if empty) */
   current: ShortcutSlot | null;
-  /** Called with new slot value, or null to clear */
   onSelect: (slot: ShortcutSlot | null) => void;
   onClose: () => void;
 }
 
 export default function ShortcutEditDialog({ current, onSelect, onClose }: Props) {
-  const [customMode, setCustomMode] = useState(false);
-  const [customLabel, setCustomLabel] = useState("");
-  const [customSeq, setCustomSeq] = useState("");
+  const [label, setLabel] = useState(current?.label ?? "");
+  const [sequence, setSequence] = useState(
+    current ? runtimeToDisplay(current.sequence) : "",
+  );
+  const [ctrl, setCtrl] = useState(false);
+  const [alt, setAlt] = useState(false);
+  const [shift, setShift] = useState(false);
 
-  const handlePresetSelect = (slot: ShortcutSlot) => {
-    onSelect(slot);
-  };
+  const handleBaseKey = useCallback(
+    (base: BaseKey) => {
+      const result = buildSequence(base, { ctrl, alt, shift });
+      setSequence((prev) => prev + result.sequence);
+      if (!label) setLabel(result.label);
+      setCtrl(false);
+      setAlt(false);
+      setShift(false);
+    },
+    [ctrl, alt, shift, label],
+  );
 
-  const handleCustomSave = () => {
-    if (customLabel.trim() && customSeq) {
-      onSelect({ label: customLabel.trim(), sequence: customSeq });
+  const handleDelete = useCallback(() => {
+    setSequence((prev) => deleteLastToken(prev));
+  }, []);
+
+  const handleSave = () => {
+    if (label.trim() && sequence) {
+      onSelect({ label: label.trim(), sequence: displayToRuntime(sequence) });
     }
   };
 
@@ -81,75 +218,111 @@ export default function ShortcutEditDialog({ current, onSelect, onClose }: Props
           )}
         </div>
 
-        {!customMode ? (
-          <div className="shortcut-edit-presets">
-            {PRESETS.map((group) => (
-              <div key={group.category} className="shortcut-edit-group">
-                <div className="shortcut-edit-group-label">{group.category}</div>
-                <div className="shortcut-edit-group-items">
-                  {group.items.map((item) => (
-                    <button
-                      key={item.label}
-                      className="shortcut-edit-preset-btn"
-                      onClick={() => handlePresetSelect(item)}
-                    >
-                      {item.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-            ))}
-            <div className="shortcut-edit-group">
-              <button
-                className="shortcut-edit-preset-btn custom-btn"
-                onClick={() => setCustomMode(true)}
-              >
-                自定义...
-              </button>
-            </div>
-          </div>
-        ) : (
-          <div className="shortcut-edit-custom">
-            <label>
-              显示名称
+        <div className="shortcut-edit-fields">
+          <label>
+            显示名称
+            <input
+              type="text"
+              value={label}
+              onChange={(e) => setLabel(e.target.value)}
+              placeholder="e.g. Ctrl+O"
+            />
+          </label>
+          <label>
+            按键序列
+            <div className="shortcut-edit-seq-row">
               <input
                 type="text"
-                value={customLabel}
-                onChange={(e) => setCustomLabel(e.target.value)}
-                placeholder="e.g. Ctrl+P"
-                autoFocus
+                value={sequence}
+                onChange={(e) => setSequence(e.target.value)}
+                placeholder="e.g. \x0f"
               />
-            </label>
-            <label>
-              按键序列
-              <input
-                type="text"
-                value={customSeq}
-                onChange={(e) => setCustomSeq(e.target.value)}
-                placeholder="e.g. \x10"
-              />
-              <span className="shortcut-edit-hint">
-                支持转义: \x1b (ESC), \r (Enter), \t (Tab), \x03 (Ctrl+C) 等
-              </span>
-            </label>
-            <div className="shortcut-edit-custom-actions">
-              <button onClick={() => setCustomMode(false)}>返回预设</button>
               <button
-                className="primary"
-                onClick={handleCustomSave}
-                disabled={!customLabel.trim() || !customSeq}
+                className="shortcut-edit-backspace"
+                onClick={handleDelete}
+                disabled={!sequence}
+                title="删除末尾按键"
               >
-                确定
+                ⌫
               </button>
             </div>
+          </label>
+        </div>
+
+        <div className="shortcut-edit-composer">
+          <div className="shortcut-edit-modifiers">
+            <button
+              className={`shortcut-mod-btn ${ctrl ? "active" : ""}`}
+              onClick={() => setCtrl((v) => !v)}
+            >
+              Ctrl
+            </button>
+            <button
+              className={`shortcut-mod-btn ${alt ? "active" : ""}`}
+              onClick={() => setAlt((v) => !v)}
+            >
+              Alt
+            </button>
+            <button
+              className={`shortcut-mod-btn ${shift ? "active" : ""}`}
+              onClick={() => setShift((v) => !v)}
+            >
+              Shift
+            </button>
           </div>
-        )}
+
+          <div className="shortcut-edit-keys">
+            <div className="shortcut-key-row">
+              {LETTERS.slice(0, 13).map((k) => (
+                <button key={k.id} className="shortcut-key-btn" onClick={() => handleBaseKey(k)}>
+                  {k.label}
+                </button>
+              ))}
+            </div>
+            <div className="shortcut-key-row">
+              {LETTERS.slice(13).map((k) => (
+                <button key={k.id} className="shortcut-key-btn" onClick={() => handleBaseKey(k)}>
+                  {k.label}
+                </button>
+              ))}
+            </div>
+            <div className="shortcut-key-row">
+              {DIGITS.map((k) => (
+                <button key={k.id} className="shortcut-key-btn" onClick={() => handleBaseKey(k)}>
+                  {k.label}
+                </button>
+              ))}
+            </div>
+            <div className="shortcut-key-separator" />
+            <div className="shortcut-key-row">
+              {SPECIAL_KEYS.map((k) => (
+                <button key={k.id} className="shortcut-key-btn special" onClick={() => handleBaseKey(k)}>
+                  {k.label}
+                </button>
+              ))}
+            </div>
+            <div className="shortcut-key-row">
+              {F_KEYS.map((k) => (
+                <button key={k.id} className="shortcut-key-btn func" onClick={() => handleBaseKey(k)}>
+                  {k.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
 
         <div className="shortcut-edit-footer">
           <button className="shortcut-edit-clear" onClick={handleClear}>
             清空此格
           </button>
           <button onClick={onClose}>取消</button>
+          <button
+            className="primary"
+            onClick={handleSave}
+            disabled={!label.trim() || !sequence}
+          >
+            确定
+          </button>
         </div>
       </div>
     </div>

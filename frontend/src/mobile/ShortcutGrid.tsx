@@ -23,26 +23,26 @@ export const DEFAULT_ROWS = 4;
 export const DEFAULT_COLS = 4;
 
 /** Default 4x4 layout:
- * ┌─────┬─────┬─────┬─────┐
- * │ Esc │ Tab │Ct+E │Back │
- * ├─────┼─────┼─────┼─────┤
- * │Ct+A │Ct+D │Ct+L │ Del │
- * ├─────┼─────┼─────┼─────┤
- * │Ct+Z │Ct+C │  ↑  │Enter│
- * ├─────┼─────┼─────┼─────┤
- * │ ⚙  │  ←  │  ↓  │  →  │
- * └─────┴─────┴─────┴─────┘
+ * ┌───────┬───────┬───────┬───────┐
+ * │  Esc  │  Tab  │ S+Tab │ Back  │
+ * ├───────┼───────┼───────┼───────┤
+ * │ Ct+T  │ Ct+D  │ Ct+O  │  Del  │
+ * ├───────┼───────┼───────┼───────┤
+ * │ Ct+B  │ Ct+C  │   ↑   │ Enter │
+ * ├───────┼───────┼───────┼───────┤
+ * │   ⚙   │   ←   │   ↓   │   →   │
+ * └───────┴───────┴───────┴───────┘
  */
 export const DEFAULT_SLOTS: ShortcutLayout = [
   { label: "Esc",    sequence: "\x1b" },
   { label: "Tab",    sequence: "\t" },
-  { label: "Ctrl+E", sequence: "\x05" },
+  { label: "S+Tab",  sequence: "\x1b[Z" },
   { label: "Back",   sequence: "\x7f" },
-  { label: "Ctrl+A", sequence: "\x01" },
+  { label: "Ctrl+T", sequence: "\x14" },
   { label: "Ctrl+D", sequence: "\x04" },
-  { label: "Ctrl+L", sequence: "\x0c" },
+  { label: "Ctrl+O", sequence: "\x0f" },
   { label: "Del",    sequence: "\x1b[3~" },
-  { label: "Ctrl+Z", sequence: "\x1a" },
+  { label: "Ctrl+B", sequence: "\x02" },
   { label: "Ctrl+C", sequence: "\x03" },
   { label: "↑",      sequence: "\x1b[A" },
   { label: "Enter",  sequence: "\r" },

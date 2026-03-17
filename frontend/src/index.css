@@ -4250,12 +4250,6 @@ body,
   color: var(--text);
 }
 
-.shortcut-edit-footer button.primary {
-  background: var(--accent);
-  color: #fff;
-  border-color: var(--accent);
-}
-
 /* ----------------------------------------------------------------
    Shortcut Edit Dialog
    ---------------------------------------------------------------- */
@@ -4295,50 +4289,14 @@ body,
   color: var(--text-dim);
 }
 
-.shortcut-edit-group {
+.shortcut-edit-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
   margin-bottom: 10px;
 }
 
-.shortcut-edit-group-label {
-  font-size: 11px;
-  color: var(--text-dim);
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  margin-bottom: 6px;
-}
-
-.shortcut-edit-group-items {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-}
-
-.shortcut-edit-preset-btn {
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  color: var(--text);
-  font-size: 13px;
-  padding: 6px 12px;
-  border-radius: 4px;
-  cursor: pointer;
-}
-
-.shortcut-edit-preset-btn:active {
-  background: rgba(255, 255, 255, 0.15);
-}
-
-.shortcut-edit-preset-btn.custom-btn {
-  color: var(--accent);
-  border-color: var(--accent);
-}
-
-.shortcut-edit-custom {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.shortcut-edit-custom label {
+.shortcut-edit-fields label {
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -4346,7 +4304,7 @@ body,
   color: var(--text-dim);
 }
 
-.shortcut-edit-custom input {
+.shortcut-edit-fields input {
   background: rgba(255, 255, 255, 0.06);
   border: 1px solid rgba(255, 255, 255, 0.15);
   color: var(--text);
@@ -4354,47 +4312,121 @@ body,
   padding: 6px 8px;
   border-radius: 4px;
   outline: none;
+  font-family: monospace;
 }
 
-.shortcut-edit-custom input:focus {
+.shortcut-edit-fields input:focus {
   border-color: var(--accent);
 }
 
-.shortcut-edit-hint {
-  font-size: 11px;
-  color: var(--text-dim);
-  opacity: 0.7;
-}
-
-.shortcut-edit-custom-actions {
+.shortcut-edit-seq-row {
   display: flex;
-  gap: 8px;
-  justify-content: flex-end;
+  gap: 4px;
 }
 
-.shortcut-edit-custom-actions button {
+.shortcut-edit-seq-row input {
+  flex: 1;
+  min-width: 0;
+}
+
+.shortcut-edit-backspace {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  color: var(--text);
+  font-size: 16px;
+  width: 38px;
+  border-radius: 4px;
+  cursor: pointer;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.shortcut-edit-backspace:active {
+  background: rgba(255, 255, 255, 0.15);
+}
+
+.shortcut-edit-backspace:disabled {
+  opacity: 0.3;
+}
+
+.shortcut-edit-composer {
+  margin-bottom: 8px;
+}
+
+.shortcut-edit-modifiers {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.shortcut-mod-btn {
+  flex: 1;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  color: var(--text-dim);
+  font-size: 13px;
+  padding: 6px 0;
+  border-radius: 4px;
+  cursor: pointer;
+  text-align: center;
+}
+
+.shortcut-mod-btn.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.shortcut-mod-btn:active {
+  opacity: 0.8;
+}
+
+.shortcut-edit-keys {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.shortcut-key-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+}
+
+.shortcut-key-btn {
   background: rgba(255, 255, 255, 0.06);
   border: 1px solid rgba(255, 255, 255, 0.1);
   color: var(--text);
-  font-size: 13px;
-  padding: 6px 14px;
-  border-radius: 4px;
+  font-size: 12px;
+  min-width: 24px;
+  padding: 5px 4px;
+  border-radius: 3px;
   cursor: pointer;
+  text-align: center;
 }
 
-.shortcut-edit-custom-actions button.primary {
-  background: var(--accent);
-  border-color: var(--accent);
-  color: white;
+.shortcut-key-btn.special,
+.shortcut-key-btn.func {
+  font-size: 11px;
+  padding: 5px 6px;
 }
 
-.shortcut-edit-custom-actions button:disabled {
-  opacity: 0.4;
+.shortcut-key-btn:active {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+.shortcut-key-separator {
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  margin: 3px 0;
 }
 
 .shortcut-edit-footer {
   display: flex;
   justify-content: space-between;
+  align-items: center;
+  gap: 8px;
   margin-top: 12px;
   padding-top: 10px;
   border-top: 1px solid var(--border);
@@ -4411,4 +4443,14 @@ body,
 
 .shortcut-edit-footer .shortcut-edit-clear {
   color: #e06c75;
+}
+
+.shortcut-edit-footer button.primary {
+  background: var(--accent);
+  color: #fff;
+  border-radius: 4px;
+}
+
+.shortcut-edit-footer button.primary:disabled {
+  opacity: 0.4;
 }
