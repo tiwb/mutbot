@@ -58,6 +58,30 @@ def _mask_secrets(obj: Any, _key: str = "") -> Any:
     return obj
 
 
+def _format_log_entries(entries: list[Any]) -> str:
+    """日志条目列表 → 纯文本，一行一条。
+
+    格式: [HH:MM:SS] LEVEL  logger — message
+    多行 message（如 traceback）保持原样缩进输出。
+    """
+    if not entries:
+        return "(no logs)"
+    from datetime import datetime
+    lines: list[str] = []
+    for e in entries:
+        ts = datetime.fromtimestamp(e.timestamp).strftime("%H:%M:%S.%f")[:12]
+        level = e.level.ljust(7)
+        header = f"[{ts}] {level} {e.logger_name} — "
+        msg = e.message
+        # 多行消息：首行跟在 header 后，后续行缩进对齐
+        if "\n" in msg:
+            first, *rest = msg.split("\n")
+            indent = " " * len(header)
+            msg = first + "\n" + "\n".join(indent + l for l in rest)
+        lines.append(header + msg)
+    return "\n".join(lines)
+
+
 def _int(v: Any, default: int = 0) -> int:
     """安全转换为 int（MCP schema 可能将 int 参数传为 string）。"""
     try:
@@ -73,24 +97,6 @@ def _bool(v: Any) -> bool:
     if isinstance(v, str):
         return v.lower() in ("true", "1", "yes")
     return bool(v)
-
-
-def _session_summary(s) -> dict[str, Any]:
-    """Session → 摘要 dict。"""
-    from mutbot.session import AgentSession
-    d: dict[str, Any] = {
-        "id": s.id,
-        "workspace_id": s.workspace_id,
-        "title": s.title,
-        "type": s.type,
-        "status": s.status,
-        "created_at": s.created_at,
-        "updated_at": s.updated_at,
-    }
-    if isinstance(s, AgentSession):
-        d["model"] = s.model
-        d["total_tokens"] = s.total_tokens
-    return d
 
 
 # ---------------------------------------------------------------------------
@@ -121,15 +127,15 @@ class ServerTools(MCPToolSet):
         hours, remainder = divmod(int(uptime), 3600)
         minutes, seconds = divmod(remainder, 60)
 
-        return json.dumps({
-            "version": mutbot.__version__,
-            "uptime": f"{hours}h{minutes}m{seconds}s",
-            "uptime_seconds": round(uptime),
-            "workspaces": ws_count,
-            "sessions": sess_count,
-            "connections": client_count,
-            "memory_mb": mem_mb,
-        }, ensure_ascii=False)
+        mem_str = f"{mem_mb} MB" if mem_mb is not None else "N/A"
+        return (
+            f"mutbot v{mutbot.__version__}\n"
+            f"Uptime:      {hours}h{minutes}m{seconds}s\n"
+            f"Workspaces:  {ws_count}\n"
+            f"Sessions:    {sess_count}\n"
+            f"Connections: {client_count}\n"
+            f"Memory:      {mem_str}"
+        )
 
     async def restart_server(self) -> str:
         """触发服务器热重启。通过 Supervisor 的 /api/restart 端点实现平滑交接（drain 旧 Worker → spawn 新 Worker）。"""
@@ -168,17 +174,14 @@ class WorkspaceTools(MCPToolSet):
         """列出所有 workspace：id、名称、路径、session 数量、最近访问时间。"""
         srv = _get_managers()
         if not srv.workspace_manager:
-            return "[]"
-        result = []
+            return "(no workspaces)"
+        lines: list[str] = []
         for ws in srv.workspace_manager.list_all():
-            result.append({
-                "id": ws.id,
-                "name": ws.name,
-                "project_path": ws.project_path,
-                "session_count": len(ws.sessions),
-                "last_accessed_at": ws.last_accessed_at,
-            })
-        return json.dumps(result, ensure_ascii=False)
+            lines.append(
+                f"{ws.id[:8]}  {ws.name or '(unnamed)'}  "
+                f"sessions={len(ws.sessions)}  path={ws.project_path}"
+            )
+        return "\n".join(lines) if lines else "(no workspaces)"
 
 
 # ---------------------------------------------------------------------------
@@ -193,46 +196,70 @@ class SessionTools(MCPToolSet):
         """列出 session 列表。可选按 workspace_id 过滤。返回 id、类型、标题、状态、模型等。"""
         srv = _get_managers()
         if not srv.session_manager:
-            return "[]"
+            return "(no sessions)"
         if workspace_id:
             sessions = srv.session_manager.list_by_workspace(workspace_id)
         else:
             sessions = list(srv.session_manager._sessions.values())
-        return json.dumps([_session_summary(s) for s in sessions], ensure_ascii=False)
+        if not sessions:
+            return "(no sessions)"
+        from mutbot.session import AgentSession
+        lines: list[str] = []
+        for s in sessions:
+            parts = [s.id[:8], s.type or "?", f"[{s.status}]"]
+            if isinstance(s, AgentSession) and s.model:
+                parts.append(s.model)
+            if s.title:
+                parts.append(s.title)
+            lines.append("  ".join(parts))
+        return "\n".join(lines)
 
     async def inspect_session(self, session_id: str) -> str:
         """查看单个 session 的完整运行时状态：config、status、runtime 信息、通道数、token 用量。"""
         srv = _get_managers()
         if not srv.session_manager:
-            return json.dumps({"error": "session_manager not initialized"})
+            return "error: session_manager not initialized"
         s = srv.session_manager.get(session_id)
         if not s:
-            return json.dumps({"error": f"session {session_id} not found"})
+            return f"error: session {session_id} not found"
 
         from mutbot.session import AgentSession
-        d = _session_summary(s)
-        d["config"] = s.config
+        lines: list[str] = [
+            f"Session:  {s.id}",
+            f"Type:     {s.type}",
+            f"Title:    {s.title or '(none)'}",
+            f"Status:   {s.status}",
+            f"Created:  {s.created_at}",
+            f"Updated:  {s.updated_at}",
+        ]
+
+        if isinstance(s, AgentSession):
+            lines.append(f"Model:    {s.model}")
+            lines.append(f"Tokens:   {s.total_tokens}")
 
         # Runtime 信息
         rt = srv.session_manager.get_runtime(session_id)
         if rt:
             from mutbot.runtime.session_manager import AgentSessionRuntime
-            d["has_runtime"] = True
+            lines.append(f"Runtime:  active")
             if isinstance(rt, AgentSessionRuntime):
-                d["has_agent"] = rt.agent is not None
-                d["has_bridge"] = rt.bridge is not None
+                lines.append(f"  Agent:  {'yes' if rt.agent else 'no'}")
+                lines.append(f"  Bridge: {'yes' if rt.bridge else 'no'}")
                 if isinstance(s, AgentSession):
-                    d["context_used"] = s.context_used
-                    d["context_window"] = s.context_window
+                    lines.append(f"  Context: {s.context_used}/{s.context_window}")
         else:
-            d["has_runtime"] = False
+            lines.append(f"Runtime:  inactive")
 
         # 通道数
         if srv.channel_manager:
             channels = srv.channel_manager.get_channels_for_session(session_id)
-            d["channel_count"] = len(channels)
+            lines.append(f"Channels: {len(channels)}")
 
-        return json.dumps(d, ensure_ascii=False)
+        # Config（保留 JSON，结构化数据）
+        if s.config:
+            lines.append(f"Config:   {json.dumps(s.config, ensure_ascii=False)}")
+
+        return "\n".join(lines)
 
     async def get_session_messages(
         self, session_id: str, last_n: int = 10, role: str = "", full: bool = False,
@@ -242,28 +269,28 @@ class SessionTools(MCPToolSet):
         full = _bool(full)
         srv = _get_managers()
         if not srv.session_manager:
-            return json.dumps({"error": "session_manager not initialized"})
+            return "error: session_manager not initialized"
 
         from mutbot.runtime.session_manager import AgentSessionRuntime
         rt = srv.session_manager.get_runtime(session_id)
         if not rt or not isinstance(rt, AgentSessionRuntime) or not rt.agent:
-            return json.dumps({"error": f"no agent runtime for session {session_id}"})
+            return f"error: no agent runtime for session {session_id}"
 
         messages = rt.agent.context.messages
         if role:
             messages = [m for m in messages if m.role == role]
         messages = messages[-last_n:]
 
-        result = []
+        lines: list[str] = []
         for m in messages:
             # 提取文本内容
-            text_parts = []
-            tool_calls = []
+            text_parts: list[str] = []
+            tool_names: list[str] = []
             for b in m.blocks:
                 if b.type == "text":
                     text_parts.append(b.text)
                 elif b.type == "tool_use":
-                    tool_calls.append({"name": b.name, "status": b.status})
+                    tool_names.append(f"{b.name}({b.status})")
                 elif b.type == "thinking":
                     if b.thinking:
                         text_parts.append(f"[thinking: {b.thinking[:100]}...]" if len(b.thinking) > 100 else f"[thinking: {b.thinking}]")
@@ -272,17 +299,18 @@ class SessionTools(MCPToolSet):
             if not full and len(content) > 500:
                 content = content[:500] + "..."
 
-            entry: dict[str, Any] = {
-                "role": m.role,
-                "content": content,
-                "input_tokens": m.input_tokens,
-                "output_tokens": m.output_tokens,
-            }
-            if tool_calls:
-                entry["tool_calls"] = tool_calls
-            result.append(entry)
+            # 头部：角色 + token 信息
+            token_info = ""
+            if m.input_tokens or m.output_tokens:
+                token_info = f"  (in={m.input_tokens} out={m.output_tokens})"
+            header = f"--- [{m.role}]{token_info} ---"
+            lines.append(header)
+            if tool_names:
+                lines.append(f"tools: {', '.join(tool_names)}")
+            if content:
+                lines.append(content)
 
-        return json.dumps(result, ensure_ascii=False)
+        return "\n".join(lines) if lines else "(no messages)"
 
 
 # ---------------------------------------------------------------------------
@@ -298,21 +326,21 @@ class ConnectionTools(MCPToolSet):
         from mutbot.web.routes import _clients
         srv = _get_managers()
 
-        result = []
+        if not _clients:
+            return "(no connections)"
+        lines: list[str] = []
         for cid, client in _clients.items():
             channels = []
             if srv.channel_manager:
                 channels = srv.channel_manager.get_channels_for_client(cid)
-            result.append({
-                "client_id": cid,
-                "workspace_id": client.workspace_id,
-                "state": client.state,
-                "channel_count": len(channels),
-                "buffer_bytes": client._send_buffer._current_bytes,
-                "total_sent": client._send_buffer._total_sent,
-                "total_received": client._recv_count,
-            })
-        return json.dumps(result, ensure_ascii=False)
+            buf = client._send_buffer._current_bytes
+            buf_str = f"{buf}B" if buf < 1024 else f"{buf/1024:.1f}KB"
+            lines.append(
+                f"{cid[:8]}  {client.state}  ws={client.workspace_id[:8] if client.workspace_id else 'N/A'}  "
+                f"ch={len(channels)}  buf={buf_str}  "
+                f"sent={client._send_buffer._total_sent}  recv={client._recv_count}"
+            )
+        return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -335,15 +363,7 @@ class LogTools(MCPToolSet):
         entries = srv.log_store.query(
             pattern=pattern, level=level, limit=last_n, logger_name=logger,
         )
-        result = []
-        for e in entries:
-            result.append({
-                "timestamp": e.timestamp,
-                "level": e.level,
-                "logger": e.logger_name,
-                "message": e.message,
-            })
-        return json.dumps(result, ensure_ascii=False)
+        return _format_log_entries(entries)
 
     async def get_errors(self, last_n: int = 20) -> str:
         """获取最近的 ERROR 和 WARNING 级别日志，用于快速排查问题。"""
@@ -353,15 +373,7 @@ class LogTools(MCPToolSet):
             return json.dumps({"error": "log_store not initialized"})
 
         entries = srv.log_store.query(level="WARNING", limit=last_n)
-        result = []
-        for e in entries:
-            result.append({
-                "timestamp": e.timestamp,
-                "level": e.level,
-                "logger": e.logger_name,
-                "message": e.message,
-            })
-        return json.dumps(result, ensure_ascii=False)
+        return _format_log_entries(entries)
 
 
 # ---------------------------------------------------------------------------
