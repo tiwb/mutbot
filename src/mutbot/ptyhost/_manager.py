@@ -75,6 +75,7 @@ class TerminalManager:
         # 渲染管线状态
         self._output_buffers: dict[str, bytearray] = {}
         self._flush_handles: dict[str, asyncio.TimerHandle] = {}
+        self._flush_max_handles: dict[str, asyncio.TimerHandle] = {}  # 300ms 保底定时器
         self._render_pending: dict[str, bool] = {}
         self._render_handle: asyncio.TimerHandle | None = None
         self._sync_timeout_handles: dict[str, asyncio.TimerHandle] = {}  # BSU 超时保护
@@ -233,8 +234,8 @@ class TerminalManager:
     # 渲染管线（事件循环线程）
     # ------------------------------------------------------------------
 
-    _FLUSH_INTERVAL = 0.016   # 16ms flush 缓冲（攒多个 chunk 后再 feed pyte）
-    _FLUSH_MAX_BYTES = 32 * 1024  # 32KB 立即 flush
+    _FLUSH_INTERVAL = 0.016   # 16ms 静默期（最后一次数据后等 16ms 再 flush）
+    _FLUSH_MAX_DELAY = 0.3    # 300ms 保底上限（首次数据后最长等待时间）
     _RENDER_INTERVAL = 0.016  # 16ms 帧间隔 (~60fps)
 
     def set_loop(self, loop: asyncio.AbstractEventLoop) -> None:
@@ -242,7 +243,13 @@ class TerminalManager:
         self._loop = loop
 
     def _on_data_from_pty(self, term_id: str, data: bytes) -> None:
-        """事件循环线程：将 PTY 数据放入缓冲区，延迟 feed。"""
+        """事件循环线程：将 PTY 数据放入缓冲区，静默期 flush。
+
+        策略：
+        - 每次新数据到达，重置 16ms 静默期定时器
+        - 数据停止 16ms 后 flush（认为一次输出结束）
+        - 首次数据启动 300ms 保底定时器，防止持续输出时屏幕卡住
+        """
         term = self._terminals.get(term_id)
         if term is None or term.screen is None:
             return
@@ -251,18 +258,33 @@ class TerminalManager:
             return
         buf.extend(data)
 
-        if len(buf) >= self._FLUSH_MAX_BYTES:
-            # 超过上限，立即 flush
+        # 每次新数据到达，重置静默期定时器
+        self._cancel_flush_timer(term_id)
+        loop = self._loop
+        if loop is not None:
+            handle = loop.call_later(
+                self._FLUSH_INTERVAL, self._flush_and_feed, term_id,
+            )
+            self._flush_handles[term_id] = handle
+
+            # 首次数据：启动 300ms 保底定时器
+            if term_id not in self._flush_max_handles:
+                max_handle = loop.call_later(
+                    self._FLUSH_MAX_DELAY, self._flush_max_expired, term_id,
+                )
+                self._flush_max_handles[term_id] = max_handle
+
+    def _flush_max_expired(self, term_id: str) -> None:
+        """300ms 保底定时器到期：强制 flush，防止屏幕卡住。"""
+        self._flush_max_handles.pop(term_id, None)
+        buf = self._output_buffers.get(term_id)
+        if buf:
+            logger.warning(
+                "[FLUSH MAX] %dB after %.0fms — forced flush",
+                len(buf), self._FLUSH_MAX_DELAY * 1000,
+            )
             self._cancel_flush_timer(term_id)
             self._flush_and_feed(term_id)
-        elif term_id not in self._flush_handles:
-            # 首次数据到达，启动 16ms 定时器
-            loop = self._loop
-            if loop is not None:
-                handle = loop.call_later(
-                    self._FLUSH_INTERVAL, self._flush_and_feed, term_id,
-                )
-                self._flush_handles[term_id] = handle
 
     def _cancel_flush_timer(self, term_id: str) -> None:
         handle = self._flush_handles.pop(term_id, None)
@@ -272,6 +294,10 @@ class TerminalManager:
     def _flush_and_feed(self, term_id: str) -> None:
         """消费 output buffer，feed pyte stream，标记 render pending。"""
         self._flush_handles.pop(term_id, None)
+        # 清理保底定时器（buf 已被消费，后续新数据会重新启动）
+        max_handle = self._flush_max_handles.pop(term_id, None)
+        if max_handle is not None:
+            max_handle.cancel()
         term = self._terminals.get(term_id)
         if term is None or term.screen is None or term.stream is None or term.decoder is None:
             return
@@ -606,6 +632,9 @@ class TerminalManager:
         term.stream = None
         term.decoder = None
         self._cancel_flush_timer(term_id)
+        max_handle = self._flush_max_handles.pop(term_id, None)
+        if max_handle is not None:
+            max_handle.cancel()
         self._output_buffers.pop(term_id, None)
         self._render_pending.pop(term_id, None)
 
