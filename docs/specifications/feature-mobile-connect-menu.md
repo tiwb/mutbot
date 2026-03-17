@@ -26,7 +26,8 @@ mutbot 服务器启动时会在 banner 中打印可用的连接地址（含 `mut
 - `display_category = "SessionList/Header"`，`display_order = "1workspace:2"`（排在 Restart Server 后面）
 - `display_icon = "smartphone"`
 - `execute()` 复用 `server.py` 的 `_enumerate_ips()` + `_collect_listen_addresses()` 逻辑，收集非 127.0.0.1 的地址
-- 返回 `MenuResult(action="mobile_connect", data={"addresses": [{"url": "http://192.168.1.5:8741", "via": "https://mutbot.ai/connect/#192.168.1.5:8741"}]})`
+- 返回 `MenuResult(action="mobile_connect", data={"addresses": [{"url": "http://192.168.1.5:8741/#myproject", "via": "https://mutbot.ai/connect/#192.168.1.5:8741/#myproject"}]})`
+- URL 携带当前 workspace name：直连 URL 用 `/#name`（前端已有路由），via URL 用 `/#host:port/#name`（connect 页面解析后跳转）
 - 如果所有地址都是 127.0.0.1，返回空列表 + 提示信息
 
 **前端**：
@@ -61,6 +62,8 @@ mutbot 服务器启动时会在 banner 中打印可用的连接地址（含 `mut
 - `mutbot/frontend/src/App.tsx:430-484` — `handleMenuResult` 和 `handleHeaderAction` 处理菜单结果
 - `mutbot/frontend/src/panels/SessionListPanel.tsx:381-394` — Header 菜单渲染位置
 - `mutbot/frontend/src/mobile/ShortcutEditDialog.tsx` — 弹窗 overlay 模式参考
+- `mutbot/src/mutbot/runtime/workspace.py:17` — `Workspace` dataclass（`id`, `name`, `project_path`）
+- `mutbot.ai/src/pages/connect.astro` — connect 页面，解析 `#host:port` 并添加服务器
 
 ## 实施步骤清单
 
@@ -84,4 +87,26 @@ mutbot 服务器启动时会在 banner 中打印可用的连接地址（含 `mut
   - 状态：✅ 已完成
 
 - [x] **Task 5**: 构建前端并验证
+  - 状态：✅ 已完成
+
+### 第二轮：URL 携带 workspace 定位 [✅ 已完成]
+
+扫码后直接进入当前工程，而非落到默认首页。
+
+**URL 格式**：
+- 直连：`http://host:port/#workspaceName` — 前端已有 hash 路由，无需改动
+- Via：`https://mutbot.ai/connect/#host:port/#workspaceName` — connect 页面按 `/#` 切分，添加服务器后跳转 `/#workspaceName`
+- 无 workspace 时保持原格式，向后兼容
+
+- [x] **Task 6**: 后端 — `MobileConnectMenu.execute()` URL 拼入 workspace name
+  - [x] 从 `context.workspace_manager` 获取当前 workspace name
+  - [x] 直连 URL 追加 `/#name`，via URL 追加 `/#name`
+  - 状态：✅ 已完成
+
+- [x] **Task 7**: mutbot.ai — connect 页面解析 workspace 并跳转
+  - [x] `getAddress()` 按 `/#` 切分，提取 address 和 workspace
+  - [x] `goHome()` 跳转到 `/#workspaceName`（无 workspace 时仍跳 `/`）
+  - 状态：✅ 已完成
+
+- [x] **Task 8**: 构建 mutbot.ai 并验证
   - 状态：✅ 已完成

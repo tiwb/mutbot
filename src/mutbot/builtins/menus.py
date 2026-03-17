@@ -338,6 +338,13 @@ class MobileConnectMenu(Menu):
     async def execute(self, params: dict, context: RpcContext) -> MenuResult:
         from mutbot.web.server import _enumerate_ips
 
+        # 获取当前 workspace name，用于 URL 定位
+        ws_suffix = ""
+        if context.workspace_manager:
+            ws = context.workspace_manager.get(context.workspace_id)
+            if ws:
+                ws_suffix = f"/#{ws.name}"
+
         # 从 config 获取监听地址
         listen_values: list[str] = []
         if context.config:
@@ -371,16 +378,16 @@ class MobileConnectMenu(Menu):
                     if key not in seen:
                         seen.add(key)
                         addresses.append({
-                            "url": f"http://{ip}:{p}",
-                            "via": f"https://mutbot.ai/connect/#{ip}:{p}",
+                            "url": f"http://{ip}:{p}{ws_suffix}",
+                            "via": f"https://mutbot.ai/connect/#{ip}:{p}{ws_suffix}",
                         })
             elif host != "127.0.0.1":
                 key = f"{host}:{p}"
                 if key not in seen:
                     seen.add(key)
                     addresses.append({
-                        "url": f"http://{host}:{p}",
-                        "via": f"https://mutbot.ai/connect/#{host}:{p}",
+                        "url": f"http://{host}:{p}{ws_suffix}",
+                        "via": f"https://mutbot.ai/connect/#{host}:{p}{ws_suffix}",
                     })
 
         return MenuResult(action="mobile_connect", data={"addresses": addresses})
