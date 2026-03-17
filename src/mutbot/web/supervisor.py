@@ -536,33 +536,33 @@ class Supervisor:
         await self._send_http_response(writer, 200, "OK", body=resp_body, content_type="text/plain; charset=utf-8")
 
     async def _do_restart(self) -> None:
-        """执行完整的热重启流程。"""
+        """执行完整的热重启流程（蓝绿部署）。
+
+        顺序：先 spawn 新 Worker → 路由切换 → 再 drain 旧 Worker。
+        确保客户端重连时新 Worker 已就绪，避免连回旧 Worker。
+        """
         self._restarting = True
         old_worker = self._active_worker
         try:
-            # 1. Drain 旧 Worker
-            if old_worker and old_worker.alive:
-                old_worker.draining = True
-                logger.info("Draining Worker gen=%d (pid=%d)", old_worker.generation, old_worker.proc.pid)
-                drained = await self._drain_worker(old_worker)
-                if not drained:
-                    logger.warning("Drain failed for Worker gen=%d, continuing with restart", old_worker.generation)
-
-            # 2. Spawn 新 Worker
+            # 1. Spawn 新 Worker（旧 Worker 继续服务）
             logger.info("Spawning new Worker...")
             try:
                 new_worker = await self._spawn_worker()
             except Exception:
                 logger.exception("Failed to spawn new Worker during restart")
-                # 回滚：如果旧 Worker 还在就恢复
-                if old_worker and old_worker.alive:
-                    old_worker.draining = False
-                    self._active_worker = old_worker
                 self._restarting = False
                 return
 
-            # 3. 路由已切换（_spawn_worker 设置了 _active_worker）
+            # 2. 路由已切换（_spawn_worker 设置了 _active_worker）
             logger.info("Route switched to Worker gen=%d", new_worker.generation)
+
+            # 3. Drain 旧 Worker（关闭 WS 连接，客户端重连时会路由到新 Worker）
+            if old_worker and old_worker.alive:
+                old_worker.draining = True
+                logger.info("Draining Worker gen=%d (pid=%d)", old_worker.generation, old_worker.proc.pid)
+                drained = await self._drain_worker(old_worker)
+                if not drained:
+                    logger.warning("Drain failed for Worker gen=%d, continuing", old_worker.generation)
 
             # 4. 等待旧 Worker 退出
             if old_worker and old_worker.alive:
