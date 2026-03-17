@@ -170,7 +170,10 @@ def render_lines(lines: list, cols: int, default_char: "pyte.screens.Char") -> b
                     parts.append("\x1b[0m")
                 prev_key = key
             ch = char.data or " "
-            if (col + 1 < cols and ch != " " and wcwidth(ch) == 1):
+            # 宽字符在视口边界会溢出：替换为空格防止换行
+            if wcwidth(ch) == 2 and col + 2 > cols:
+                ch = " "
+            elif (col + 1 < cols and ch != " " and wcwidth(ch) == 1):
                 next_char = line.get(col + 1, default_char) if isinstance(line, dict) else line[col + 1]
                 if next_char.data == "":
                     ch += "\uFE0F"

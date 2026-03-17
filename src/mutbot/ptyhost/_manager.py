@@ -381,11 +381,11 @@ class TerminalManager:
             return
         # 消费剩余 buffer
         self._flush_and_feed(term_id)
-        dirty_count = len(term.screen.dirty)
-        frame = render_dirty(term.screen)
-        if not frame:
-            return
-        frame_kb = len(frame) / 1024
+        screen = term.screen
+        dirty_count = len(screen.dirty)
+        # 增量帧：给全屏 view (viewport_rows >= screen.lines) 使用
+        frame = render_dirty(screen)
+        frame_kb = len(frame) / 1024 if frame else 0
         if frame_kb > 4:
             logger.info(
                 "Large frame: %s %.1fKB (%d dirty lines, %d views)",
@@ -394,7 +394,14 @@ class TerminalManager:
             )
         # 推送给所有 live view
         for view in term.views.values():
-            if view.scroll_offset == 0:
+            if view.scroll_offset != 0:
+                continue
+            if self._view_needs_viewport(view, screen):
+                # viewport 模式：全量渲染视口范围
+                vp_frame = self._render_viewport_frame(view, screen, 0)
+                if vp_frame:
+                    self._on_frame(term_id, view.id, vp_frame)
+            elif frame:
                 self._on_frame(term_id, view.id, frame)
 
     def _force_end_sync(self, term_id: str) -> None:
@@ -470,13 +477,18 @@ class TerminalManager:
     # View 管理
     # ------------------------------------------------------------------
 
-    def create_view(self, term_id: str) -> str | None:
+    def create_view(
+        self, term_id: str, viewport_rows: int = 0, viewport_cols: int = 0,
+    ) -> str | None:
         """创建 view，返回 view_id。"""
         term = self._terminals.get(term_id)
         if term is None:
             return None
         view_id = uuid.uuid4().hex[:8]  # 8 字符，匹配二进制帧头字段宽度
-        view = TermView(id=view_id, term_id=term_id)
+        view = TermView(
+            id=view_id, term_id=term_id,
+            viewport_rows=viewport_rows, viewport_cols=viewport_cols,
+        )
         term.views[view_id] = view
         self._views[view_id] = view
         return view_id
@@ -490,9 +502,29 @@ class TerminalManager:
         if term is not None:
             term.views.pop(view_id, None)
 
+    def set_viewport(self, view_id: str, rows: int, cols: int = 0) -> None:
+        """设置 view 的 viewport 尺寸。0 表示使用终端原始尺寸。"""
+        view = self._views.get(view_id)
+        if view is None:
+            return
+        view.viewport_rows = max(0, rows)
+        view.viewport_cols = max(0, cols)
+        # 如果是 live view 且 viewport 改变，推送新帧
+        if view.scroll_offset == 0:
+            term = self._terminals.get(view.term_id)
+            if term is None or term.screen is None:
+                return
+            if self._view_needs_viewport(view, term.screen):
+                frame = self._render_viewport_frame(view, term.screen, 0)
+            else:
+                from mutbot.ptyhost.ansi_render import render_full
+                frame = render_full(term.screen)
+            if frame:
+                self._on_frame(view.term_id, view.id, frame)
+
     def get_snapshot(self, view_id: str) -> bytes:
         """返回 view 当前可见内容的 ANSI 帧。"""
-        from mutbot.ptyhost.ansi_render import render_full, render_lines
+        from mutbot.ptyhost.ansi_render import render_full
         view = self._views.get(view_id)
         if view is None:
             return b""
@@ -500,10 +532,10 @@ class TerminalManager:
         if term is None or term.screen is None:
             return b""
         screen = term.screen
-        if view.scroll_offset == 0:
+        if view.scroll_offset == 0 and not self._view_needs_viewport(view, screen):
             return render_full(screen)
         else:
-            return self._render_scrolled_view(screen, view.scroll_offset)
+            return self._render_viewport_frame(view, screen, view.scroll_offset)
 
     def scroll_view(self, view_id: str, lines: int) -> None:
         """滚动 view。lines>0 向上（看历史），lines<0 向下。"""
@@ -515,16 +547,19 @@ class TerminalManager:
             return
         screen = term.screen
         max_offset = len(screen.history.top)
+        # viewport 模式：屏幕内也可滚动
+        vp = view.viewport_rows
+        if 0 < vp < screen.lines:
+            max_offset += screen.lines - vp
         new_offset = max(0, min(view.scroll_offset + lines, max_offset))
         if new_offset == view.scroll_offset:
             return
         view.scroll_offset = new_offset
-        if new_offset == 0:
-            # 回到 live，推送全屏快照
+        if new_offset == 0 and not self._view_needs_viewport(view, screen):
             from mutbot.ptyhost.ansi_render import render_full
             frame = render_full(screen)
         else:
-            frame = self._render_scrolled_view(screen, new_offset)
+            frame = self._render_viewport_frame(view, screen, new_offset)
         if frame:
             self._on_frame(view.term_id, view.id, frame)
 
@@ -538,15 +573,18 @@ class TerminalManager:
             return
         screen = term.screen
         max_offset = len(screen.history.top)
+        vp = view.viewport_rows
+        if 0 < vp < screen.lines:
+            max_offset += screen.lines - vp
         new_offset = max(0, min(offset, max_offset))
         if new_offset == view.scroll_offset:
             return
         view.scroll_offset = new_offset
-        if new_offset == 0:
+        if new_offset == 0 and not self._view_needs_viewport(view, screen):
             from mutbot.ptyhost.ansi_render import render_full
             frame = render_full(screen)
         else:
-            frame = self._render_scrolled_view(screen, new_offset)
+            frame = self._render_viewport_frame(view, screen, new_offset)
         if frame:
             self._on_frame(view.term_id, view.id, frame)
 
@@ -561,19 +599,37 @@ class TerminalManager:
         term = self._terminals.get(view.term_id)
         if term is None or term.screen is None:
             return
-        from mutbot.ptyhost.ansi_render import render_full
-        frame = render_full(term.screen)
+        if not self._view_needs_viewport(view, term.screen):
+            from mutbot.ptyhost.ansi_render import render_full
+            frame = render_full(term.screen)
+        else:
+            frame = self._render_viewport_frame(view, term.screen, 0)
         if frame:
             self._on_frame(view.term_id, view.id, frame)
 
-    def _render_scrolled_view(self, screen: _SafeHistoryScreen, offset: int) -> bytes:
-        """渲染 scrolled view 的可见内容。"""
+    def _view_needs_viewport(self, view: TermView, screen: _SafeHistoryScreen) -> bool:
+        """判断 view 是否需要 viewport 模式（行或列小于终端尺寸）。"""
+        vr = view.viewport_rows
+        vc = view.viewport_cols
+        return (0 < vr < screen.lines) or (0 < vc < screen.columns)
+
+    def _render_viewport_frame(
+        self, view: TermView, screen: _SafeHistoryScreen, offset: int,
+    ) -> bytes:
+        """渲染 viewport 帧：行裁剪 + 列裁剪。
+
+        offset: scroll_offset（0 = live，>0 = 从底部往上行数）。
+        """
         from mutbot.ptyhost.ansi_render import render_lines
+        vr = view.viewport_rows
+        visible = vr if 0 < vr < screen.lines else screen.lines
+        vc = view.viewport_cols
+        cols = vc if 0 < vc < screen.columns else screen.columns
+
         history_top = list(screen.history.top)
         buffer_lines = [screen.buffer[row] for row in range(screen.lines)]
         all_lines = history_top + buffer_lines
         total = len(all_lines)
-        visible = screen.lines
         # offset 是从底部往上偏移
         end = total - offset
         start = max(0, end - visible)
@@ -582,7 +638,7 @@ class TerminalManager:
         # 如果不够 visible 行，用空行补齐
         while len(lines_slice) < visible:
             lines_slice.append({})
-        return render_lines(lines_slice, screen.columns, screen.default_char)
+        return render_lines(lines_slice, cols, screen.default_char)
 
     def clear_scrollback(self, term_id: str) -> None:
         """清除终端的 scrollback 历史缓冲，重置所有 view 的滚动偏移。"""
@@ -590,13 +646,20 @@ class TerminalManager:
         if term is None or term.screen is None:
             return
         term.screen.history.top.clear()
+        screen = term.screen
         for view in term.views.values():
             view.scroll_offset = 0
         # 全量渲染推送给所有 view
         from mutbot.ptyhost.ansi_render import render_full
-        frame = render_full(term.screen)
-        if frame:
-            for view in term.views.values():
+        full_frame: bytes | None = None
+        for view in term.views.values():
+            if self._view_needs_viewport(view, screen):
+                frame = self._render_viewport_frame(view, screen, 0)
+            else:
+                if full_frame is None:
+                    full_frame = render_full(screen)
+                frame = full_frame
+            if frame:
                 self._on_frame(term_id, view.id, frame)
 
     def get_scroll_state(self, view_id: str) -> dict[str, int] | None:
@@ -608,10 +671,14 @@ class TerminalManager:
         if term is None or term.screen is None:
             return None
         screen = term.screen
+        vp = view.viewport_rows
+        visible = vp if 0 < vp < screen.lines else screen.lines
+        # total = history + screen.lines（viewport 模式下 total 不变，
+        # 但 visible 变小，scrollbar 比例自然正确）
         return {
             "offset": view.scroll_offset,
             "total": len(screen.history.top) + screen.lines,
-            "visible": screen.lines,
+            "visible": visible,
         }
 
     # ------------------------------------------------------------------

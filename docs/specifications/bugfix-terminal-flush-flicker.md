@@ -93,23 +93,69 @@ Claude Code 全量重绘 200KB（burst 持续 ~50ms）：
   - [x] `kill()` 清理保底定时器
   - 状态：✅ 已完成
 
-### Phase 3: 验证 [⏸️ 待开始]
+### Phase 3: 多 View resize 循环修复 [⏸️ 待开始]
 
-- [ ] **Task 3.1**: 基础功能验证
-  - [ ] 终端交互响应正常（输入不卡顿）
-  - [ ] Claude Code spinner 动画正常
-  - [ ] resize 后屏幕正确
+Per-Client View + Per-View Viewport 重构后，引入了新的闪烁源：**多客户端 resize 无限循环**。
+
+#### 根因
+
+`853684c` 在前端 `pty_resize` handler 中加了 `fit()` 调用：
+
+```tsx
+// TerminalPanel.tsx - pty_resize handler
+serverResizing = true;
+termRef.current.resize(c, r);
+serverResizing = false;
+if (fitRef.current) {
+  fitRef.current.fit();  // ← 问题所在
+}
+```
+
+`fit()` 在 `serverResizing = false` 之后调用，触发 `sendResize` 把自己的容器尺寸发回服务器。当两个不同尺寸的客户端连接同一终端（Auto 模式，无 `last_input_client`），形成无限循环：
+
+```
+桌面(114×63) sendResize → PTY=114×63 → broadcast pty_resize
+  → 手机收到 → fit() → sendResize(70×29) → PTY=70×29 → broadcast pty_resize
+    → 桌面收到 → fit() → sendResize(114×63) → 循环（~250次/秒）
+```
+
+日志实证（`server-20260317_165452`）：
+
+```
+16:55:25,144  resize 2e1b4234: 70x29  (client=c56f33b4)
+16:55:25,150  resize 2e1b4234: 114x63 (client=3229ea25)
+16:55:25,175  resize 2e1b4234: 70x29  (client=c56f33b4)
+16:55:25,180  resize 2e1b4234: 114x63 (client=3229ea25)
+...  （~4ms 一次，持续数秒）
+```
+
+后果：每次 resize → pyte 全屏 dirty → 8.1KB × 4 views → send buffer overflow → 连接断开。
+
+#### 分析：Auto Size 在多 View 下不再必要
+
+Per-View Viewport 之前，PTY 只有一个尺寸、一个共享 view，Auto Size 让「最后打字的客户端」控制 PTY 尺寸是合理的。
+
+Per-View Viewport 之后：
+- 每个客户端有独立 viewport，PTY 大于容器时走 viewport 裁剪
+- PTY 尺寸可以保持在最大客户端的尺寸，小屏客户端通过 viewport 看裁剪后的内容
+- `resize()` 已经通过 `set_viewport(view_id, rows, cols)` 更新每个客户端的 viewport（`terminal.py:201-204`）
+- **不同尺寸的客户端不应该再争夺 PTY 尺寸**
+
+`fit()` 的原始意图是页面刷新后重新抢夺 PTY 尺寸，但 Per-View Viewport 已经处理了尺寸不匹配的情况，这行代码变成了纯粹的 bug 源。
+
+#### 修复方案
+
+前端 `pty_resize` handler 中移除 `fit()` 调用。`term.resize(c, r)` 保留（xterm.js 需要知道 PTY 实际尺寸以正确渲染滚动区域等），但不再回发 resize 请求。
+
+- [ ] **Task 3.1**: 移除 `pty_resize` handler 中的 `fit()` 调用
+  - [ ] 删除 `TerminalPanel.tsx` 中 `pty_resize` 分支的 `fit()` 及注释
   - 状态：⏸️ 待开始
 
-- [ ] **Task 3.2**: 闪烁验证
-  - [ ] 积累长历史后触发 Claude Code 全量重绘
-  - [ ] 观察是否仍有闪烁
-  - [ ] 日志中确认：大 burst 被完整 flush 而非拆分
-  - 状态：⏸️ 待开始
-
-- [ ] **Task 3.3**: 保底机制验证
-  - [ ] 确认正常使用中 `[FLUSH MAX]` 不被触发
-  - [ ] 确认极端持续输出场景（>300ms）保底机制生效
+- [ ] **Task 3.2**: 验证修复效果
+  - [ ] 两个不同尺寸的浏览器同时连接，确认无 resize 循环
+  - [ ] 日志中无密集 resize 记录
+  - [ ] 单客户端 resize 仍正常工作
+  - [ ] 页面刷新后终端显示正确（viewport 接管）
   - 状态：⏸️ 待开始
 
 ### Phase 4: 日志清理 [✅ 已完成]
@@ -128,11 +174,14 @@ Claude Code 全量重绘 200KB（burst 持续 ~50ms）：
 - `mutbot/src/mutbot/ptyhost/_manager.py` — flush 策略（`_on_data_from_pty`、`_flush_max_expired`）
 - `mutbot/src/mutbot/ptyhost/_screen.py` — `_SafeHistoryScreen`（`synchronized` 标志）
 - `mutbot/src/mutbot/ptyhost/_app.py` — `_WebSocketLogHandler`（日志转发到 mutbot）
+- `mutbot/frontend/src/panels/TerminalPanel.tsx:237-251` — `pty_resize` handler（fit() 循环源）
+- `mutbot/src/mutbot/runtime/terminal.py:178-217` — `resize()` + `set_viewport` 逻辑
 
 ### 相关规范
 
 - `bugfix-terminal-rendering-flicker.md` — 基础闪烁修复（BSU/ESU + pyte diff，✅ 已完成）
 - `refactor-pyte-to-ptyhost.md` — pyte 下沉到 ptyhost（✅ 已完成）
+- `feature-per-view-viewport.md` — Per-View Viewport（✅ 已完成，引入 resize 循环）
 
 ### 历史调查
 

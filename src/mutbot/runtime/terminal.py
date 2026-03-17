@@ -198,6 +198,10 @@ class TerminalManager:
         if client_id is not None:
             sizes = self._client_sizes.setdefault(term_id, {})
             sizes[client_id] = (rows, cols)
+            # 更新该客户端的 viewport
+            view_id = self._client_views.get(term_id, {}).get(client_id)
+            if view_id and self._client:
+                asyncio.ensure_future(self._client.set_viewport(view_id, rows, cols))
             # 决策：controller 存在且不是该客户端 → 仅记录
             controller = self._get_resize_controller(term_id)
             if controller is not None and client_id != controller:

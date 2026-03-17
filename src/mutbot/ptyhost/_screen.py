@@ -119,3 +119,5 @@ class TermView:
     id: str           # view_id
     term_id: str
     scroll_offset: int = 0   # 0 = live, >0 = scrolled
+    viewport_rows: int = 0   # 0 = 使用 screen.lines（全屏），>0 = 独立视口行数
+    viewport_cols: int = 0   # 0 = 使用 screen.columns（全宽），>0 = 独立视口列数

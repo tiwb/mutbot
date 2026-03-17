@@ -182,13 +182,23 @@ class PtyHostApp:
             return {"ok": False, "error": "terminal not found"}
 
         elif action == "create_view":
-            view_id = self._manager.create_view(cmd["term_id"])
+            view_id = self._manager.create_view(
+                cmd["term_id"],
+                viewport_rows=cmd.get("viewport_rows", 0),
+                viewport_cols=cmd.get("viewport_cols", 0),
+            )
             if view_id:
                 return {"ok": True, "view_id": view_id}
             return {"ok": False, "error": "terminal not found"}
 
         elif action == "destroy_view":
             self._manager.destroy_view(cmd["view_id"])
+            return {"ok": True}
+
+        elif action == "set_viewport":
+            self._manager.set_viewport(
+                cmd["view_id"], cmd["rows"], cols=cmd.get("cols", 0),
+            )
             return {"ok": True}
 
         elif action == "snapshot":

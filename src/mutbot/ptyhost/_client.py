@@ -250,9 +250,14 @@ class PtyHostClient:
             raise RuntimeError(reply.get("error", "create failed"))
         return reply["term_id"]
 
-    async def create_view(self, term_id: str) -> str:
+    async def create_view(
+        self, term_id: str, viewport_rows: int = 0, viewport_cols: int = 0,
+    ) -> str:
         """创建 view，返回 view_id。"""
-        reply = await self._send_command({"cmd": "create_view", "term_id": term_id})
+        reply = await self._send_command({
+            "cmd": "create_view", "term_id": term_id,
+            "viewport_rows": viewport_rows, "viewport_cols": viewport_cols,
+        })
         if not reply.get("ok"):
             raise RuntimeError(reply.get("error", "create_view failed"))
         return reply["view_id"]
@@ -260,6 +265,12 @@ class PtyHostClient:
     async def destroy_view(self, view_id: str) -> None:
         """销毁 view。"""
         await self._send_command({"cmd": "destroy_view", "view_id": view_id})
+
+    async def set_viewport(self, view_id: str, rows: int, cols: int = 0) -> None:
+        """设置 view 的 viewport 尺寸。"""
+        await self._send_command({
+            "cmd": "set_viewport", "view_id": view_id, "rows": rows, "cols": cols,
+        })
 
     async def get_snapshot(self, view_id: str) -> None:
         """请求 view 快照（帧通过 on_frame 回调异步到达）。"""
