@@ -44,15 +44,10 @@ def _spawn_ptyhost() -> None:
     python = sys.executable
     if sys.platform == "win32":
         CREATE_NEW_PROCESS_GROUP = 0x00000200
-        CREATE_NEW_CONSOLE = 0x00000010
-        # Windows: 创建新控制台窗口但默认隐藏（用户可通过菜单显示）
-        startupinfo = subprocess.STARTUPINFO()
-        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-        startupinfo.wShowWindow = 0  # SW_HIDE
+        CREATE_NO_WINDOW = 0x08000000
         subprocess.Popen(
             [python, "-m", "mutbot.ptyhost"],
-            creationflags=CREATE_NEW_PROCESS_GROUP | CREATE_NEW_CONSOLE,
-            startupinfo=startupinfo,
+            creationflags=CREATE_NEW_PROCESS_GROUP | CREATE_NO_WINDOW,
             close_fds=True,
         )
     else:

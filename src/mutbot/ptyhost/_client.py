@@ -305,13 +305,9 @@ class PtyHostClient:
         """终止终端（async）。"""
         await self._send_command({"cmd": "kill", "term_id": term_id})
 
-    async def set_window(self, visible: bool) -> dict[str, Any]:
-        """设置 ptyhost 控制台窗口可见性（仅 Windows）。"""
-        return await self._send_command({"cmd": "window", "visible": visible})
-
-    async def get_window(self) -> dict[str, Any]:
-        """查询 ptyhost 控制台窗口可见状态。"""
-        return await self._send_command({"cmd": "window"})
+    async def shutdown(self) -> dict[str, Any]:
+        """请求 ptyhost 关闭。"""
+        return await self._send_command({"cmd": "shutdown"})
 
     async def status(self, term_id: str) -> dict[str, Any]:
         """查询终端状态。"""

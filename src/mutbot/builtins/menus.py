@@ -328,9 +328,9 @@ class RestartServerMenu(Menu):
             return MenuResult(action="toast", data={"message": f"Failed to restart: {e}"})
 
 
-class TogglePtyHostWindowMenu(Menu):
-    """全局菜单 — 显示/隐藏 PtyHost 控制台窗口（仅 Windows）"""
-    display_name = "Show PtyHost Console"
+class KillPtyHostMenu(Menu):
+    """全局菜单 — 终止 PtyHost 守护进程（仅 Windows）"""
+    display_name = "Kill PtyHost"
     display_icon = "terminal"
     display_category = "SessionList/Header"
     display_order = "2debug:0"
@@ -340,28 +340,18 @@ class TogglePtyHostWindowMenu(Menu):
         return sys.platform == "win32"
 
     async def execute(self, params: dict, context: RpcContext) -> MenuResult:
+        if not params.get("confirmed"):
+            return MenuResult(action="confirm", data={
+                "message": "确定终止 PtyHost？所有终端连接将断开。",
+            })
         tm = context.terminal_manager
         if not tm or not tm._client:
             return MenuResult(action="toast", data={"message": "PtyHost not connected"})
         try:
-            current = await tm._client.get_window()
-            now_visible = current.get("visible", False)
-            state = await tm._client.set_window(not now_visible)
-            visible = state.get("visible", False)
-            label = "visible" if visible else "hidden"
-            return MenuResult(action="toast", data={"message": f"PtyHost console {label}"})
+            await tm._client.shutdown()
+            return MenuResult(action="toast", data={"message": "PtyHost terminated"})
         except Exception as e:
             return MenuResult(action="toast", data={"message": f"Failed: {e}"})
-
-    @classmethod
-    def dynamic_items(cls, context: RpcContext) -> list[MenuItem]:
-        # 无法在 classmethod 中查询 ptyhost 状态，使用固定文本 + toggle 逻辑在 execute 中处理
-        return [MenuItem(
-            id=f"{cls.__module__}.{cls.__qualname__}",
-            name="Toggle PtyHost Console",
-            icon="terminal",
-            order="2debug:0",
-        )]
 
 
 # ---------------------------------------------------------------------------

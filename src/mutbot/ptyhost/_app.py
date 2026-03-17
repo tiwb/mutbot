@@ -236,14 +236,11 @@ class PtyHostApp:
             self._check_idle()
             return {"ok": True}
 
-        elif action == "window":
-            from mutbot.ptyhost.__main__ import set_window_visible, get_window_visible
-            visible = cmd.get("visible")
-            if visible is None:
-                # 查询当前状态
-                return {"ok": True, "visible": get_window_visible()}
-            set_window_visible(bool(visible))
-            return {"ok": True, "visible": get_window_visible()}
+        elif action == "shutdown":
+            logger.info("Shutdown requested via command")
+            if self.should_exit_callback:
+                self.should_exit_callback()
+            return {"ok": True}
 
         return {"ok": False, "error": f"unknown command: {action}"}
 

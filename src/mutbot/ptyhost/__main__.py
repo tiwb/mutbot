@@ -11,42 +11,8 @@ from __future__ import annotations
 import logging
 import os
 import socket
-import sys
 
 logger = logging.getLogger("mutbot.ptyhost")
-
-# ---------------------------------------------------------------------------
-# Windows 窗口控制
-# ---------------------------------------------------------------------------
-
-_console_hwnd: int = 0  # 控制台窗口句柄（仅 Windows）
-_console_visible: bool = False  # 当前窗口可见状态
-
-
-def set_window_visible(visible: bool) -> bool:
-    """设置控制台窗口可见性，返回设置后的状态。仅 Windows 有效。"""
-    global _console_visible
-    if sys.platform != "win32" or not _console_hwnd:
-        return False
-    import ctypes
-    SW_SHOW, SW_HIDE = 5, 0
-    ctypes.windll.user32.ShowWindow(_console_hwnd, SW_SHOW if visible else SW_HIDE)
-    _console_visible = visible
-    return _console_visible
-
-
-def get_window_visible() -> bool:
-    """返回当前控制台窗口可见状态。"""
-    return _console_visible
-
-_BANNER = """\
-================================================
-  MutBot PTY Host
-  Listening on 127.0.0.1:{port}
-
-  This process manages all terminal sessions.
-  Closing this window will disconnect all terminals.
-================================================"""
 
 
 def _port_file_path() -> str:
@@ -77,13 +43,6 @@ def main() -> None:
         f.write(str(port))
 
     logger.info("ptyhost starting on 127.0.0.1:%d", port)
-
-    # Windows: 记录控制台窗口句柄（窗口默认隐藏，用户可通过菜单显示）
-    if sys.platform == "win32":
-        global _console_hwnd
-        import ctypes
-        _console_hwnd = ctypes.windll.kernel32.GetConsoleWindow()
-        print(_BANNER.format(port=port), flush=True)
 
     server = _ASGIServer(app)
 

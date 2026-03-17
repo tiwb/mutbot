@@ -274,10 +274,23 @@ export default function RpcMenu(props: RpcMenuProps) {
       // 否则走 RPC execute
       if (!rpc) return;
       try {
+        const params = { ...(context || {}), ...(item.data || {}) };
         const result = await rpc.call<MenuExecResult>("menu.execute", {
           menu_id: item.id,
-          params: { ...(context || {}), ...(item.data || {}) },
+          params,
         });
+        // 通用 confirm 机制：后端返回 action="confirm" 时弹确认对话框
+        if (result.action === "confirm") {
+          const message = (result.data?.message as string) || "确定执行此操作？";
+          if (window.confirm(message)) {
+            const confirmed = await rpc.call<MenuExecResult>("menu.execute", {
+              menu_id: item.id,
+              params: { ...params, confirmed: true },
+            });
+            onResult?.(confirmed);
+          }
+          return;
+        }
         onResult?.(result);
       } catch {
         // 静默处理
