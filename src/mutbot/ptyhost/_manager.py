@@ -280,8 +280,8 @@ class TerminalManager:
         buf = self._output_buffers.get(term_id)
         if buf:
             logger.warning(
-                "[FLUSH MAX] %dB after %.0fms — forced flush",
-                len(buf), self._FLUSH_MAX_DELAY * 1000,
+                "Flush max delay: %s %dKB after %.0fms",
+                term_id[:8], len(buf) // 1024, self._FLUSH_MAX_DELAY * 1000,
             )
             self._cancel_flush_timer(term_id)
             self._flush_and_feed(term_id)
@@ -306,6 +306,7 @@ class TerminalManager:
             return
         data = bytes(buf)
         buf.clear()
+        feed_size = len(data)
         was_synchronized = term.screen.synchronized
         try:
             text = term.decoder.decode(data)
@@ -319,6 +320,12 @@ class TerminalManager:
             term.stream = stream
             term.decoder = codecs.getincrementaldecoder("utf-8")("replace")
             return
+        if feed_size > 32768:
+            logger.info(
+                "Large feed: %s %dKB (%d dirty lines)",
+                term_id[:8], feed_size // 1024,
+                len(term.screen.dirty),
+            )
         # BSU 期间不调度渲染，等 ESU 到达后一次性渲染
         if term.screen.synchronized:
             # 超时保护：BSU 后 500ms 未收到 ESU，强制渲染（程序崩溃等）
@@ -374,9 +381,17 @@ class TerminalManager:
             return
         # 消费剩余 buffer
         self._flush_and_feed(term_id)
+        dirty_count = len(term.screen.dirty)
         frame = render_dirty(term.screen)
         if not frame:
             return
+        frame_kb = len(frame) / 1024
+        if frame_kb > 4:
+            logger.info(
+                "Large frame: %s %.1fKB (%d dirty lines, %d views)",
+                term_id[:8], frame_kb, dirty_count,
+                sum(1 for v in term.views.values() if v.scroll_offset == 0),
+            )
         # 推送给所有 live view
         for view in term.views.values():
             if view.scroll_offset == 0:

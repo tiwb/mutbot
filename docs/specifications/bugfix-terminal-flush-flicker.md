@@ -60,21 +60,15 @@ Claude Code 全量重绘 200KB（burst 持续 ~50ms）：
 
 **对交互输入无影响**：单个按键回显是一个小 chunk，16ms 静默后自然 flush。
 
-### 诊断日志
+### 永久诊断日志
 
-实施过程中添加了时序诊断日志（`mutbot.ptyhost.diag` logger），用于验证 flush 策略的效果：
+临时诊断日志已清理，保留以下永久日志点（`mutbot.ptyhost` logger）用于长期监控：
 
-| 日志标签 | 触发条件 | 长期保留 |
-|----------|----------|----------|
-| `[READ #N]` | 每次 PTY 读取 | 否（验证后删除） |
-| `[BURST END]` | burst 结束时 | 有条件保留（仅大 burst） |
-| `[BUF +NB]` | 每次数据到达 | 否 |
-| `[FLUSH]` | 每次 flush | 否 |
-| `[FLUSH MAX]` | 300ms 保底触发 | 是（关键信号） |
-| `[RENDER]` | 每次渲染 | 否 |
-| `[RENDER_TIMER]` | 渲染定时器触发 | 否 |
-
-验证完成后清理：保留 `[FLUSH MAX]` 和有条件的 `[BURST END]`，删除其余逐条日志。
+| 日志 | 级别 | 触发条件 | 用途 |
+|------|------|----------|------|
+| `Flush max delay` | WARNING | 300ms 保底触发 | 检测持续输出导致的强制 flush |
+| `Large feed` | INFO | feed > 32KB | 检测大块数据进入 pyte |
+| `Large frame` | INFO | 帧 > 4KB | 检测大帧渲染（可能引起闪烁） |
 
 ## 实施步骤清单
 
@@ -118,13 +112,14 @@ Claude Code 全量重绘 200KB（burst 持续 ~50ms）：
   - [ ] 确认极端持续输出场景（>300ms）保底机制生效
   - 状态：⏸️ 待开始
 
-### Phase 4: 日志清理 [⏸️ 待开始]
+### Phase 4: 日志清理 [✅ 已完成]
 
-- [ ] **Task 4.1**: 清理诊断日志
-  - [ ] 保留 `[FLUSH MAX]`（WARNING 级别）
-  - [ ] `[BURST END]` 加条件（仅 total > 1KB 或 chunks > 2）
-  - [ ] 删除其余逐条日志
-  - 状态：⏸️ 待开始
+- [x] **Task 4.1**: 清理诊断日志
+  - [x] `Flush max delay` WARNING 永久保留
+  - [x] 新增 `Large feed` INFO（feed > 32KB）
+  - [x] 新增 `Large frame` INFO（帧 > 4KB）
+  - [x] 删除临时逐条日志（`[READ]`、`[BURST END]`、`[BUF]`、`[FLUSH]`、`[RENDER]` 等）
+  - 状态：✅ 已完成
 
 ## 关键参考
 
