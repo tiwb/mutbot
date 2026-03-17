@@ -75,10 +75,18 @@ def _restart_command() -> None:
     sys.exit(1)
 
 
+def _log_command() -> None:
+    """Delegate to mutbot.cli.log_query with remaining argv."""
+    from mutbot.cli.log_query import main as log_main
+    log_main(sys.argv[2:])
+
+
 if __name__ == "__main__" or not hasattr(sys, "_called_from_test"):
-    # 检查是否为 restart 子命令
+    # 检查子命令
     if len(sys.argv) > 1 and sys.argv[1] == "restart":
         _restart_command()
+    elif len(sys.argv) > 1 and sys.argv[1] == "log":
+        _log_command()
     else:
         from mutbot.web.server import main
         main()
