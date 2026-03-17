@@ -4013,6 +4013,81 @@ body,
   color: var(--accent);
 }
 
+.terminal-input-mode-divider {
+  height: 1px;
+  background: var(--border);
+  margin: 2px 4px;
+}
+
+/* ----------------------------------------------------------------
+   Input History Panel (long-press textarea to open)
+   ---------------------------------------------------------------- */
+.terminal-input-history-panel {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  background: var(--bg-sidebar);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  z-index: 100;
+  box-shadow: 0 -4px 12px rgba(0, 0, 0, 0.3);
+  max-height: 240px;
+  display: flex;
+  flex-direction: column;
+}
+
+.terminal-input-history-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.terminal-input-history-clear {
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 3px;
+}
+
+.terminal-input-history-clear:active {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.terminal-input-history-list {
+  overflow-y: auto;
+  flex: 1;
+  padding: 4px;
+}
+
+.terminal-input-history-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  color: var(--text);
+  font-size: 13px;
+  font-family: "SF Mono", "Cascadia Code", Consolas, monospace;
+  padding: 8px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.terminal-input-history-item:active {
+  background: rgba(255, 255, 255, 0.1);
+}
+
 /* ----------------------------------------------------------------
    Shortcut Grid (dynamic rows x cols)
    ---------------------------------------------------------------- */
