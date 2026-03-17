@@ -328,6 +328,64 @@ class RestartServerMenu(Menu):
             return MenuResult(action="toast", data={"message": f"Failed to restart: {e}"})
 
 
+class MobileConnectMenu(Menu):
+    """全局菜单 — Mobile Connect（显示二维码供手机扫码连接）"""
+    display_name = "Mobile Connect"
+    display_icon = "smartphone"
+    display_category = "SessionList/Header"
+    display_order = "1workspace:2"
+
+    async def execute(self, params: dict, context: RpcContext) -> MenuResult:
+        from mutbot.web.server import _enumerate_ips
+
+        # 从 config 获取监听地址
+        listen_values: list[str] = []
+        if context.config:
+            listen = context.config.get("listen", default=[])
+            if isinstance(listen, list):
+                listen_values = [str(v) for v in listen]
+            elif listen:
+                listen_values = [str(listen)]
+
+        # 解析监听地址，展开 0.0.0.0
+        addresses: list[dict[str, str]] = []
+        seen: set[str] = set()
+
+        if not listen_values:
+            listen_values = ["127.0.0.1:8741"]
+
+        for value in listen_values:
+            if ":" in value:
+                host, port_str = value.rsplit(":", 1)
+                p = int(port_str)
+            elif value.isdigit():
+                host, p = "127.0.0.1", int(value)
+            else:
+                host, p = value, 8741
+
+            if host == "0.0.0.0":
+                for ip in _enumerate_ips():
+                    if ip == "127.0.0.1":
+                        continue
+                    key = f"{ip}:{p}"
+                    if key not in seen:
+                        seen.add(key)
+                        addresses.append({
+                            "url": f"http://{ip}:{p}",
+                            "via": f"https://mutbot.ai/connect/#{ip}:{p}",
+                        })
+            elif host != "127.0.0.1":
+                key = f"{host}:{p}"
+                if key not in seen:
+                    seen.add(key)
+                    addresses.append({
+                        "url": f"http://{host}:{p}",
+                        "via": f"https://mutbot.ai/connect/#{host}:{p}",
+                    })
+
+        return MenuResult(action="mobile_connect", data={"addresses": addresses})
+
+
 class KillPtyHostMenu(Menu):
     """全局菜单 — 终止 PtyHost 守护进程（仅 Windows）"""
     display_name = "Kill PtyHost"

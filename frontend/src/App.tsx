@@ -32,6 +32,7 @@ import WelcomePage from "./components/WelcomePage";
 import WorkspaceSelector from "./components/WorkspaceSelector";
 import NewWorkspacePage from "./components/NewWorkspacePage";
 import type { Workspace, Session } from "./lib/types";
+import MobileConnectDialog from "./components/MobileConnectDialog";
 
 // ---------- Helpers ----------
 
@@ -117,6 +118,11 @@ export default function App() {
   // Sidebar collapsed state
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [sidebarWidth, setSidebarWidth] = useState(260);
+
+  // Mobile connect dialog state
+  const [mobileConnectAddresses, setMobileConnectAddresses] = useState<
+    { url: string; via: string }[] | null
+  >(null);
   const sidebarResizing = useRef(false);
 
   // Toast notification state
@@ -447,6 +453,11 @@ export default function App() {
         } catch {
           // 静默处理
         }
+      }
+
+      if (result.action === "mobile_connect") {
+        const addresses = (result.data?.addresses as { url: string; via: string }[]) || [];
+        setMobileConnectAddresses(addresses);
       }
     },
     [addTabForSession, showToast],
@@ -1126,6 +1137,12 @@ export default function App() {
             {toast}
           </div>
         )}
+        {mobileConnectAddresses !== null && (
+          <MobileConnectDialog
+            addresses={mobileConnectAddresses}
+            onClose={() => setMobileConnectAddresses(null)}
+          />
+        )}
       </div>
     );
   }
@@ -1201,6 +1218,12 @@ export default function App() {
         <div className="toast-notification" onClick={() => setToast(null)}>
           {toast}
         </div>
+      )}
+      {mobileConnectAddresses !== null && (
+        <MobileConnectDialog
+          addresses={mobileConnectAddresses}
+          onClose={() => setMobileConnectAddresses(null)}
+        />
       )}
     </div>
   );

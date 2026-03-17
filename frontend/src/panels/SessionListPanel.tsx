@@ -391,6 +391,7 @@ export default function SessionListPanel({
             </button>
           }
           onClientAction={onHeaderAction}
+          onResult={onMenuResult}
         />
       </div>
       <div className="session-list" onContextMenu={handleBlankContextMenu}>

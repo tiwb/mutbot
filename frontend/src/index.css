@@ -4454,3 +4454,146 @@ body,
 .shortcut-edit-footer button.primary:disabled {
   opacity: 0.4;
 }
+
+/* ── Mobile Connect Dialog ─────────────────────────────────────────── */
+
+.mobile-connect-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.mobile-connect-dialog {
+  background: var(--bg-primary, #1e1e1e);
+  color: var(--text-primary, #ccc);
+  border: 1px solid var(--border-color, #444);
+  border-radius: 8px;
+  min-width: 340px;
+  max-width: 520px;
+  max-height: 80vh;
+  overflow-y: auto;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+}
+
+.mobile-connect-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border-color, #444);
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.mobile-connect-close {
+  background: none;
+  border: none;
+  color: var(--text-secondary, #888);
+  font-size: 20px;
+  cursor: pointer;
+  padding: 0 4px;
+  line-height: 1;
+}
+
+.mobile-connect-close:hover {
+  color: var(--text-primary, #ccc);
+}
+
+.mobile-connect-body {
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.mobile-connect-card {
+  display: flex;
+  gap: 16px;
+  align-items: flex-start;
+  padding: 12px;
+  border: 1px solid var(--border-color, #333);
+  border-radius: 6px;
+  background: var(--bg-secondary, #252525);
+}
+
+.mobile-connect-card svg {
+  flex-shrink: 0;
+  background: #fff;
+  padding: 4px;
+  border-radius: 4px;
+}
+
+.mobile-connect-info {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.mobile-connect-url {
+  font-family: monospace;
+  font-size: 13px;
+  color: var(--text-primary, #ccc);
+  word-break: break-all;
+}
+
+.mobile-connect-via {
+  font-size: 12px;
+  color: var(--text-secondary, #888);
+  word-break: break-all;
+}
+
+.mobile-connect-toggle {
+  background: none;
+  border: 1px solid var(--border-color, #444);
+  border-radius: 4px;
+  color: var(--text-secondary, #888);
+  font-size: 11px;
+  padding: 2px 8px;
+  cursor: pointer;
+  align-self: flex-start;
+  margin-top: 4px;
+}
+
+.mobile-connect-toggle:hover {
+  color: var(--text-primary, #ccc);
+  border-color: var(--text-secondary, #888);
+}
+
+.mobile-connect-empty {
+  padding: 20px 16px;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.mobile-connect-empty p {
+  margin: 0 0 8px;
+}
+
+.mobile-connect-code {
+  background: var(--bg-secondary, #252525);
+  border: 1px solid var(--border-color, #333);
+  border-radius: 6px;
+  padding: 12px;
+  margin-top: 8px;
+  font-size: 12px;
+}
+
+.mobile-connect-code pre {
+  margin: 4px 0 8px;
+  padding: 6px 8px;
+  background: rgba(0, 0, 0, 0.3);
+  border-radius: 4px;
+  font-family: monospace;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.mobile-connect-code code {
+  font-family: monospace;
+  color: var(--text-primary, #ccc);
+}
