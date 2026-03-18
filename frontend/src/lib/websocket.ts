@@ -61,8 +61,14 @@ export class ReconnectingWebSocket {
       }
     };
 
-    this.ws.onclose = () => {
+    this.ws.onclose = (evt) => {
       this.onClose?.();
+      // 4401: 未认证 — 刷新页面触发登录流程
+      if (evt.code === 4401) {
+        this.closed = true;
+        window.location.reload();
+        return;
+      }
       if (!this.closed && this.retryCount < this.maxRetries) {
         const delay = Math.min(1000 * 2 ** this.retryCount, 30000);
         this.retryCount++;

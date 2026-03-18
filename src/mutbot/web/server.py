@@ -127,6 +127,11 @@ async def _on_startup() -> None:
 
     assert config is not None, "config must be set before startup"
 
+    # import auth 模块，触发 View 子类和 @impl 注册
+    import mutbot.auth.views as _auth_views  # noqa: F401
+    import mutbot.auth.relay as _auth_relay  # noqa: F401
+    import mutbot.auth.middleware as _auth_mw  # noqa: F401
+
     workspace_manager = WorkspaceManager()
     session_manager = SessionManager(config=config)
     terminal_manager = TerminalManager()

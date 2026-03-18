@@ -33,6 +33,7 @@ import WorkspaceSelector from "./components/WorkspaceSelector";
 import NewWorkspacePage from "./components/NewWorkspacePage";
 import type { Workspace, Session } from "./lib/types";
 import MobileConnectDialog from "./components/MobileConnectDialog";
+import LoginPage from "./components/LoginPage";
 import { ConnectionStatusBar, type ConnectionPhase } from "./components/ConnectionStatusBar";
 
 // ---------- Helpers ----------
@@ -99,6 +100,35 @@ export default function App() {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- setEditingTab is internal API
   const layoutRef = useRef<any>(null);
   const [, forceUpdate] = useState(0);
+
+  // Auth state: null = checking, true = authenticated or no auth, false = need login
+  const [authReady, setAuthReady] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    // Check if auth is enabled and whether user is logged in
+    fetch("/auth/providers")
+      .then((r) => r.json())
+      .then((data) => {
+        if (!data.auth_enabled) {
+          // No auth configured — proceed normally
+          setAuthReady(true);
+          return;
+        }
+        // Auth enabled — check if user is logged in
+        return fetch("/auth/userinfo", { credentials: "same-origin" })
+          .then((r) => {
+            if (r.ok) {
+              setAuthReady(true);
+            } else {
+              setAuthReady(false);
+            }
+          });
+      })
+      .catch(() => {
+        // Can't reach /auth/providers — assume no auth
+        setAuthReady(true);
+      });
+  }, []);
 
   // 是否有打开的 tab（用于欢迎页和自动打开逻辑）
   const [hasOpenTabs, setHasOpenTabs] = useState(false);
@@ -503,6 +533,8 @@ export default function App() {
     async (action: string, _data: Record<string, unknown>) => {
       if (action === "close_workspace") {
         exitWorkspace();
+      } else if (action === "logout") {
+        window.location.href = "/auth/logout";
       }
     },
     [],
@@ -1035,6 +1067,16 @@ export default function App() {
     },
     [sessions, activeSessionId, workspace, rpc, handleSelectSession, handleUpdateTabConfig, handleTerminalExited],
   );
+
+  // 认证检查中 → 显示空白（避免闪烁）
+  if (authReady === null) {
+    return <div className="login-page" />;
+  }
+
+  // 需要登录 → 显示登录页
+  if (authReady === false) {
+    return <LoginPage />;
+  }
 
   // 无工作区 → 显示工作区选择器（或远程降级页 / 连接中状态）
   if (!workspace) {

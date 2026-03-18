@@ -246,11 +246,17 @@ export class WorkspaceRpc {
       }
     };
 
-    ws.onclose = () => {
+    ws.onclose = (evt) => {
       // 已被新连接替换的旧 ws，不处理
       if (this.ws !== ws) return;
       this.stopAckTimer();
       this.onCloseCb?.();
+      // 4401: 未认证 — 刷新页面触发登录流程
+      if (evt.code === 4401) {
+        this.closed = true;
+        window.location.reload();
+        return;
+      }
       if (this.closed) return;
       if (this.retryCount >= MAX_RETRIES) {
         this.onRetryCb?.({ attempt: MAX_RETRIES, maxRetries: MAX_RETRIES, delay: 0, phase: "exhausted" });

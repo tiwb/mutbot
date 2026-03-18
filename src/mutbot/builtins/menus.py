@@ -419,6 +419,22 @@ class KillPtyHostMenu(Menu):
             return MenuResult(action="toast", data={"message": f"Failed: {e}"})
 
 
+class LogoutMenu(Menu):
+    """全局菜单 — 退出登录（仅认证模式可见）"""
+    display_name = "Logout"
+    display_icon = "log-out"
+    display_category = "SessionList/Header"
+    display_order = "3account:0"
+    client_action = "logout"
+
+    @classmethod
+    def check_visible(cls, context: dict) -> bool | None:
+        from mutbot.web import server as _server_mod
+        cfg = _server_mod.config
+        if cfg is None:
+            return False
+        return bool(cfg.get("auth"))
+
 # ---------------------------------------------------------------------------
 # 内置菜单：AgentPanel 标题栏菜单 (AgentPanel/Header)
 # ---------------------------------------------------------------------------

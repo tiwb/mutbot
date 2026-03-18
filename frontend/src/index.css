@@ -382,6 +382,46 @@ body,
   color: var(--text);
 }
 
+/* Sidebar footer — user info (auth mode) */
+.sidebar-footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.sidebar-footer.compact {
+  padding: 8px;
+  justify-content: center;
+}
+
+.sidebar-footer-name {
+  flex: 1;
+  font-size: 12px;
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sidebar-footer-logout {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  color: var(--text-dim);
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+
+.sidebar-footer-logout:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text);
+}
+
 .session-list {
   flex: 1;
   overflow-y: auto;
@@ -3619,6 +3659,97 @@ body,
 
 .remote-fallback-actions a:hover {
   text-decoration: underline;
+}
+
+/* ================================================================
+   Login Page
+   ================================================================ */
+
+.login-page {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  background: var(--bg);
+  color: var(--text);
+}
+
+.login-card {
+  text-align: center;
+  max-width: 380px;
+  width: 100%;
+  padding: 48px 32px;
+}
+
+.login-header {
+  margin-bottom: 32px;
+}
+
+.login-title {
+  font-size: 28px;
+  font-weight: 600;
+  margin: 0 0 4px;
+}
+
+.login-subtitle {
+  color: var(--text-dim);
+  font-size: 14px;
+  margin: 0;
+}
+
+.login-message {
+  background: var(--bg-tool);
+  border: 1px solid var(--warning);
+  border-radius: 6px;
+  padding: 10px 16px;
+  font-size: 13px;
+  margin-bottom: 20px;
+  color: var(--warning);
+}
+
+.login-providers {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.login-provider-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 10px 20px;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 14px;
+  text-decoration: none;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.login-provider-btn:hover {
+  background: var(--menu-hover);
+  border-color: var(--accent);
+}
+
+.login-provider-icon {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.login-no-providers {
+  color: var(--text-dim);
+  font-size: 13px;
+  padding: 20px 0;
+}
+
+.login-relay-info {
+  color: var(--text-dim);
+  font-size: 12px;
+  margin-top: 16px;
 }
 
 /* ================================================================

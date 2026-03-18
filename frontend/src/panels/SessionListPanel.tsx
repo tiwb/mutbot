@@ -1,7 +1,15 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import RpcMenu, { type MenuExecResult } from "../components/RpcMenu";
 import { getSessionIcon } from "../components/SessionIcons";
+import Avatar from "../components/Avatar";
 import type { WorkspaceRpc } from "../lib/workspace-rpc";
+
+interface AuthUser {
+  sub: string;
+  name: string;
+  avatar?: string;
+  provider: string;
+}
 
 interface Session {
   id: string;
@@ -85,6 +93,18 @@ export default function SessionListPanel({
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const lastClickedRef = useRef<string | null>(null);
   const listContainerRef = useRef<HTMLDivElement>(null);
+
+  // Auth user info (only shown when auth is configured)
+  const [authUser, setAuthUser] = useState<AuthUser | null>(null);
+
+  useEffect(() => {
+    fetch("/auth/userinfo", { credentials: "same-origin" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (data && data.sub) setAuthUser(data as AuthUser);
+      })
+      .catch(() => {});
+  }, []);
 
   const toggleMode = useCallback(() => {
     setCollapsed((prev) => {
@@ -340,6 +360,13 @@ export default function SessionListPanel({
             onResult={onMenuResult}
           />
         )}
+        {authUser && (
+          <div className="sidebar-footer compact">
+            <a href="/auth/logout" title={`${authUser.name} — Logout`}>
+              <Avatar name={authUser.name} avatar={authUser.avatar} size={28} />
+            </a>
+          </div>
+        )}
       </div>
     );
   }
@@ -463,6 +490,17 @@ export default function SessionListPanel({
           onClose={closeBlankContextMenu}
           onResult={onMenuResult}
         />
+      )}
+      {authUser && (
+        <div className="sidebar-footer">
+          <Avatar name={authUser.name} avatar={authUser.avatar} size={24} />
+          <span className="sidebar-footer-name" title={authUser.sub}>{authUser.name}</span>
+          <a className="sidebar-footer-logout" href="/auth/logout" title="Logout">
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+              <path d="M11.5 8L8 4.5v2.25H3v2.5h5v2.25l3.5-3.5zM13 2H6v1h7v10H6v1h7c.55 0 1-.45 1-1V3c0-.55-.45-1-1-1z"/>
+            </svg>
+          </a>
+        </div>
       )}
     </div>
   );
