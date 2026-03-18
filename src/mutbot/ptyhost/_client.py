@@ -163,7 +163,7 @@ class PtyHostClient:
                 self._text_buffer.clear()
                 self._on_text(json.loads(text))
         elif isinstance(event, ws_events.BytesMessage):
-            self._bytes_buffer.append(event.data)
+            self._bytes_buffer.append(bytes(event.data))
             if event.message_finished:
                 raw = b"".join(self._bytes_buffer)
                 self._bytes_buffer.clear()

@@ -10,8 +10,7 @@ from typing import Any
 
 from mutbot.web.rpc import WorkspaceRpc, RpcContext
 from mutbot.web.serializers import (
-    workspace_dict, session_dict, terminal_dict,
-    session_kind, session_type_display, LANG_MAP,
+    workspace_dict, session_dict, LANG_MAP,
 )
 from mutbot.runtime.menu_impl import menu_registry
 from mutbot.menu import MenuResult
@@ -149,8 +148,8 @@ class TerminalOps(WorkspaceRpc):
             return {"error": "workspace not found"}
         rows = params.get("rows", 24)
         cols = params.get("cols", 80)
-        term = tm.create(ctx.workspace_id, rows, cols, cwd=ws.project_path)
-        data = terminal_dict(term)
+        term_id = await tm.create(rows, cols, cwd=ws.project_path)
+        data = {"term_id": term_id, "rows": rows, "cols": cols}
         await ctx.broadcast_event("terminal_created", data)
         return data
 
@@ -159,7 +158,8 @@ class TerminalOps(WorkspaceRpc):
         tm = ctx.terminal_manager
         if not tm:
             return []
-        return [terminal_dict(t) for t in tm.list_by_workspace(ctx.workspace_id)]
+        return [{"term_id": t["term_id"], "alive": t["alive"]}
+                for t in await tm.list_terminals()]
 
     async def delete(self, params: dict, ctx: RpcContext) -> dict:
         """删除终端"""
@@ -169,7 +169,7 @@ class TerminalOps(WorkspaceRpc):
         term_id = params.get("term_id", "")
         if not tm.has(term_id):
             return {"error": "terminal not found"}
-        await tm.async_notify_exit(term_id)
+        await tm.notify_exit(term_id)
         tm.kill(term_id)
         await ctx.broadcast_event("terminal_deleted", {"term_id": term_id})
         return {"status": "killed"}

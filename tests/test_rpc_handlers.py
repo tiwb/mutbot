@@ -120,19 +120,19 @@ class FakeTerminalManager:
     def __init__(self):
         self.terminals: dict[str, FakeTerminal] = {}
 
-    def create(self, workspace_id, rows, cols, cwd=""):
-        t = FakeTerminal(id=f"t_{len(self.terminals)+1}", workspace_id=workspace_id,
+    async def create(self, rows, cols, cwd=""):
+        t = FakeTerminal(id=f"t_{len(self.terminals)+1}", workspace_id="",
                          rows=rows, cols=cols)
         self.terminals[t.id] = t
-        return t
+        return t.id
 
-    def list_by_workspace(self, workspace_id):
-        return [t for t in self.terminals.values() if t.workspace_id == workspace_id]
+    async def list_terminals(self):
+        return [{"term_id": t.id, "alive": t.alive} for t in self.terminals.values()]
 
     def has(self, term_id):
         return term_id in self.terminals
 
-    async def async_notify_exit(self, term_id):
+    async def notify_exit(self, term_id):
         pass
 
     def kill(self, term_id):
@@ -351,7 +351,7 @@ class TestTerminalHandlers:
 
         resp = await _dispatch("terminal.create", {"rows": 30, "cols": 100}, ctx)
         result = resp["result"]
-        assert result["id"].startswith("t_")
+        assert result["term_id"].startswith("t_")
         assert result["rows"] == 30
         assert result["cols"] == 100
         assert len(broadcasted) == 1

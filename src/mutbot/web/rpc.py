@@ -46,7 +46,7 @@ class RpcContext:
     # 发送者 WebSocket（Any 类型，兼容新旧接口）
     sender_ws: Any = None
     # dispatch 发送 rpc_result 后执行的回调（handler 可设置）
-    _post_send: Callable[[], Any] | None = None
+    _post_send: Callable[[], Awaitable[Any]] | None = None
 
     # 类型安全的 manager 访问（部分字段 Optional，app 级不注入全部 manager）
     session_manager: SessionManager | None = None

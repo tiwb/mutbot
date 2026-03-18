@@ -307,7 +307,7 @@ def _enumerate_ips() -> list[str]:
         infos = _socket.getaddrinfo(
             _socket.gethostname(), None, _socket.AF_INET,
         )
-        ips = list(dict.fromkeys(info[4][0] for info in infos))
+        ips: list[str] = list(dict.fromkeys(str(info[4][0]) for info in infos))
         if "127.0.0.1" not in ips:
             ips.insert(0, "127.0.0.1")
         return ips

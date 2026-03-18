@@ -7,7 +7,10 @@ import json as _json
 import logging
 import re as _re
 from pathlib import Path as _Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from mutbot.runtime.config import MutbotConfig
 
 from mutagent.net.server import View, WebSocketView, WebSocketConnection, WebSocketDisconnect, json_response, Response
 from mutbot.web.rpc import (
@@ -163,7 +166,7 @@ def _get_channel_manager():
     return channel_manager
 
 
-def _get_config():
+def _get_config() -> MutbotConfig | None:
     from mutbot.web.server import config
     return config
 
@@ -189,7 +192,7 @@ class AppWebSocket(WebSocketView):
             "event": "welcome",
             "data": {
                 "version": mutbot.__version__,
-                "setup_required": not bool(_cfg.get("providers")),
+                "setup_required": _cfg is None or not bool(_cfg.get("providers")),
                 "cwd": os.getcwd(),
             },
         })
@@ -408,8 +411,8 @@ class WorkspaceWebSocket(WebSocketView):
                             response = await workspace_dispatcher.dispatch(raw, context)
                             if response is not None:
                                 client.enqueue("json", response)
-                            if context._post_send is not None:
-                                await context._post_send()
+                            if context._post_send is not None:  # set by handler
+                                await context._post_send()  # pyright: ignore[reportGeneralTypeIssues]
                         else:
                             # Channel 消息 → session.on_message
                             channel = cm.get_channel(ch)

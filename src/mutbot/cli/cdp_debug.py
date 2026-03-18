@@ -62,7 +62,8 @@ class SimpleWebSocket:
                 raise ConnectionError("WebSocket handshake failed")
             resp += chunk
         if b"101" not in resp.split(b"\r\n")[0]:
-            raise ConnectionError(f"WebSocket upgrade rejected: {resp.split(b'\r\n')[0].decode()}")
+            first_line = resp.split(b'\r\n')[0].decode()
+            raise ConnectionError(f"WebSocket upgrade rejected: {first_line}")
 
     def send(self, data: str) -> None:
         assert self.sock is not None

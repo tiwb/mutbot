@@ -466,21 +466,22 @@ class TestClientAck:
 
         await asyncio.sleep(0.15)
 
-        # 应至少发送过一次 ACK
+        # 即时 ACK：每次 on_content_received 立即发送，加上定时心跳
         ack_calls = [
             call for call in ws.send_json.call_args_list
             if isinstance(call[0][0], dict) and call[0][0].get("type") == "ack"
         ]
-        assert len(ack_calls) >= 1
-        assert ack_calls[0][0][0]["ack"] == 2
+        assert len(ack_calls) >= 2
+        # 第一次 ack=1，第二次 ack=2
+        assert ack_calls[0][0][0]["ack"] == 1
+        assert ack_calls[1][0][0]["ack"] == 2
         client.stop()
 
     @pytest.mark.asyncio
-    async def test_batch_ack_on_high_throughput(self) -> None:
+    async def test_immediate_ack_on_each_message(self) -> None:
         ws = _make_mock_ws()
         client = Client("c1", "w1", ws)
-        client.ACK_INTERVAL = 10  # 很久才定时 ACK
-        client.ACK_BATCH = 5
+        client.ACK_INTERVAL = 10  # 禁用定时 ACK
         client.start()
 
         for _ in range(5):
@@ -488,13 +489,15 @@ class TestClientAck:
 
         await asyncio.sleep(0.05)
 
-        # 批量触发应发送 ACK
+        # 每次 on_content_received 即时发送一次 ACK
         ack_calls = [
             call for call in ws.send_json.call_args_list
             if isinstance(call[0][0], dict) and call[0][0].get("type") == "ack"
         ]
-        assert len(ack_calls) >= 1
-        assert ack_calls[0][0][0]["ack"] == 5
+        assert len(ack_calls) == 5
+        # 递增：ack=1, 2, 3, 4, 5
+        for i, call in enumerate(ack_calls, 1):
+            assert call[0][0]["ack"] == i
         client.stop()
 
     @pytest.mark.asyncio

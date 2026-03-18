@@ -653,7 +653,7 @@ class TerminalManager:
         end = total - offset
         start = max(0, end - visible)
         end = start + visible  # 确保刚好 visible 行
-        lines_slice = all_lines[start:end]
+        lines_slice: list = all_lines[start:end]
         # 如果不够 visible 行，用空行补齐
         while len(lines_slice) < visible:
             lines_slice.append({})

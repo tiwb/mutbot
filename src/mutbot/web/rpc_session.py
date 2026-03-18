@@ -252,7 +252,7 @@ class SessionOps(SessionRpc):
             if session and isinstance(getattr(session, "config", None), dict):
                 terminal_id = session.config.get("terminal_id")
                 if terminal_id and tm.has(terminal_id):
-                    await tm.async_notify_exit(terminal_id)
+                    await tm.notify_exit(terminal_id)
         await sm.stop(session_id)
         if not sm.delete(session_id):
             return {"error": "session not found"}
@@ -283,7 +283,7 @@ class SessionOps(SessionRpc):
                 if session and isinstance(getattr(session, "config", None), dict):
                     terminal_id = session.config.get("terminal_id")
                     if terminal_id and tm.has(terminal_id):
-                        await tm.async_notify_exit(terminal_id)
+                        await tm.notify_exit(terminal_id)
             await sm.stop(sid)
             sm.delete(sid)
             if ws and sid in ws.sessions:
