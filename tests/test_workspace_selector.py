@@ -71,30 +71,35 @@ class TestSanitizeWorkspaceName:
 # ---------------------------------------------------------------------------
 
 class TestWorkspaceManagerNameUniqueness:
-    def setup_method(self):
-        self.wm = WorkspaceManager()
+    def test_create_basic(self, tmp_path):
+        with mock.patch.object(storage, "MUTBOT_DIR", str(tmp_path)):
+            wm = WorkspaceManager()
+            ws = wm.create("My Project", "/tmp/test")
+            assert ws.name == "my-project"
 
-    def test_create_basic(self):
-        ws = self.wm.create("My Project", "/tmp/test")
-        assert ws.name == "my-project"
+    def test_create_duplicate_name(self, tmp_path):
+        with mock.patch.object(storage, "MUTBOT_DIR", str(tmp_path)):
+            wm = WorkspaceManager()
+            ws1 = wm.create("test", "/tmp/a")
+            ws2 = wm.create("test", "/tmp/b")
+            assert ws1.name == "test"
+            assert ws2.name == "test-1"
 
-    def test_create_duplicate_name(self):
-        ws1 = self.wm.create("test", "/tmp/a")
-        ws2 = self.wm.create("test", "/tmp/b")
-        assert ws1.name == "test"
-        assert ws2.name == "test-1"
+    def test_create_triple_duplicate(self, tmp_path):
+        with mock.patch.object(storage, "MUTBOT_DIR", str(tmp_path)):
+            wm = WorkspaceManager()
+            ws1 = wm.create("demo", "/tmp/a")
+            ws2 = wm.create("demo", "/tmp/b")
+            ws3 = wm.create("demo", "/tmp/c")
+            assert ws1.name == "demo"
+            assert ws2.name == "demo-1"
+            assert ws3.name == "demo-2"
 
-    def test_create_triple_duplicate(self):
-        ws1 = self.wm.create("demo", "/tmp/a")
-        ws2 = self.wm.create("demo", "/tmp/b")
-        ws3 = self.wm.create("demo", "/tmp/c")
-        assert ws1.name == "demo"
-        assert ws2.name == "demo-1"
-        assert ws3.name == "demo-2"
-
-    def test_create_sanitizes_name(self):
-        ws = self.wm.create("My Cool Project!", "/tmp/test")
-        assert ws.name == "my-cool-project"
+    def test_create_sanitizes_name(self, tmp_path):
+        with mock.patch.object(storage, "MUTBOT_DIR", str(tmp_path)):
+            wm = WorkspaceManager()
+            ws = wm.create("My Cool Project!", "/tmp/test")
+            assert ws.name == "my-cool-project"
 
 
 # ---------------------------------------------------------------------------
@@ -102,22 +107,25 @@ class TestWorkspaceManagerNameUniqueness:
 # ---------------------------------------------------------------------------
 
 class TestWorkspaceManagerGetByName:
-    def setup_method(self):
-        self.wm = WorkspaceManager()
+    def test_get_existing(self, tmp_path):
+        with mock.patch.object(storage, "MUTBOT_DIR", str(tmp_path)):
+            wm = WorkspaceManager()
+            ws = wm.create("test-project", "/tmp/test")
+            found = wm.get_by_name("test-project")
+            assert found is not None
+            assert found.id == ws.id
 
-    def test_get_existing(self):
-        ws = self.wm.create("test-project", "/tmp/test")
-        found = self.wm.get_by_name("test-project")
-        assert found is not None
-        assert found.id == ws.id
+    def test_get_nonexistent(self, tmp_path):
+        with mock.patch.object(storage, "MUTBOT_DIR", str(tmp_path)):
+            wm = WorkspaceManager()
+            assert wm.get_by_name("nonexistent") is None
 
-    def test_get_nonexistent(self):
-        assert self.wm.get_by_name("nonexistent") is None
-
-    def test_get_after_sanitize(self):
-        ws = self.wm.create("My Project", "/tmp/test")
-        assert self.wm.get_by_name("my-project") is not None
-        assert self.wm.get_by_name("My Project") is None  # 原名称不匹配
+    def test_get_after_sanitize(self, tmp_path):
+        with mock.patch.object(storage, "MUTBOT_DIR", str(tmp_path)):
+            wm = WorkspaceManager()
+            ws = wm.create("My Project", "/tmp/test")
+            assert wm.get_by_name("my-project") is not None
+            assert wm.get_by_name("My Project") is None  # 原名称不匹配
 
 
 # ---------------------------------------------------------------------------
@@ -143,16 +151,17 @@ class TestAppWorkspaceList:
         result = await ops.list({}, ctx)
         assert result == []
 
-    async def test_with_workspaces(self):
-        wm = WorkspaceManager()
-        wm.create("test-a", "/tmp/a")
-        wm.create("test-b", "/tmp/b")
-        ctx = _make_app_context(wm)
-        ops = WorkspaceOps()
-        result = await ops.list({}, ctx)
-        assert len(result) == 2
-        names = {ws["name"] for ws in result}
-        assert names == {"test-a", "test-b"}
+    async def test_with_workspaces(self, tmp_path):
+        with mock.patch.object(storage, "MUTBOT_DIR", str(tmp_path)):
+            wm = WorkspaceManager()
+            wm.create("test-a", "/tmp/a")
+            wm.create("test-b", "/tmp/b")
+            ctx = _make_app_context(wm)
+            ops = WorkspaceOps()
+            result = await ops.list({}, ctx)
+            assert len(result) == 2
+            names = {ws["name"] for ws in result}
+            assert names == {"test-a", "test-b"}
 
 
 @pytest.mark.asyncio
@@ -168,12 +177,13 @@ class TestAppWorkspaceCreate:
         assert result["name"] == sanitize_workspace_name(tmp_path.name)
         assert result["project_path"] == str(tmp_path)
 
-    async def test_missing_project_path(self):
-        wm = WorkspaceManager()
-        ctx = _make_app_context(wm)
-        ops = WorkspaceOps()
-        result = await ops.create({}, ctx)
-        assert "error" in result
+    async def test_missing_project_path(self, tmp_path):
+        with mock.patch.object(storage, "MUTBOT_DIR", str(tmp_path)):
+            wm = WorkspaceManager()
+            ctx = _make_app_context(wm)
+            ops = WorkspaceOps()
+            result = await ops.create({}, ctx)
+            assert "error" in result
 
     async def test_relative_path_rejected(self, tmp_path):
         wm = WorkspaceManager()
@@ -422,18 +432,20 @@ class TestAppWorkspaceRemove:
             assert result == {"ok": True}
             assert wm.get(ws.id) is None
 
-    async def test_remove_missing_id(self):
-        wm = WorkspaceManager()
-        ctx = _make_app_context(wm)
-        ops = WorkspaceOps()
-        result = await ops.remove({}, ctx)
-        assert "error" in result
+    async def test_remove_missing_id(self, tmp_path):
+        with mock.patch.object(storage, "MUTBOT_DIR", str(tmp_path)):
+            wm = WorkspaceManager()
+            ctx = _make_app_context(wm)
+            ops = WorkspaceOps()
+            result = await ops.remove({}, ctx)
+            assert "error" in result
 
-    async def test_remove_nonexistent(self):
-        wm = WorkspaceManager()
-        ctx = _make_app_context(wm)
-        ops = WorkspaceOps()
-        result = await ops.remove(
-            {"workspace_id": "nonexistent"}, ctx
-        )
-        assert "error" in result
+    async def test_remove_nonexistent(self, tmp_path):
+        with mock.patch.object(storage, "MUTBOT_DIR", str(tmp_path)):
+            wm = WorkspaceManager()
+            ctx = _make_app_context(wm)
+            ops = WorkspaceOps()
+            result = await ops.remove(
+                {"workspace_id": "nonexistent"}, ctx
+            )
+            assert "error" in result
