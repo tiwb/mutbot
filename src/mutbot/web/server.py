@@ -466,7 +466,8 @@ def worker_main(port: int, debug: bool = False) -> None:
     sock.bind(("127.0.0.1", port))
 
     # 7. 启动
-    server = MutBotServer()
+    _base_path = config.get("base_path", default="") or ""
+    server = MutBotServer(base_path=_base_path)
     try:
         server.run(listen=[sock])
     except KeyboardInterrupt:
@@ -496,6 +497,7 @@ def supervisor_main(
         listen_addresses=listen_addresses,
         worker_args=worker_args,
         debug=debug,
+        base_path=cfg.get("base_path", default="") or "",
     )
     supervisor.run()
 
@@ -580,7 +582,8 @@ def _standalone_main(addresses: list[tuple[str, int]], debug: bool = False) -> N
         sockets.append(sock)
 
     # 7. 启动
-    server = MutBotServer()
+    _base_path = config.get("base_path", default="") or ""
+    server = MutBotServer(base_path=_base_path)
     try:
         server.run(listen=sockets)
     except KeyboardInterrupt:

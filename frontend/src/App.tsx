@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { apiPath } from "./lib/base-path";
 import {
   Layout,
   type Model,
@@ -106,7 +107,7 @@ export default function App() {
 
   useEffect(() => {
     // Check if auth is enabled and whether user is logged in
-    fetch("/auth/providers")
+    fetch(apiPath("/auth/providers"))
       .then((r) => r.json())
       .then((data) => {
         if (!data.auth_enabled) {
@@ -115,7 +116,7 @@ export default function App() {
           return;
         }
         // Auth enabled — check if user is logged in
-        return fetch("/auth/userinfo", { credentials: "same-origin" })
+        return fetch(apiPath("/auth/userinfo"), { credentials: "same-origin" })
           .then((r) => {
             if (r.ok) {
               setAuthReady(true);
@@ -534,7 +535,7 @@ export default function App() {
       if (action === "close_workspace") {
         exitWorkspace();
       } else if (action === "logout") {
-        window.location.href = "/auth/logout";
+        window.location.href = apiPath("/auth/logout");
       }
     },
     [],

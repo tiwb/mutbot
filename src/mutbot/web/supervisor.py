@@ -77,10 +77,12 @@ class Supervisor:
         listen_addresses: list[tuple[str, int]],
         worker_args: list[str],
         debug: bool = False,
+        base_path: str = "",
     ):
         self.listen_addresses = listen_addresses
         self.worker_args = worker_args
         self.debug = debug
+        self._base_path = base_path.encode() if base_path else b""
 
         self._servers: list[asyncio.AbstractServer] = []
         self._active_worker: WorkerProcess | None = None
@@ -237,7 +239,8 @@ class Supervisor:
                 return False
             try:
                 reader, writer = await asyncio.open_connection("127.0.0.1", worker.port)
-                writer.write(b"GET /api/health HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+                health_path = self._base_path + b"/api/health" if self._base_path else b"/api/health"
+                writer.write(b"GET " + health_path + b" HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
                 await writer.drain()
                 response = await asyncio.wait_for(reader.read(4096), timeout=5.0)
                 writer.close()
@@ -300,7 +303,7 @@ class Supervisor:
                 return
 
             # /internal/ 前缀 → 外部请求拒绝
-            if path and path.startswith(_INTERNAL_PREFIX):
+            if path and self._strip_base_path(path).startswith(_INTERNAL_PREFIX):
                 await self._send_http_response(client_writer, 403, "Forbidden")
                 return
 
@@ -334,11 +337,21 @@ class Supervisor:
         return None
 
     def _is_management_path(self, path: bytes) -> bool:
-        """判断是否为管理路径。"""
+        """判断是否为管理路径（strip base_path 后匹配）。"""
+        stripped = self._strip_base_path(path)
         for prefix in _MANAGEMENT_PATHS:
-            if path == prefix or path.startswith(prefix + b"?") or path.startswith(prefix + b"/"):
+            if stripped == prefix or stripped.startswith(prefix + b"?") or stripped.startswith(prefix + b"/"):
                 return True
         return False
+
+    def _strip_base_path(self, path: bytes) -> bytes:
+        """Strip base_path 前缀。无 base_path 或不匹配时返回原路径。"""
+        bp = self._base_path
+        if not bp:
+            return path
+        if path == bp or path.startswith(bp + b"/"):
+            return path[len(bp):] or b"/"
+        return path
 
     async def _proxy_to_worker(
         self,

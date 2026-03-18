@@ -99,7 +99,11 @@ def _get_callback_url(request: Request, path: str) -> str:
     """根据请求构建回调 URL。"""
     host = request.headers.get("host", "localhost:8741")
     scheme = "https" if _is_secure(request) else "http"
-    return f"{scheme}://{host}{path}"
+    base_path = ""
+    from mutbot.web import server as _server_mod
+    if _server_mod.config is not None:
+        base_path = _server_mod.config.get("base_path", default="") or ""
+    return f"{scheme}://{host}{base_path}{path}"
 
 
 # ---------------------------------------------------------------------------

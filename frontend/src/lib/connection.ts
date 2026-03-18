@@ -4,9 +4,11 @@
  * 本地运行时从 location 推导；mutbot.ai 通过 __MUTBOT_CONTEXT__ 注入配置。
  */
 
+import { basePath } from "./base-path";
+
 interface MutbotContext {
   remote: boolean;
-  wsBase: string; // e.g. "ws://localhost:8741"
+  wsBase: string; // e.g. "ws://localhost:8741" or "ws://host/local"
 }
 
 const ctx = (window as any).__MUTBOT_CONTEXT__ as
@@ -22,7 +24,7 @@ export function getWsUrl(path: string): string {
     return `${ctx.wsBase}${path}`;
   }
   const protocol = location.protocol === "https:" ? "wss:" : "ws:";
-  return `${protocol}//${location.host}${path}`;
+  return `${protocol}//${location.host}${basePath}${path}`;
 }
 
 /** 是否从 mutbot.ai 远程加载 */

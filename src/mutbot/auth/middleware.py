@@ -132,7 +132,11 @@ async def _mutbot_before_route(self: Server, scope: dict[str, Any], path: str) -
         return Response(status=4401)
 
     # HTTP: 重定向到登录页
+    base_path = ""
+    from mutbot.web import server as _server_mod
+    if _server_mod.config is not None:
+        base_path = _server_mod.config.get("base_path", default="") or ""
     return Response(
         status=302,
-        headers={"location": "/"},
+        headers={"location": base_path + "/"},
     )

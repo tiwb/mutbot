@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { apiPath } from "../lib/base-path";
 
 interface Provider {
   name: string;
@@ -32,7 +33,7 @@ export default function LoginPage({ message }: Props) {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    fetch("/auth/providers")
+    fetch(apiPath("/auth/providers"))
       .then((r) => r.json())
       .then((d) => setData(d as ProvidersResponse))
       .catch(() => {})
