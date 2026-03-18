@@ -277,7 +277,7 @@ export default function ShortcutGrid({
               className={`shortcut-grid-btn edit-btn ${editing ? "save-mode" : ""}`}
               onClick={() => handleClick(null, i)}
             >
-              {editing ? "保存" : <Settings size={16} />}
+              {editing ? "Save" : <Settings size={16} />}
             </button>
           );
         }

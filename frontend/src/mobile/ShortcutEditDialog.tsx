@@ -212,15 +212,15 @@ export default function ShortcutEditDialog({ current, onSelect, onClose }: Props
     <div className="shortcut-edit-overlay" onClick={onClose}>
       <div className="shortcut-edit-dialog" onClick={(e) => e.stopPropagation()}>
         <div className="shortcut-edit-header">
-          <span>编辑快捷键</span>
+          <span>Edit Shortcut</span>
           {current && (
-            <span className="shortcut-edit-current">当前: {current.label}</span>
+            <span className="shortcut-edit-current">Current: {current.label}</span>
           )}
         </div>
 
         <div className="shortcut-edit-fields">
           <label>
-            显示名称
+            Display Name
             <input
               type="text"
               value={label}
@@ -229,7 +229,7 @@ export default function ShortcutEditDialog({ current, onSelect, onClose }: Props
             />
           </label>
           <label>
-            按键序列
+            Key Sequence
             <div className="shortcut-edit-seq-row">
               <input
                 type="text"
@@ -241,7 +241,7 @@ export default function ShortcutEditDialog({ current, onSelect, onClose }: Props
                 className="shortcut-edit-backspace"
                 onClick={handleDelete}
                 disabled={!sequence}
-                title="删除末尾按键"
+                title="Delete last key"
               >
                 ⌫
               </button>
@@ -313,15 +313,15 @@ export default function ShortcutEditDialog({ current, onSelect, onClose }: Props
 
         <div className="shortcut-edit-footer">
           <button className="shortcut-edit-clear" onClick={handleClear}>
-            清空此格
+            Clear Slot
           </button>
-          <button onClick={onClose}>取消</button>
+          <button onClick={onClose}>Cancel</button>
           <button
             className="primary"
             onClick={handleSave}
             disabled={!label.trim() || !sequence}
           >
-            确定
+            OK
           </button>
         </div>
       </div>

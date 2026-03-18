@@ -78,11 +78,11 @@ export function ConnectionStatusBar({ phase, attempt, maxRetries, delay, onRetry
       content = (
         <>
           <span className="status-dot red" />
-          连接已断开 — 正在重连 ({attempt}/{maxRetries})
-          {countdown > 0 && `，${countdown}s 后重试...`}
+          Disconnected — Reconnecting ({attempt}/{maxRetries})
+          {countdown > 0 && `, retry in ${countdown}s...`}
           {onRetry && (
             <button className="status-retry-btn" onClick={onRetry}>
-              立即重试
+              Retry Now
             </button>
           )}
         </>
@@ -93,7 +93,7 @@ export function ConnectionStatusBar({ phase, attempt, maxRetries, delay, onRetry
       content = (
         <>
           <span className="status-dot yellow" />
-          正在连接服务器... ({attempt}/{maxRetries})
+          Connecting to server... ({attempt}/{maxRetries})
         </>
       );
       break;
@@ -102,10 +102,10 @@ export function ConnectionStatusBar({ phase, attempt, maxRetries, delay, onRetry
       content = (
         <>
           <span className="status-dot red" />
-          无法连接服务器 — 已尝试 {maxRetries} 次
+          Cannot connect to server — {maxRetries} attempts failed
           {onRetry && (
             <button className="status-retry-btn" onClick={onRetry}>
-              重试
+              Retry
             </button>
           )}
         </>
@@ -116,7 +116,7 @@ export function ConnectionStatusBar({ phase, attempt, maxRetries, delay, onRetry
       content = (
         <>
           <span className="status-dot green" />
-          连接已恢复
+          Connection restored
         </>
       );
       break;
@@ -125,7 +125,7 @@ export function ConnectionStatusBar({ phase, attempt, maxRetries, delay, onRetry
       content = (
         <>
           <span className="status-dot yellow" />
-          检测到新版本{countdown > 0 ? `，${countdown}s 后自动刷新` : "，正在刷新..."}
+          New version detected{countdown > 0 ? `, refreshing in ${countdown}s` : ", refreshing..."}
         </>
       );
       break;

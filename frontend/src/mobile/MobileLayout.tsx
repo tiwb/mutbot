@@ -243,7 +243,7 @@ export default function MobileLayout({
 
   const handleResetDefault = useCallback(() => {
     setSettingsMenuOpen(false);
-    if (confirm("确定恢复默认快捷键布局？")) {
+    if (confirm("Reset shortcuts to default layout?")) {
       const cfg = defaultConfig();
       setShortcutConfig(cfg);
       saveShortcutConfig(cfg);
@@ -383,13 +383,13 @@ export default function MobileLayout({
                 {settingsMenuOpen && (
                   <div ref={settingsMenuRef} className="shortcut-settings-menu">
                     <button className="shortcut-settings-option" onClick={handleStartEdit}>
-                      编辑快捷键
+                      Edit Shortcuts
                     </button>
                     <button className="shortcut-settings-option" onClick={handleOpenGridSize}>
-                      网格大小
+                      Grid Size
                     </button>
                     <button className="shortcut-settings-option" onClick={handleResetDefault}>
-                      恢复默认
+                      Reset Default
                     </button>
                   </div>
                 )}
@@ -413,7 +413,7 @@ export default function MobileLayout({
           </div>
         ) : activeSession ? (
           <div className="mobile-unsupported-panel">
-            <p>该面板类型暂不支持移动端显示</p>
+            <p>This panel type is not supported on mobile</p>
           </div>
         ) : (
           <WelcomePage rpc={rpc} onCreateSession={onCreateSession} />
@@ -471,11 +471,11 @@ function GridSizeDialog({ rows, cols, onConfirm, onClose }: {
     <div className="shortcut-edit-overlay" onClick={onClose}>
       <div className="shortcut-edit-dialog grid-size-dialog" onClick={(e) => e.stopPropagation()}>
         <div className="shortcut-edit-header">
-          <span>网格大小</span>
+          <span>Grid Size</span>
         </div>
         <div className="grid-size-controls">
           <label>
-            <span>行数</span>
+            <span>Rows</span>
             <div className="grid-size-stepper">
               <button onClick={() => setR((v) => Math.max(1, v - 1))} disabled={r <= 1}>−</button>
               <span>{r}</span>
@@ -483,7 +483,7 @@ function GridSizeDialog({ rows, cols, onConfirm, onClose }: {
             </div>
           </label>
           <label>
-            <span>列数</span>
+            <span>Columns</span>
             <div className="grid-size-stepper">
               <button onClick={() => setC((v) => Math.max(1, v - 1))} disabled={c <= 1}>−</button>
               <span>{c}</span>
@@ -492,8 +492,8 @@ function GridSizeDialog({ rows, cols, onConfirm, onClose }: {
           </label>
         </div>
         <div className="shortcut-edit-footer">
-          <button onClick={onClose}>取消</button>
-          <button className="primary" onClick={() => onConfirm(r, c)}>确定</button>
+          <button onClick={onClose}>Cancel</button>
+          <button className="primary" onClick={() => onConfirm(r, c)}>OK</button>
         </div>
       </div>
     </div>

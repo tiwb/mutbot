@@ -278,14 +278,14 @@ export default function TerminalInput({ onSend, shortcutsOpen, onToggleShortcuts
               onClick={() => switchMode("single")}
             >
               <CornerDownLeft size={14} />
-              <span>单行输入</span>
+              <span>Single Line</span>
             </button>
             <button
               className={`terminal-input-mode-option ${mode === "multi" ? "active" : ""}`}
               onClick={() => switchMode("multi")}
             >
               <Send size={14} />
-              <span>多行输入</span>
+              <span>Multi Line</span>
             </button>
             <div className="terminal-input-mode-divider" />
             <button
