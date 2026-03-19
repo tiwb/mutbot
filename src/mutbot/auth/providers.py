@@ -41,6 +41,7 @@ class OIDCProvider:
         token_endpoint: str,
         userinfo_endpoint: str,
         scopes: list[str] | None = None,
+        claims: dict[str, str] | None = None,
     ) -> None:
         self.name = name
         self.client_id = client_id
@@ -49,6 +50,7 @@ class OIDCProvider:
         self.token_endpoint = token_endpoint
         self.userinfo_endpoint = userinfo_endpoint
         self.scopes = scopes or ["openid", "profile"]
+        self.claims = claims
 
     def authorize_url(self, redirect_uri: str, state: str) -> str:
         """生成授权跳转 URL。"""
@@ -94,12 +96,20 @@ class OIDCProvider:
             return self._parse_userinfo(data)
 
     def _parse_userinfo(self, data: dict[str, Any]) -> UserInfo:
-        """解析 userinfo 响应。子类覆盖以适配不同格式。"""
-        username = data.get("preferred_username") or data.get("sub", "unknown")
+        """解析 userinfo 响应。优先使用 claims 映射，否则按常见字段名 fallback。"""
+        c = self.claims
+        if c:
+            username = data.get(c.get("username", "sub"), "unknown")
+            name = data.get(c.get("name", "name"), "") or username
+            avatar = data.get(c.get("avatar", "picture"), "") or ""
+        else:
+            username = data.get("preferred_username") or data.get("nickname") or data.get("sub", "unknown")
+            name = data.get("name") or data.get("fullname") or username
+            avatar = data.get("picture") or data.get("avatar_url") or ""
         return UserInfo(
             sub=f"{self.name}:{username}",
-            name=data.get("name") or username,
-            avatar=data.get("picture", ""),
+            name=name,
+            avatar=avatar,
             provider=self.name,
         )
 
@@ -208,6 +218,7 @@ def create_provider_from_config(name: str, cfg: dict[str, Any]) -> OIDCProvider:
             token_endpoint=cfg["token_endpoint"],
             userinfo_endpoint=cfg["userinfo_endpoint"],
             scopes=cfg.get("scopes"),
+            claims=cfg.get("claims"),
         )
 
     # issuer 模式 — 需要异步 discovery，这里返回占位，启动时异步初始化

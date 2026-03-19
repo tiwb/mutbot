@@ -299,6 +299,19 @@ class RelayCallbackView(View):
         )
 
 
+async def _fetch_relay_providers(relay_url: str) -> list[str]:
+    """从中转站元信息获取支持的 provider 列表。"""
+    import httpx
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(f"{relay_url}/.well-known/mutbot-relay.json", timeout=10)
+            data = resp.json()
+            return data.get("providers", [])
+    except Exception as e:
+        logger.error("获取 relay provider 列表失败: %s", e)
+        return []
+
+
 async def _fetch_relay_public_key(relay_url: str) -> str | None:
     """从中转站元信息获取 Ed25519 公钥。"""
     import httpx
@@ -428,20 +441,22 @@ class ProvidersView(View):
                 "url": f"/auth/callback?provider={name}&action=start",
             })
 
-        # 中转站 Provider
+        # 中转站 Provider — 从元信息动态获取 provider 列表
         relay = _get_relay_config()
         relay_domain = ""
         if relay:
             relay_url = relay["url"].rstrip("/")
-            relay_domain = relay_url.split("//", 1)[-1]  # "mutbot.ai"
-            nonce = _create_nonce()
+            relay_domain = relay_url.split("//", 1)[-1]
+            relay_providers = await _fetch_relay_providers(relay_url)
             callback = _get_callback_url(request, "/auth/relay-callback")
-            options.append({
-                "name": "github",
-                "label": "GitHub",
-                "type": "relay",
-                "url": f"{relay_url}/auth/start?callback={quote(callback)}&provider=github&nonce={nonce}",
-            })
+            for rp in relay_providers:
+                nonce = _create_nonce()
+                options.append({
+                    "name": rp,
+                    "label": rp.replace("-", " ").replace("_", " ").title(),
+                    "type": "relay",
+                    "url": f"{relay_url}/auth/start?callback={quote(callback)}&provider={quote(rp)}&nonce={nonce}",
+                })
 
         return json_response({
             "providers": options,

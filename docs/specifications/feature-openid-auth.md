@@ -206,6 +206,18 @@ GitHub OAuth 如果用户之前授权过同一个 app，自动跳过确认页
         "client_id": "mutbot",
         "client_secret": "xxx",
         "scopes": ["openid", "profile"]
+      },
+      "corp-manual": {
+        "authorization_endpoint": "https://sso.company.com/connect/authorize",
+        "token_endpoint": "https://sso.company.com/connect/token",
+        "userinfo_endpoint": "https://sso.company.com/connect/userinfo",
+        "client_id": "xxx",
+        "client_secret": "xxx",
+        "scopes": ["openid", "nickname", "fullname", "email"],
+        "claims": {
+          "username": "nickname",
+          "name": "fullname"
+        }
       }
     },
     "allowed_users": ["github:octocat", "corp-sso:zhangsan"]
@@ -262,11 +274,13 @@ GitHub OAuth 如果用户之前授权过同一个 app，自动跳过确认页
 - `auth` 不存在 → 无配置模式，全放行
 - `auth.relay` — 中转站地址（路径 1）
 - `auth.providers` — 直连 OIDC 提供商（路径 2）
+- `auth.providers.{name}.scopes` — 可选，向 Provider 请求的权限范围（默认 `["openid", "profile"]`）。非标准 OIDC Provider 可能使用不同的 scope 名称（如某些企业 OIDC 使用 `nickname`、`fullname`）
+- `auth.providers.{name}.claims` — 可选，userinfo 响应字段名映射。用于适配非标准 OIDC Provider 的字段名。支持映射：`username`（用户标识）、`name`（显示名）、`avatar`（头像 URL）。不配置则按常见字段名自动 fallback
 - `auth.allowed_users` — 白名单，格式 `provider:username`。本期：白名单内放行，白名单外 403。权限细分后续设计
 - `auth.session_ttl` — 可选，默认 604800（7天），单位秒
 - `auth.relay_service` — 中转服务端配置（可选，让本实例作为中转站）
-- `auth.relay_service.private_key` — Ed25519 私钥（Base64 编码），用于签发断言 JWT。首次配置时可由 mutbot 自动生成密钥对
-- `auth.relay_service.providers` — 本中转站支持的 OIDC 提供商（含 client_id/secret）
+- `auth.relay_service.private_key` — Ed25519 私钥（PEM 格式），用于签发断言 JWT
+- `auth.relay_service.providers` — 本中转站支持的 OIDC 提供商（含 client_id/secret），同样支持 `scopes` 和 `claims` 配置
 
 #### 后端新增模块
 
