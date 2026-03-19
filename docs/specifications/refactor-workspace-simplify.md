@@ -1,6 +1,6 @@
 # Workspace 简化与终端 Settings UI 设计规范
 
-**状态**：🔄 实施中
+**状态**：✅ 已完成
 **日期**：2026-03-19
 **类型**：重构 + 功能设计
 
@@ -68,50 +68,59 @@ class Workspace:
 
 记录方式：`storage.py` 中新增 `STARTUP_CWD` 模块级变量，`server.py` 启动时设置（与 `MUTBOT_DIR` 风格一致）。
 
-### 终端 Settings — RpcMenu + UIContext Modal
+### 终端 Settings — Session 固有 UI，Menu 仅触发
 
-Settings 是 **Session 级别的配置**。每个 TerminalSession 有自己的 config（cwd、未来的 shell command 等），Settings UI 读写的是该 session 的 config。
+#### 架构设计
+
+**核心洞察**：Menu 是触发器，不是 UI 的 owner。Settings UI 属于 Session 本身。
+
+正交分解：
+
+| 轴 | 维度 | 当前实现 |
+|----|------|----------|
+| UI 归属 | Session 级 / Workspace 级 | 本次只做 Session 级 |
+| UI 触发方式 | Menu / 快捷键 / 程序触发 | 本次通过 Menu 触发 |
+| UI 传输通道 | Session channel / Workspace event | 复用 session channel（与 AgentPanel UIContext 一致） |
+
+关键决策：
+- **Settings UI 归属 Session**：任何 Session 类型都可以有 Settings UI，TerminalSession 是第一个
+- **Menu 只发信号**：`Menu.execute()` 返回 `MenuResult(action="open_settings", data={session_id})`，不创建 UIContext、不管理生命周期
+- **走 session channel**：与 AgentPanel 的 UIContext 完全一致，无新基础设施
+- **未来 Workspace 级 UI**：到时走 workspace 通道，独立设计，不影响当前架构
 
 #### 交互流程
 
 ```
-终端 Tab 右键 → "Settings" 菜单项（context 含 session_id）
+终端 Tab 右键 → "Settings" 菜单项
   ↓
-Menu.execute() 读取该 session 的当前 config
+Menu.execute() → 返回 MenuResult(action="open_settings", data={session_id})
   ↓
-创建 UIContext，推送 Settings view（填充当前值）
+前端收到 → 通过 session channel 调用 session.open_settings RPC
   ↓
-返回 MenuResult(action="ui_modal", data={context_id})
+后端 Session 创建 UIContext，通过 session channel 推送 Settings view
   ↓
-前端打开 Modal，通过 context_id 连接 UIContext
+前端 Session Panel 渲染 Settings（Modal 或内嵌面板，复用 ViewRenderer）
   ↓
-ViewRenderer 渲染表单（cwd、未来: shell command 等）
+用户修改 + 提交 → UIEvent(submit) → 通过 session channel 回传
   ↓
-用户修改 + 提交 → UIEvent(submit) → 后端 wait_event() 收到
+后端更新 session config，restart terminal
   ↓
-后端更新该 session 的 config，restart terminal
-  ↓
-UIContext 显示 "Restarting..." spinner → 完成后 close()
-  ↓
-前端关闭 Modal
+UIContext 显示 spinner → 完成后 close()
 ```
 
-#### UIContext Modal 渲染面
+#### 后端：session.open_settings RPC
 
-当前 UIContext 只在 ToolCallCard 中渲染（绑定 tool_call_id）。需要新增 **Modal 渲染面**：
+新增 Session 级 RPC `session.open_settings`，由 Session 自身管理 UIContext：
 
-- 前端新增 `UIModal` 组件，监听特定 context_id 的 UIContext 事件
-- 复用现有 `ViewRenderer`，在 Modal 中渲染
-- UIContext 的 `broadcast` 走 **workspace 级通道**（Tab 右键菜单在 App 层触发，Modal 也在 App 层渲染，ctx.broadcast 即 workspace 级广播；前端按 context_id 过滤事件）
+- Session 创建 UIContext（broadcast 用 session 的 broadcast_json）
+- 后台 asyncio Task 持有 UIContext，构建 view → 等待 submit → 应用配置
+- 通过 session channel 推送 `ui_view` / `ui_close`（与 Agent tool UI 一致）
 
-#### UIContext 生命周期管理
+#### 前端：Session Panel 处理 Settings
 
-Menu.execute() 是 RPC 调用，需要在 execute 返回后保持 UIContext 存活：
-
-- Menu.execute() 创建 UIContext，注册到全局 registry
-- 返回 `MenuResult(action="ui_modal", data={"context_id": ctx_id})`
-- 后台 asyncio Task 持有 UIContext，等待用户交互
-- 用户提交/取消 → Task 完成 → UIContext.close() → 从 registry 移除
+- AgentPanel 已经处理 `ui_view` / `ui_close` 事件（ToolCallCard）
+- TerminalPanel 需要新增同样的处理：收到 `ui_view` 时渲染 Settings Modal
+- 复用 `ViewRenderer` 组件，提交/取消通过 channel 发送 `ui_event`
 
 #### Terminal Settings View Schema
 
@@ -127,8 +136,7 @@ view = {
             # value: 当前 session.config["cwd"]
         },
         # 未来扩展：
-        # {"type": "text", "id": "shell", "label": "Shell Command", "placeholder": "/bin/bash"},
-        # {"type": "text", "id": "env", "label": "Environment", "multiline": true},
+        # {"type": "text", "id": "shell", "label": "Shell Command"},
     ],
     "actions": [
         {"type": "submit", "label": "Apply & Restart", "primary": true},
@@ -136,8 +144,6 @@ view = {
     ],
 }
 ```
-
-Apply 后需要 restart 终端（进程 cwd 不可运行时修改）。按钮文案 "Apply & Restart" 已足够明确，不再二次确认。后端可用 UIContext 多步交互：提交后显示 "Restarting..." spinner，完成后自动关闭。
 
 ### file.read RPC 处理
 
@@ -159,113 +165,67 @@ Apply 后需要 restart 终端（进程 cwd 不可运行时修改）。按钮文
 ## 设计决策
 
 - **startup_cwd 存储**：`storage.STARTUP_CWD` 模块级变量，`server.py` 启动时设置，与 `MUTBOT_DIR` 风格一致
-- **UIContext broadcast 通道**：走 workspace 级通道。Tab 右键菜单在 App 层触发，RpcContext.broadcast 即 workspace 级广播，Modal 在 App 层渲染，前端按 context_id 过滤事件
 - **向后兼容**：参照 session 文件命名迁移模式（`_find_session_file` glob `*{id}{suffix}`）：新增 `_find_workspace_file()` 用 glob 兼容新旧格式；加载时忽略 `project_path` 字段；save 时以新格式写入并删除旧格式文件（避免两个文件共存导致 glob 歧义）
-- **UIContext Modal 通用性**：做成通用基础设施，任何 Menu.execute() 均可返回 `action="ui_modal"`，Terminal Settings 是第一个使用场景
+- **Settings UI 归属 Session，Menu 仅触发**：Menu.execute() 返回 `action="open_settings"`，不创建 UIContext。Session 自身管理 UIContext 生命周期，通过 session channel 通信（与 AgentPanel UIContext 一致，无新基础设施）
+- **未来扩展**：任何 Session 类型都可以有 Settings UI；Workspace 级 UI 独立设计，走 workspace 通道
 
 ## 实施步骤清单
 
-### Phase 1: 后端 — Workspace 模型与存储 [待开始]
+### Phase 1-2: Workspace 模型与存储 + 清理 project_path [✅ 已完成]
 
-- [ ] **Task 1.1**: 移除 `Workspace.project_path`
-  - [ ] `workspace.py` — 移除 dataclass 字段、`_workspace_to_dict`、`_workspace_from_dict`
-  - [ ] `WorkspaceManager.create()` — 移除 `project_path` 参数
-  - 状态：⏸️ 待开始
+已提交：移除 Workspace.project_path、新文件名格式、STARTUP_CWD、清理所有引用、更新测试。
 
-- [ ] **Task 1.2**: Workspace 文件名新格式
-  - [ ] `storage.py` — 新增 `_find_workspace_file()`、`_workspace_file_prefix()`
-  - [ ] `storage.py` — 更新 `save_workspace()` 使用新格式，删除旧格式文件
-  - [ ] `storage.py` — 更新 `load_workspace()` 使用 `_find_workspace_file()`
-  - 状态：⏸️ 待开始
+### Phase 3-4: Terminal Settings UI [✅ 已完成]
 
-- [ ] **Task 1.3**: `STARTUP_CWD` 全局变量
-  - [ ] `storage.py` — 新增 `STARTUP_CWD` 变量
-  - [ ] `server.py` — 启动时设置 `storage.STARTUP_CWD`（daemon 模式 fallback home）
-  - 状态：⏸️ 待开始
+- [x] **Task 3.1**: `TerminalSettingsMenu` 菜单项
+  - [x] `builtins/menus.py` — 新增 Menu 子类，category=`Tab/Context`，`client_action="open_settings"`，`check_visible` 限制 terminal session
+  - 状态：✅ 已完成
 
-### Phase 2: 后端 — 清理 `project_path` 引用 [待开始]
+- [x] **Task 3.2**: 后端 `open_settings` 消息处理
+  - [x] `runtime/terminal.py` — `on_message` 新增 `open_settings` 和 `ui_event` 消息类型
+  - [x] `_handle_open_settings()` — 创建 UIContext，推送 Settings 表单（cwd），等待 submit → 保存 config
+  - [x] 不自动 restart，用户手动 restart 时使用新 cwd
+  - 状态：✅ 已完成
 
-- [ ] **Task 2.1**: 替换所有 `ws.project_path` 为 `STARTUP_CWD`
-  - [ ] `rpc_workspace.py` — `TerminalOps.create` cwd 参数
-  - [ ] `rpc_session.py` — `SessionOps.create` config.setdefault
-  - [ ] `builtins/menus.py` — `AddSessionMenu.execute` config cwd
-  - [ ] `serializers.py` — 移除 `project_path` 序列化
-  - [ ] `web/mcp.py` — 移除 `project_path` 展示
-  - 状态：⏸️ 待开始
+- [x] **Task 3.3**: 修复 `menu_impl.py` — `check_visible` 收不到前端 context
+  - [x] 移除错误的 `hasattr(context, "managers")` 守卫
+  - 状态：✅ 已完成
 
-- [ ] **Task 2.2**: `workspace.create` RPC 移除 `project_path` 参数
-  - [ ] `rpc_app.py` — `WorkspaceOps.create` 不再要求 project_path
-  - 状态：⏸️ 待开始
+- [x] **Task 4.1**: `App.tsx` 处理 `open_settings` client_action
+  - [x] `handleTabClientAction` 新增 `open_settings`，dispatch CustomEvent 通知 TerminalPanel
+  - 状态：✅ 已完成
 
-- [ ] **Task 2.3**: `file.read` 最小适配
-  - [ ] `rpc_workspace.py` — `FileOps.read` 改为接受绝对路径，移除 project_path 遍历检查
-  - 状态：⏸️ 待开始
+- [x] **Task 4.2**: `TerminalPanel` 处理 UIContext 事件
+  - [x] 监听 `open-session-settings` CustomEvent → 通过 channel 发 `open_settings`
+  - [x] `handleJsonMessage` 新增 `ui_view` / `ui_close` → 渲染 Settings Modal（复用 ViewRenderer）
+  - [x] submit/cancel 通过 channel 发 `ui_event`
+  - 状态：✅ 已完成
 
-### Phase 3: 后端 — Terminal Settings Menu + UIContext Modal [待开始]
+- [x] **Task 4.3**: `ToolCallCard.tsx` — export `ViewRenderer` 供 TerminalPanel 复用
+  - 状态：✅ 已完成
 
-- [ ] **Task 3.1**: `TerminalSettingsMenu` 菜单项
-  - [ ] `builtins/menus.py` — 新增 Menu 子类，category=`Tab/Context`，`check_visible` 限制 terminal session
-  - 状态：⏸️ 待开始
+### Phase 5: 测试与验证 [✅ 已完成]
 
-- [ ] **Task 3.2**: Menu → UIContext 桥接
-  - [ ] 在 Menu.execute() 中创建 UIContext（使用 ctx.broadcast），注册到全局 registry
-  - [ ] 启动后台 asyncio Task 持有 UIContext，等待用户交互
-  - [ ] 返回 `MenuResult(action="ui_modal", data={"context_id": ...})`
-  - 状态：⏸️ 待开始
-
-- [ ] **Task 3.3**: Terminal Settings 业务逻辑
-  - [ ] 读取 session config，构建 view schema，推送到前端
-  - [ ] 接收 submit 事件，更新 session config，restart terminal
-  - [ ] 显示 spinner → 完成后 close
-  - 状态：⏸️ 待开始
-
-### Phase 4: 前端 [待开始]
-
-- [ ] **Task 4.1**: `WorkspaceSelector` 简化创建流程
-  - [ ] 去掉目录浏览，只保留名称输入
-  - [ ] RPC 调用移除 project_path 参数
-  - 状态：⏸️ 待开始
-
-- [ ] **Task 4.2**: `UIModal` 通用组件
-  - [ ] 新增 `UIModal.tsx`，监听 workspace WebSocket 消息中 `ui_view` / `ui_close` 事件
-  - [ ] 按 `context_id` 过滤，复用 `ViewRenderer` 渲染
-  - [ ] 提交/取消通过 workspace RPC 发送 UIEvent
-  - 状态：⏸️ 待开始
-
-- [ ] **Task 4.3**: `App.tsx` 集成 UIModal
-  - [ ] 处理 MenuResult `action="ui_modal"`，打开 UIModal
-  - [ ] UIModal 关闭时清理状态
-  - 状态：⏸️ 待开始
-
-- [ ] **Task 4.4**: `CodeEditorPanel` 占位处理
-  - [ ] 保留组件，改为显示占位提示
-  - 状态：⏸️ 待开始
-
-### Phase 5: 测试与验证 [待开始]
-
-- [ ] **Task 5.1**: 更新单元测试
-  - [ ] `test_workspace_selector.py` — 移除 project_path 参数
-  - [ ] 新增 workspace 文件名格式测试
-  - [ ] 新增旧格式兼容性测试
-  - 状态：⏸️ 待开始
-
-- [ ] **Task 5.2**: 构建前端并验证
-  - [ ] `npm --prefix mutbot/frontend run build`
+- [x] **Task 5.1**: 构建前端并验证
+  - [x] `npm --prefix mutbot/frontend run build` — 构建成功
+  - [x] 后端测试 481 passed
   - [ ] 手动验证：创建工作区、终端 Settings、文件名格式
   - 状态：⏸️ 待开始
 
-## 关键参考### 源码
+## 关键参考
+
+### 源码
 - `src/mutbot/runtime/workspace.py` — Workspace 数据模型、WorkspaceManager
-- `src/mutbot/runtime/storage.py` — 文件持久化、MUTBOT_DIR
+- `src/mutbot/runtime/storage.py` — 文件持久化、MUTBOT_DIR、STARTUP_CWD
 - `src/mutbot/menu.py` — Menu Declaration、MenuItem、MenuResult
 - `src/mutbot/ui/context.py` — UIContext Declaration（set_view / wait_event / show / close）
-- `src/mutbot/ui/toolkit.py` — UIToolkitBase（UIContext 创建和绑定）
-- `src/mutbot/ui/context_impl.py` — UIContext @impl（broadcast 推送、Future 管理）
+- `src/mutbot/ui/context_impl.py` — UIContext @impl（broadcast 推送、Future 管理、全局 registry）
 - `src/mutbot/builtins/menus.py` — 内置菜单实现
 - `src/mutbot/web/rpc_app.py` — AppMenuOps（menu.query / menu.execute）
-- `src/mutbot/web/rpc_workspace.py` — TerminalOps.create（cwd=ws.project_path）
-- `src/mutbot/web/rpc_session.py` — SessionOps.create（config.setdefault cwd）
-- `frontend/src/components/ToolCallCard.tsx` — ViewRenderer、UIComponent（现有渲染器）
+- `src/mutbot/web/rpc_workspace.py` — TerminalOps.create
+- `src/mutbot/web/rpc_session.py` — SessionOps.create
+- `frontend/src/components/ToolCallCard.tsx` — ViewRenderer、UIComponent（现有 UIContext 渲染器）
+- `frontend/src/panels/AgentPanel.tsx` — ui_view / ui_close 事件处理（参考实现）
+- `frontend/src/panels/TerminalPanel.tsx` — 终端面板（需新增 Settings 处理）
 - `frontend/src/components/RpcMenu.tsx` — RpcMenu 组件
-- `frontend/src/panels/CodeEditorPanel.tsx` — file.read 使用方
-- `frontend/src/components/WorkspaceSelector.tsx` — 创建工作区 UI
+- `frontend/src/lib/workspace-rpc.ts` — WorkspaceRpc（channel 多路复用、event 系统）

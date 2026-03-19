@@ -192,7 +192,6 @@ export default function App() {
 
   // New workspace flow: hash points to non-existent workspace
   const [newWorkspaceName, setNewWorkspaceName] = useState<string | null>(null);
-  const [cwd, setCwd] = useState("");
 
   // 连接 /ws/app 获取工作区列表 + hash 路由
   useEffect(() => {
@@ -238,18 +237,12 @@ export default function App() {
     if (isRemote()) {
       const urlVersion = location.pathname.match(/^\/v([^/]+)\//)?.[1];
       rpcInst.on("welcome", (data) => {
-        const d = data as { version?: string; cwd?: string };
-        if (d.cwd) setCwd(d.cwd);
+        const d = data as { version?: string };
         const serverVersion = d.version;
         if (urlVersion && serverVersion && serverVersion !== urlVersion) {
           // 版本不匹配，重定向到根路径让 Landing Page 重新匹配
           location.href = `/${location.hash}`;
         }
-      });
-    } else {
-      rpcInst.on("welcome", (data) => {
-        const d = data as { cwd?: string };
-        if (d.cwd) setCwd(d.cwd);
       });
     }
 
@@ -933,6 +926,14 @@ export default function App() {
             position: tabContextMenu.position,
             sessionId: tabContextSession.session.id,
           });
+        }
+      } else if (action === "open_settings") {
+        if (tabContextSession?.session) {
+          window.dispatchEvent(
+            new CustomEvent("open-session-settings", {
+              detail: { sessionId: tabContextSession.session.id },
+            }),
+          );
         }
       } else if (action === "close_all") {
         let parentId: string | null = null;

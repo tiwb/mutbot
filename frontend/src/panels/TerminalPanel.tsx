@@ -6,6 +6,7 @@ import { UnicodeGraphemesAddon } from "@xterm/addon-unicode-graphemes";
 import "@xterm/xterm/css/xterm.css";
 import type { WorkspaceRpc } from "../lib/workspace-rpc";
 import ContextMenu, { type ContextMenuItem } from "../components/ContextMenu";
+import { ViewRenderer, type ViewSchema, type UIEventPayload } from "../components/ToolCallCard";
 
 interface Props {
   sessionId?: string;
@@ -49,6 +50,8 @@ const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPa
   const [expired, setExpired] = useState(false);
   const [connected, setConnected] = useState(false);
   const [ctrlVPaste, setCtrlVPaste] = useState(true);
+  const [settingsView, setSettingsView] = useState<ViewSchema | null>(null);
+  const settingsContextIdRef = useRef<string>("");
   // 服务端滚动条状态（始终保留最新数据，不因 offset=0 而清空）
   const [scrollState, setScrollState] = useState<{ offset: number; total: number; visible: number } | null>(null);
   const scrollFadeRef = useRef<number>(0);
@@ -289,6 +292,22 @@ const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPa
             setScrollbarFlash(false);
           }, 2000);
         }
+        return;
+      }
+
+      if (msgType === "ui_view") {
+        const contextId = msg.context_id as string;
+        const view = msg.view as ViewSchema;
+        if (contextId && view) {
+          settingsContextIdRef.current = contextId;
+          setSettingsView(view);
+        }
+        return;
+      }
+
+      if (msgType === "ui_close") {
+        settingsContextIdRef.current = "";
+        setSettingsView(null);
         return;
       }
     }
@@ -852,6 +871,34 @@ const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPa
     }
   }, [scrollState]);
 
+  // --- Settings UI: listen for open-session-settings event ---
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent).detail as { sessionId: string };
+      if (detail.sessionId === sessionId && chRef.current > 0 && rpc) {
+        rpc.sendToChannel(chRef.current, { type: "open_settings" });
+      }
+    };
+    window.addEventListener("open-session-settings", handler);
+    return () => window.removeEventListener("open-session-settings", handler);
+  }, [sessionId, rpc]);
+
+  const handleSettingsEvent = useCallback((event: UIEventPayload) => {
+    const ch = chRef.current;
+    if (!ch || !rpc) return;
+    rpc.sendToChannel(ch, {
+      type: "ui_event",
+      context_id: settingsContextIdRef.current,
+      event_type: event.type,
+      data: event.data,
+      source: event.source,
+    });
+    if (event.type === "cancel") {
+      setSettingsView(null);
+      settingsContextIdRef.current = "";
+    }
+  }, [rpc]);
+
   return (
     <div ref={containerRef} className="terminal-panel" onContextMenu={handleContextMenu}>
       {scrollbar && (
@@ -888,6 +935,19 @@ const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPa
           position={contextMenu.position}
           onClose={() => setContextMenu(null)}
         />
+      )}
+      {settingsView && (
+        <div className="terminal-settings-overlay" onClick={(e) => {
+          if (e.target === e.currentTarget) handleSettingsEvent({ type: "cancel", data: {} });
+        }}>
+          <div className="terminal-settings-modal">
+            <ViewRenderer
+              view={settingsView}
+              mode="connected"
+              onEvent={handleSettingsEvent}
+            />
+          </div>
+        </div>
       )}
     </div>
   );

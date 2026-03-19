@@ -135,7 +135,7 @@ class CloseTabMenu(Menu):
     display_name = "Close"
     display_icon = "x"
     display_category = "Tab/Context"
-    display_order = "0basic:2"
+    display_order = "1close:0"
     client_action = "close_tab"
 
 
@@ -143,7 +143,7 @@ class CloseOthersMenu(Menu):
     """Tab 右键菜单 — 关闭其他 Tab"""
     display_name = "Close Others"
     display_category = "Tab/Context"
-    display_order = "0basic:3"
+    display_order = "1close:1"
     client_action = "close_others"
 
 
@@ -151,8 +151,21 @@ class CloseAllMenu(Menu):
     """Tab 右键菜单 — 关闭所有 Tab"""
     display_name = "Close All"
     display_category = "Tab/Context"
-    display_order = "0basic:4"
+    display_order = "1close:2"
     client_action = "close_all"
+
+
+class TerminalSettingsMenu(Menu):
+    """Tab 右键菜单 — 终端设置（仅 TerminalSession 可见）"""
+    display_name = "Settings"
+    display_icon = "settings"
+    display_category = "Tab/Context"
+    display_order = "0basic:3"
+    client_action = "open_settings"
+
+    @classmethod
+    def check_visible(cls, context: dict) -> bool | None:
+        return context.get("session_type") == "mutbot.session.TerminalSession"
 
 
 

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from pathlib import Path
 from typing import Any, Callable, TYPE_CHECKING
 
 from mutobj import impl
@@ -606,6 +607,83 @@ async def _terminal_on_message(
                     "type": "resize_owner",
                     "follow_me": None,
                 })
+
+    elif msg_type == "open_settings":
+        await _handle_open_settings(self, channel, ctx)
+
+    elif msg_type == "ui_event":
+        # UIContext 事件转发
+        from mutbot.ui.context_impl import deliver_event
+        from mutbot.ui.events import UIEvent
+        context_id = raw.get("context_id", "")
+        if context_id:
+            event = UIEvent(
+                type=raw.get("event_type", ""),
+                data=raw.get("data", {}),
+                source=raw.get("source"),
+                context_id=context_id,
+            )
+            deliver_event(context_id, event)
+
+
+async def _handle_open_settings(
+    session: TerminalSession, channel: Channel, ctx: ChannelContext,
+) -> None:
+    """打开终端 Settings UI — 创建 UIContext，通过 session channel 推送表单。"""
+    from mutbot.runtime import storage
+    from mutbot.ui.context import UIContext
+    from mutbot.ui.context_impl import register_context
+
+    context_id = f"settings-{session.id}"
+
+    # 如果已有活跃的 settings UI，关闭旧的
+    from mutbot.ui.context_impl import _active_contexts
+    old = _active_contexts.get(context_id)
+    if old is not None:
+        old.close()
+
+    ui = UIContext(
+        context_id=context_id,
+        broadcast=session.broadcast_json,
+    )
+    register_context(ui)
+
+    cwd = session.config.get("cwd", storage.STARTUP_CWD)
+
+    view = {
+        "title": "Terminal Settings",
+        "components": [
+            {
+                "type": "text",
+                "id": "cwd",
+                "label": "Working Directory",
+                "placeholder": str(Path.home()),
+                "value": cwd,
+            },
+        ],
+        "actions": [
+            {"type": "submit", "label": "Apply", "primary": True},
+            {"type": "cancel", "label": "Cancel"},
+        ],
+    }
+
+    # 后台 task：推送 view → 等待用户交互 → 应用配置（不自动 restart）
+    async def _settings_task() -> None:
+        try:
+            result = await ui.show(view)
+            if result is None:
+                return  # 取消
+
+            new_cwd = result.get("cwd", "")
+            if new_cwd and new_cwd != cwd:
+                session.config["cwd"] = new_cwd
+                sm = ctx.session_manager
+                if sm:
+                    sm._persist(session)
+        finally:
+            ui.close()
+
+    asyncio.ensure_future(_settings_task())
 
 
 @impl(TerminalSession.on_data)

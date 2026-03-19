@@ -117,9 +117,7 @@ class MenuRegistry:
         items: list[MenuItem] = []
 
         # 从 RPC params 中提取上下文（前端传入的额外信息）
-        menu_context: dict = {}
-        if hasattr(context, "managers"):
-            menu_context = getattr(context, "_menu_context", {})
+        menu_context: dict = getattr(context, "_menu_context", {})
 
         for menu_cls in menus:
             # 可见性判断

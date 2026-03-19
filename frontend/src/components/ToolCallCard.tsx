@@ -215,7 +215,7 @@ interface ViewRendererProps {
   onEvent?: (event: UIEventPayload) => void;
 }
 
-function ViewRenderer({ view, mode, onEvent }: ViewRendererProps) {
+export function ViewRenderer({ view, mode, onEvent }: ViewRendererProps) {
   const [formValues, setFormValues] = useState<Record<string, unknown>>(() => {
     const init: Record<string, unknown> = {};
     for (const comp of view.components) {

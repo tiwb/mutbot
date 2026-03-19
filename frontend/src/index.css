@@ -2219,6 +2219,27 @@ body,
   color: white;
 }
 
+/* --- Terminal Settings Modal --- */
+.terminal-settings-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 100;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.terminal-settings-modal {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 16px;
+  min-width: 320px;
+  max-width: 480px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+}
+
 .terminal-connecting {
   color: var(--text-dim);
   font-size: 13px;
