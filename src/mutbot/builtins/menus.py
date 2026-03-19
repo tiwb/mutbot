@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import sys
-
 import mutobj
 
 from mutbot.menu import Menu, MenuItem, MenuResult
@@ -404,15 +402,11 @@ class MobileConnectMenu(Menu):
 
 
 class KillPtyHostMenu(Menu):
-    """全局菜单 — 终止 PtyHost 守护进程（仅 Windows）"""
+    """全局菜单 — 终止 PtyHost 守护进程"""
     display_name = "Kill PtyHost"
     display_icon = "terminal"
     display_category = "SessionList/Header"
     display_order = "2debug:0"
-
-    @classmethod
-    def check_visible(cls, context: dict) -> bool | None:
-        return sys.platform == "win32"
 
     async def execute(self, params: dict, context: RpcContext) -> MenuResult:
         if not params.get("confirmed"):
