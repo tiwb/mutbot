@@ -338,13 +338,14 @@ _RELAY_CALLBACK_HTML = """<!DOCTYPE html>
     return;
   }
   try {
-    const resp = await fetch('/auth/relay-callback', {
+    const resp = await fetch(location.pathname, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ assertion }),
     });
     if (resp.ok) {
-      location.href = '/';
+      const basePath = location.pathname.replace(/\\/auth\\/relay-callback$/, '') || '/';
+      location.href = basePath;
     } else {
       const data = await resp.json();
       const el = document.getElementById('msg');
@@ -372,7 +373,11 @@ class LogoutView(View):
     path = "/auth/logout"
 
     async def get(self, request: Request) -> Response:
-        headers: dict[str, str] = {"location": "/"}
+        base_path = ""
+        from mutbot.web import server as _server_mod
+        if _server_mod.config is not None:
+            base_path = _server_mod.config.get("base_path", default="") or ""
+        headers: dict[str, str] = {"location": f"{base_path}/"}
         clear_session_cookie(headers, secure=_is_secure(request))
         return Response(status=302, headers=headers)
 
