@@ -504,6 +504,10 @@ def supervisor_main(
 
 def main():
     """MutBot server entry point — 根据参数选择 Supervisor / Worker / 单进程模式。"""
+    import os
+    from mutbot.runtime import storage
+    storage.STARTUP_CWD = os.getcwd()
+
     args = _parse_args()
 
     # Worker 模式（由 Supervisor spawn）

@@ -265,7 +265,6 @@ class TestAddSessionMenu:
         """terminal session 创建时 cwd 写入 config，on_create 中创建 PTY"""
 
         class FakeWorkspace:
-            project_path = "/test"
             sessions = []
 
         class FakeWorkspaceManager:
@@ -296,7 +295,8 @@ class TestAddSessionMenu:
 
         assert result.action == "session_created"
         assert result.data["session_type"] == "mutbot.session.TerminalSession"
-        assert fake_sm.last_config["cwd"] == "/test"
+        from mutbot.runtime import storage
+        assert fake_sm.last_config["cwd"] == storage.STARTUP_CWD
 
     @pytest.mark.asyncio
     async def test_execute_terminal_without_workspace_manager(self):

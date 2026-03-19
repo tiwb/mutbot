@@ -204,7 +204,6 @@ def workspace_dict(ws) -> dict[str, Any]:
     return {
         "id": ws.id,
         "name": ws.name,
-        "project_path": ws.project_path,
         "sessions": ws.sessions,
         "layout": ws.layout,
         "created_at": ws.created_at,

@@ -80,11 +80,8 @@ class AddSessionMenu(Menu):
             return MenuResult(action="error", data={"message": f"unknown session type: {session_type}"})
 
         # 将 cwd 写入 config，on_create 按需使用
-        config: dict = {}
-        wm = context.workspace_manager
-        ws = wm.get(context.workspace_id) if wm else None
-        if ws:
-            config["cwd"] = ws.project_path
+        from mutbot.runtime import storage
+        config: dict = {"cwd": storage.STARTUP_CWD}
 
         session = await sm.create(
             workspace_id=context.workspace_id,

@@ -179,7 +179,7 @@ class WorkspaceTools(MCPToolSet):
         for ws in srv.workspace_manager.list_all():
             lines.append(
                 f"{ws.id[:8]}  {ws.name or '(unnamed)'}  "
-                f"sessions={len(ws.sessions)}  path={ws.project_path}"
+                f"sessions={len(ws.sessions)}"
             )
         return "\n".join(lines) if lines else "(no workspaces)"
 

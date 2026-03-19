@@ -8,6 +8,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from mutbot.runtime import storage
 from mutbot.web.rpc import WorkspaceRpc, RpcContext
 from mutbot.web.serializers import (
     workspace_dict, session_dict, LANG_MAP,
@@ -148,7 +149,7 @@ class TerminalOps(WorkspaceRpc):
             return {"error": "workspace not found"}
         rows = params.get("rows", 24)
         cols = params.get("cols", 80)
-        term_id = await tm.create(rows, cols, cwd=ws.project_path)
+        term_id = await tm.create(rows, cols, cwd=params.get("cwd") or storage.STARTUP_CWD)
         data = {"term_id": term_id, "rows": rows, "cols": cols}
         await ctx.broadcast_event("terminal_created", data)
         return data
@@ -180,22 +181,12 @@ class FileOps(WorkspaceRpc):
     namespace = "file"
 
     async def read(self, params: dict, ctx: RpcContext) -> dict:
-        """读取文件内容"""
-        wm = ctx.workspace_manager
-        if not wm:
-            return {"error": "workspace_manager not available"}
-        ws = wm.get(ctx.workspace_id)
-        if ws is None:
-            return {"error": "workspace not found"}
-
+        """读取文件内容（接受绝对路径）"""
         file_path = params.get("path", "")
         if not file_path:
             return {"error": "missing path"}
 
-        project = Path(ws.project_path).resolve()
-        target = (project / file_path).resolve()
-        if not str(target).startswith(str(project)):
-            return {"error": "path traversal not allowed"}
+        target = Path(file_path).resolve()
         if not target.is_file():
             return {"error": "file not found"}
 
@@ -206,7 +197,7 @@ class FileOps(WorkspaceRpc):
 
         ext = target.suffix.lower()
         language = LANG_MAP.get(ext, "plaintext")
-        return {"path": str(target.relative_to(project)), "content": content, "language": language}
+        return {"path": str(target), "content": content, "language": language}
 
 
 class ConfigOps(WorkspaceRpc):

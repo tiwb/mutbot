@@ -15,6 +15,9 @@ logger = logging.getLogger(__name__)
 # Default root for mutbot persistence (用户级，所有项目共享)
 MUTBOT_DIR = str(Path.home() / ".mutbot")
 
+# mutbot 启动时的工作目录（server.py 启动时设置，daemon 模式 fallback 到 home）
+STARTUP_CWD = str(Path.home())
+
 
 def _ensure_dir(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -76,14 +79,51 @@ def _session_ts_prefix(created_at: str) -> str:
     return dt_local.strftime("%Y%m%d_%H%M%S") + "-"
 
 
+def _find_workspace_file(workspace_id: str) -> Path | None:
+    """按 workspace_id 查找文件，兼容新旧格式。
+
+    新格式 ``{date}-{name}-{workspace_id}.json``，旧格式 ``{workspace_id}.json``，
+    glob ``*{workspace_id}.json`` 均可匹配。
+    """
+    ws_dir = _mutbot_path("workspaces")
+    if not ws_dir.is_dir():
+        return None
+    matches = list(ws_dir.glob(f"*{workspace_id}.json"))
+    return matches[0] if matches else None
+
+
+def _workspace_file_prefix(ws_data: dict) -> str:
+    """从 workspace 数据构建文件名前缀 ``YYYYMMDD-{name}-``。"""
+    created_at = ws_data.get("created_at", "")
+    name = ws_data.get("name", "workspace")
+    if created_at:
+        dt_utc = datetime.fromisoformat(created_at)
+        dt_local = dt_utc.astimezone()
+        date_str = dt_local.strftime("%Y%m%d")
+    else:
+        date_str = datetime.now().strftime("%Y%m%d")
+    return f"{date_str}-{name}-"
+
+
 def save_workspace(ws_data: dict) -> None:
-    path = _mutbot_path("workspaces", f"{ws_data['id']}.json")
-    save_json(path, ws_data)
+    ws_id = ws_data["id"]
+    prefix = _workspace_file_prefix(ws_data)
+    new_path = _mutbot_path("workspaces", f"{prefix}{ws_id}.json")
+    save_json(new_path, ws_data)
+    # 清理旧格式文件（避免同一 workspace 两个文件共存）
+    old_path = _mutbot_path("workspaces", f"{ws_id}.json")
+    if old_path.is_file() and old_path != new_path:
+        try:
+            old_path.unlink()
+        except OSError:
+            pass
 
 
 def load_workspace(workspace_id: str) -> dict | None:
-    """加载单个 workspace JSON 文件。"""
-    path = _mutbot_path("workspaces", f"{workspace_id}.json")
+    """加载单个 workspace JSON 文件（兼容新旧格式）。"""
+    path = _find_workspace_file(workspace_id)
+    if path is None:
+        return None
     return load_json(path)
 
 

@@ -63,10 +63,7 @@ function WorkspaceSearchDialog({
   const filtered = workspaces.filter((ws) => {
     if (!query) return true;
     const q = query.toLowerCase();
-    return (
-      ws.name.toLowerCase().includes(q) ||
-      ws.project_path.toLowerCase().includes(q)
-    );
+    return ws.name.toLowerCase().includes(q);
   });
 
   const handleMenuResult = (result: MenuExecResult) => {
@@ -110,9 +107,6 @@ function WorkspaceSearchDialog({
                   }}
                 >
                   <span className="ws-search-item-name">{ws.name}</span>
-                  <span className="ws-search-item-path">
-                    {shortenPath(ws.project_path)}
-                  </span>
                 </button>
               </li>
             ))
@@ -206,9 +200,6 @@ export default function WorkspaceSelector({
                     }}
                   >
                     <span className="ws-selector-item-name">{ws.name}</span>
-                    <span className="ws-selector-item-path">
-                      {shortenPath(ws.project_path)}
-                    </span>
                   </button>
                 </li>
               ))}
@@ -250,14 +241,4 @@ export default function WorkspaceSelector({
       )}
     </div>
   );
-}
-
-function shortenPath(path: string): string {
-  // 替换 home 目录为 ~
-  const home =
-    typeof navigator !== "undefined" &&
-    navigator.userAgent.includes("Windows")
-      ? path.replace(/^[A-Z]:\\Users\\[^\\]+/, "~")
-      : path.replace(/^\/home\/[^/]+/, "~").replace(/^\/Users\/[^/]+/, "~");
-  return home;
 }

@@ -8,7 +8,6 @@ export interface RpcClient {
 export interface Workspace {
   id: string;
   name: string;
-  project_path: string;
   sessions: string[];
   layout?: IJsonModel | null;
   created_at?: string;

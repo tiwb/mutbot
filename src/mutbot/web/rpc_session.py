@@ -9,6 +9,7 @@ import asyncio
 import logging
 from typing import Any
 
+from mutbot.runtime import storage
 from mutbot.session import SessionChannels
 from mutbot.web.rpc import SessionRpc, RpcContext
 from mutbot.web.serializers import session_dict, session_kind, session_type_display
@@ -110,7 +111,7 @@ class SessionOps(SessionRpc):
             config["rows"] = params["rows"]
         if params.get("cols"):
             config["cols"] = params["cols"]
-        config.setdefault("cwd", ws.project_path)
+        config.setdefault("cwd", storage.STARTUP_CWD)
 
         session = await sm.create(ctx.workspace_id, session_type=session_type, config=config)
         ws.sessions.append(session.id)

@@ -82,13 +82,12 @@ class FakeSessionManager:
 
 
 class FakeWorkspace:
-    def __init__(self, id="ws_test", name="Test", project_path="/tmp/test",
+    def __init__(self, id="ws_test", name="Test",
                  sessions=None, layout=None,
                  created_at="2026-01-01T00:00:00", updated_at="2026-01-01T00:00:00",
                  last_accessed_at="2026-01-01T00:00:00"):
         self.id = id
         self.name = name
-        self.project_path = project_path
         self.sessions = sessions or []
         self.layout = layout
         self.created_at = created_at
@@ -208,8 +207,9 @@ class TestSessionHandlers:
         resp = await _dispatch("session.create", {"type": "mutbot.session.TerminalSession"}, ctx)
         result = resp["result"]
         assert result["type"] == "mutbot.session.TerminalSession"
-        # cwd 由 routes.py 写入 config，terminal_id 由 on_create 在真实 SessionManager 中设置
-        assert result["config"]["cwd"] == "/tmp/test"
+        # cwd 由 STARTUP_CWD 提供
+        from mutbot.runtime import storage
+        assert result["config"]["cwd"] == storage.STARTUP_CWD
 
     @pytest.mark.asyncio
     async def test_session_list(self):

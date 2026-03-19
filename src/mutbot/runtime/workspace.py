@@ -17,7 +17,6 @@ logger = logging.getLogger(__name__)
 class Workspace:
     id: str
     name: str
-    project_path: str
     sessions: list[str] = field(default_factory=list)
     layout: dict | None = None
     created_at: str = ""
@@ -29,7 +28,6 @@ def _workspace_to_dict(ws: Workspace) -> dict:
     return {
         "id": ws.id,
         "name": ws.name,
-        "project_path": ws.project_path,
         "sessions": ws.sessions,
         "layout": ws.layout,
         "created_at": ws.created_at,
@@ -42,7 +40,6 @@ def _workspace_from_dict(d: dict) -> Workspace:
     return Workspace(
         id=d["id"],
         name=d.get("name", ""),
-        project_path=d.get("project_path", "."),
         sessions=d.get("sessions", []),
         layout=d.get("layout"),
         created_at=d.get("created_at", ""),
@@ -98,7 +95,7 @@ class WorkspaceManager:
         """Save registry to disk."""
         storage.save_workspace_registry(self._registry)
 
-    def create(self, name: str, project_path: str) -> Workspace:
+    def create(self, name: str) -> Workspace:
         slug = sanitize_workspace_name(name)
         # 确保名称唯一
         base = slug
@@ -111,7 +108,6 @@ class WorkspaceManager:
         ws = Workspace(
             id=uuid.uuid4().hex[:12],
             name=slug,
-            project_path=project_path,
             created_at=now,
             updated_at=now,
             last_accessed_at=now,

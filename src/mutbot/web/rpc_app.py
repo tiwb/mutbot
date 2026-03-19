@@ -5,8 +5,6 @@ Declaration 子类，自动发现注册到 AppRpc dispatcher。
 
 from __future__ import annotations
 
-from pathlib import Path
-
 from mutbot.web.rpc import AppRpc, RpcContext
 from mutbot.web.serializers import workspace_dict
 from mutbot.runtime.menu_impl import menu_registry
@@ -25,30 +23,16 @@ class WorkspaceOps(AppRpc):
         return [workspace_dict(ws) for ws in wm.list_all()]
 
     async def create(self, params: dict, ctx: RpcContext) -> dict:
-        """创建工作区。"""
+        """创建工作区（只需名称）。"""
         wm = ctx.workspace_manager
         if not wm:
             return {"error": "workspace_manager not available"}
 
-        project_path = params.get("project_path", "")
-        if not project_path:
-            return {"error": "missing project_path"}
+        name = params.get("name", "")
+        if not name:
+            return {"error": "missing name"}
 
-        p = Path(project_path)
-        if not p.is_absolute():
-            return {"error": "project_path must be absolute"}
-
-        create_dir = bool(params.get("create_dir", False))
-        if create_dir:
-            try:
-                p.mkdir(parents=True, exist_ok=True)
-            except OSError as e:
-                return {"error": f"cannot create directory: {e}"}
-        elif not p.is_dir():
-            return {"error": "project_path does not exist or is not a directory"}
-
-        name = params.get("name") or p.name
-        ws = wm.create(name, str(p))
+        ws = wm.create(name)
 
         # 无 LLM 配置时，创建默认 AgentSession 供配置向导使用
         _cfg = ctx.config
@@ -86,41 +70,6 @@ class WorkspaceOps(AppRpc):
         if not wm.remove(workspace_id):
             return {"error": "workspace not found"}
         return {"ok": True}
-
-
-class FilesystemOps(AppRpc):
-    """文件系统操作。"""
-    namespace = "filesystem"
-
-    async def browse(self, params: dict, ctx: RpcContext) -> dict:
-        """列出目录内容（仅子目录）。"""
-        path_str = params.get("path", "")
-        if not path_str:
-            target = Path.home()
-        else:
-            target = Path(path_str)
-
-        if not target.is_dir():
-            return {"error": f"not a directory: {path_str}"}
-
-        resolved = target.resolve()
-        parent = str(resolved.parent) if resolved.parent != resolved else None
-
-        entries: list[dict[str, str]] = []
-        try:
-            for entry in sorted(resolved.iterdir(), key=lambda e: e.name.lower()):
-                if entry.name.startswith('.'):
-                    continue
-                if entry.is_dir():
-                    entries.append({"name": entry.name, "type": "dir"})
-        except PermissionError:
-            return {"error": f"permission denied: {resolved}"}
-
-        return {
-            "path": str(resolved),
-            "parent": parent,
-            "entries": entries,
-        }
 
 
 class AppMenuOps(AppRpc):

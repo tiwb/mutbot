@@ -5,13 +5,11 @@
 - 工作区名称唯一性（重复名称自动加后缀）
 - get_by_name 查找
 - 注册表（registry）读写与 WorkspaceManager 注册表集成
-- App RPC handlers (workspace.list / workspace.create / filesystem.browse / workspace.remove)
+- App RPC handlers (workspace.list / workspace.create / workspace.remove)
 """
 
 from __future__ import annotations
 
-import asyncio
-from pathlib import Path
 from unittest import mock
 
 import pytest
@@ -19,7 +17,7 @@ import pytest
 from mutbot.runtime.workspace import WorkspaceManager, sanitize_workspace_name
 from mutbot.runtime import storage
 from mutbot.web.rpc import RpcContext
-from mutbot.web.rpc_app import WorkspaceOps, FilesystemOps
+from mutbot.web.rpc_app import WorkspaceOps
 
 
 # ---------------------------------------------------------------------------
@@ -74,23 +72,23 @@ class TestWorkspaceManagerNameUniqueness:
     def test_create_basic(self, tmp_path):
         with mock.patch.object(storage, "MUTBOT_DIR", str(tmp_path)):
             wm = WorkspaceManager()
-            ws = wm.create("My Project", "/tmp/test")
+            ws = wm.create("My Project")
             assert ws.name == "my-project"
 
     def test_create_duplicate_name(self, tmp_path):
         with mock.patch.object(storage, "MUTBOT_DIR", str(tmp_path)):
             wm = WorkspaceManager()
-            ws1 = wm.create("test", "/tmp/a")
-            ws2 = wm.create("test", "/tmp/b")
+            ws1 = wm.create("test")
+            ws2 = wm.create("test")
             assert ws1.name == "test"
             assert ws2.name == "test-1"
 
     def test_create_triple_duplicate(self, tmp_path):
         with mock.patch.object(storage, "MUTBOT_DIR", str(tmp_path)):
             wm = WorkspaceManager()
-            ws1 = wm.create("demo", "/tmp/a")
-            ws2 = wm.create("demo", "/tmp/b")
-            ws3 = wm.create("demo", "/tmp/c")
+            ws1 = wm.create("demo")
+            ws2 = wm.create("demo")
+            ws3 = wm.create("demo")
             assert ws1.name == "demo"
             assert ws2.name == "demo-1"
             assert ws3.name == "demo-2"
@@ -98,7 +96,7 @@ class TestWorkspaceManagerNameUniqueness:
     def test_create_sanitizes_name(self, tmp_path):
         with mock.patch.object(storage, "MUTBOT_DIR", str(tmp_path)):
             wm = WorkspaceManager()
-            ws = wm.create("My Cool Project!", "/tmp/test")
+            ws = wm.create("My Cool Project!")
             assert ws.name == "my-cool-project"
 
 
@@ -110,7 +108,7 @@ class TestWorkspaceManagerGetByName:
     def test_get_existing(self, tmp_path):
         with mock.patch.object(storage, "MUTBOT_DIR", str(tmp_path)):
             wm = WorkspaceManager()
-            ws = wm.create("test-project", "/tmp/test")
+            ws = wm.create("test-project")
             found = wm.get_by_name("test-project")
             assert found is not None
             assert found.id == ws.id
@@ -123,7 +121,7 @@ class TestWorkspaceManagerGetByName:
     def test_get_after_sanitize(self, tmp_path):
         with mock.patch.object(storage, "MUTBOT_DIR", str(tmp_path)):
             wm = WorkspaceManager()
-            ws = wm.create("My Project", "/tmp/test")
+            ws = wm.create("My Project")
             assert wm.get_by_name("my-project") is not None
             assert wm.get_by_name("My Project") is None  # 原名称不匹配
 
@@ -154,8 +152,8 @@ class TestAppWorkspaceList:
     async def test_with_workspaces(self, tmp_path):
         with mock.patch.object(storage, "MUTBOT_DIR", str(tmp_path)):
             wm = WorkspaceManager()
-            wm.create("test-a", "/tmp/a")
-            wm.create("test-b", "/tmp/b")
+            wm.create("test-a")
+            wm.create("test-b")
             ctx = _make_app_context(wm)
             ops = WorkspaceOps()
             result = await ops.list({}, ctx)
@@ -167,17 +165,15 @@ class TestAppWorkspaceList:
 @pytest.mark.asyncio
 class TestAppWorkspaceCreate:
     async def test_create_success(self, tmp_path):
-        wm = WorkspaceManager()
-        ctx = _make_app_context(wm)
-        ops = WorkspaceOps()
-        result = await ops.create(
-            {"project_path": str(tmp_path)}, ctx
-        )
-        assert "error" not in result
-        assert result["name"] == sanitize_workspace_name(tmp_path.name)
-        assert result["project_path"] == str(tmp_path)
+        with mock.patch.object(storage, "MUTBOT_DIR", str(tmp_path)):
+            wm = WorkspaceManager()
+            ctx = _make_app_context(wm)
+            ops = WorkspaceOps()
+            result = await ops.create({"name": "test-project"}, ctx)
+            assert "error" not in result
+            assert result["name"] == "test-project"
 
-    async def test_missing_project_path(self, tmp_path):
+    async def test_missing_name(self, tmp_path):
         with mock.patch.object(storage, "MUTBOT_DIR", str(tmp_path)):
             wm = WorkspaceManager()
             ctx = _make_app_context(wm)
@@ -185,96 +181,13 @@ class TestAppWorkspaceCreate:
             result = await ops.create({}, ctx)
             assert "error" in result
 
-    async def test_relative_path_rejected(self, tmp_path):
-        wm = WorkspaceManager()
-        ctx = _make_app_context(wm)
-        ops = WorkspaceOps()
-        result = await ops.create(
-            {"project_path": "relative/path"}, ctx
-        )
-        assert "error" in result
-
-    async def test_nonexistent_path_rejected(self):
-        wm = WorkspaceManager()
-        ctx = _make_app_context(wm)
-        ops = WorkspaceOps()
-        result = await ops.create(
-            {"project_path": "/nonexistent/path/12345"}, ctx
-        )
-        assert "error" in result
-
     async def test_create_with_custom_name(self, tmp_path):
-        wm = WorkspaceManager()
-        ctx = _make_app_context(wm)
-        ops = WorkspaceOps()
-        result = await ops.create(
-            {"project_path": str(tmp_path), "name": "Custom Name"}, ctx
-        )
-        assert result["name"] == "custom-name"
-
-
-@pytest.mark.asyncio
-class TestFilesystemBrowse:
-    async def test_home_directory(self):
-        ctx = _make_app_context()
-        ops = FilesystemOps()
-        result = await ops.browse({}, ctx)
-        assert "error" not in result
-        assert result["path"] == str(Path.home())
-        assert isinstance(result["entries"], list)
-
-    async def test_specific_directory(self, tmp_path):
-        (tmp_path / "sub-a").mkdir()
-        (tmp_path / "sub-b").mkdir()
-        (tmp_path / "file.txt").write_text("hello")
-
-        ctx = _make_app_context()
-        ops = FilesystemOps()
-        result = await ops.browse({"path": str(tmp_path)}, ctx)
-        assert result["path"] == str(tmp_path.resolve())
-        # 只返回目录，不返回文件
-        names = [e["name"] for e in result["entries"]]
-        assert "sub-a" in names
-        assert "sub-b" in names
-        assert "file.txt" not in names
-
-    async def test_hidden_dirs_excluded(self, tmp_path):
-        (tmp_path / ".hidden").mkdir()
-        (tmp_path / "visible").mkdir()
-
-        ctx = _make_app_context()
-        ops = FilesystemOps()
-        result = await ops.browse({"path": str(tmp_path)}, ctx)
-        names = [e["name"] for e in result["entries"]]
-        assert "visible" in names
-        assert ".hidden" not in names
-
-    async def test_parent_field(self, tmp_path):
-        sub = tmp_path / "child"
-        sub.mkdir()
-        ctx = _make_app_context()
-        ops = FilesystemOps()
-        result = await ops.browse({"path": str(sub)}, ctx)
-        assert result["parent"] == str(tmp_path.resolve())
-
-    async def test_nonexistent_directory(self):
-        ctx = _make_app_context()
-        ops = FilesystemOps()
-        result = await ops.browse(
-            {"path": "/nonexistent/path/12345"}, ctx
-        )
-        assert "error" in result
-
-    async def test_entries_sorted(self, tmp_path):
-        (tmp_path / "zebra").mkdir()
-        (tmp_path / "alpha").mkdir()
-        (tmp_path / "Middle").mkdir()
-
-        ctx = _make_app_context()
-        ops = FilesystemOps()
-        result = await ops.browse({"path": str(tmp_path)}, ctx)
-        names = [e["name"] for e in result["entries"]]
-        assert names == sorted(names, key=str.lower)
+        with mock.patch.object(storage, "MUTBOT_DIR", str(tmp_path)):
+            wm = WorkspaceManager()
+            ctx = _make_app_context(wm)
+            ops = WorkspaceOps()
+            result = await ops.create({"name": "Custom Name"}, ctx)
+            assert result["name"] == "custom-name"
 
 
 # ---------------------------------------------------------------------------
@@ -328,7 +241,7 @@ class TestWorkspaceManagerRegistry:
         """create() 后 ID 出现在注册表"""
         with mock.patch.object(storage, "MUTBOT_DIR", str(tmp_path)):
             wm = WorkspaceManager()
-            ws = wm.create("test", "/tmp/test")
+            ws = wm.create("test")
             registry = storage.load_workspace_registry()
             assert ws.id in registry
 
@@ -336,8 +249,8 @@ class TestWorkspaceManagerRegistry:
         """多次 create()，最新的在注册表最前面"""
         with mock.patch.object(storage, "MUTBOT_DIR", str(tmp_path)):
             wm = WorkspaceManager()
-            ws1 = wm.create("first", "/tmp/a")
-            ws2 = wm.create("second", "/tmp/b")
+            ws1 = wm.create("first")
+            ws2 = wm.create("second")
             registry = storage.load_workspace_registry()
             assert registry[0] == ws2.id
             assert registry[1] == ws1.id
@@ -346,16 +259,18 @@ class TestWorkspaceManagerRegistry:
         """remove() 后 ID 从注册表和内存消失，但 JSON 文件保留"""
         with mock.patch.object(storage, "MUTBOT_DIR", str(tmp_path)):
             wm = WorkspaceManager()
-            ws = wm.create("test", "/tmp/test")
+            ws = wm.create("test")
             ws_id = ws.id
-            json_path = tmp_path / "workspaces" / f"{ws_id}.json"
-            assert json_path.exists()
+            # 新格式文件名：{date}-{name}-{id}.json
+            ws_dir = tmp_path / "workspaces"
+            json_files = list(ws_dir.glob(f"*{ws_id}.json"))
+            assert len(json_files) == 1
 
             result = wm.remove(ws_id)
             assert result is True
             assert wm.get(ws_id) is None
             assert ws_id not in storage.load_workspace_registry()
-            assert json_path.exists()  # 文件保留
+            assert json_files[0].exists()  # 文件保留
 
     def test_remove_nonexistent(self, tmp_path):
         """remove() 不存在的 ID 返回 False"""
@@ -368,12 +283,12 @@ class TestWorkspaceManagerRegistry:
         with mock.patch.object(storage, "MUTBOT_DIR", str(tmp_path)):
             # 创建两个 workspace
             wm1 = WorkspaceManager()
-            ws1 = wm1.create("one", "/tmp/a")
-            ws2 = wm1.create("two", "/tmp/b")
+            ws1 = wm1.create("one")
+            ws2 = wm1.create("two")
 
             # 手动往 workspaces 目录写一个不在注册表中的文件
             extra_data = {
-                "id": "extra999", "name": "extra", "project_path": "/tmp/x",
+                "id": "extra999", "name": "extra",
                 "sessions": [], "layout": None,
                 "created_at": "", "updated_at": "", "last_accessed_at": "",
             }
@@ -398,7 +313,7 @@ class TestWorkspaceManagerRegistry:
         with mock.patch.object(storage, "MUTBOT_DIR", str(tmp_path)):
             # 创建一个 workspace
             wm1 = WorkspaceManager()
-            ws = wm1.create("real", "/tmp/a")
+            ws = wm1.create("real")
 
             # 手动往注册表中插入一个无效 ID
             registry = storage.load_workspace_registry()
@@ -425,7 +340,7 @@ class TestAppWorkspaceRemove:
     async def test_remove_success(self, tmp_path):
         with mock.patch.object(storage, "MUTBOT_DIR", str(tmp_path)):
             wm = WorkspaceManager()
-            ws = wm.create("test", "/tmp/test")
+            ws = wm.create("test")
             ctx = _make_app_context(wm)
             ops = WorkspaceOps()
             result = await ops.remove({"workspace_id": ws.id}, ctx)

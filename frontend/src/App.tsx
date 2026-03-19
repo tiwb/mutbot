@@ -1109,7 +1109,6 @@ export default function App() {
         <NewWorkspacePage
           appRpc={appRpc}
           initialName={newWorkspaceName}
-          cwd={cwd}
           onCreated={(ws) => {
             setNewWorkspaceName(null);
             setWorkspaces((prev) => [...prev, ws]);
