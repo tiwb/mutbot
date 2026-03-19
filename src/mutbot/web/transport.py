@@ -224,6 +224,7 @@ class Client:
 
         # 回调
         self._on_expire: list[Any] = []  # callable[Client] → None
+        self._on_disconnect: list[Any] = []  # callable[Client] → None
 
         # ACK 批量触发计数
         self._recv_since_last_ack: int = 0
@@ -335,6 +336,12 @@ class Client:
             # 主动关闭 WebSocket，让前端收到 onclose 触发重连
             asyncio.ensure_future(self._close_ws(ws))
         self._cancel_timers()
+        # 触发断连回调
+        for cb in self._on_disconnect:
+            try:
+                cb(self)
+            except Exception:
+                logger.exception("disconnect callback error")
         # 启动 buffering 超时
         self._expire_handle = self._get_loop().call_later(
             self.BUFFER_TIMEOUT, self._expire,
@@ -389,6 +396,10 @@ class Client:
     def on_expire(self, callback: Any) -> None:
         """注册过期回调。"""
         self._on_expire.append(callback)
+
+    def on_disconnect(self, callback: Any) -> None:
+        """注册断连回调（WebSocket 断开时触发，早于过期）。"""
+        self._on_disconnect.append(callback)
 
     # -- 内部：send worker --------------------------------------------------
 

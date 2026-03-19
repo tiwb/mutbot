@@ -70,6 +70,11 @@ class RpcContext:
         """广播事件到当前 workspace 所有客户端（含发送者）"""
         await self.broadcast(make_event(event, data))
 
+    def get_sender_client(self) -> Any:
+        """获取发送者的 Client 对象（用于 client-bound UIContext）。"""
+        from mutbot.web.routes import _find_client_by_ws
+        return _find_client_by_ws(self.sender_ws)
+
 
 class RpcDispatcher:
     """按 method 名分发 RPC 请求到注册的 handler。

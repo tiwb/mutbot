@@ -239,7 +239,12 @@ class RelayCallbackView(View):
         return html_response(_RELAY_CALLBACK_HTML)
 
     async def post(self, request: Request) -> Response:
-        """接收 assertion JWT，验证后签发 session。"""
+        """接收 assertion JWT，验证后签发 session。
+
+        支持两种模式：
+        - 正常模式：auth 已配置，从 config 读取 relay URL
+        - Setup 模式：auth 未配置，从临时 nonce 状态获取 relay URL 并保存配置
+        """
         try:
             body = await request.json()
             assertion = body.get("assertion", "")
@@ -249,12 +254,31 @@ class RelayCallbackView(View):
         if not assertion:
             return json_response({"error": "missing assertion"}, status=400)
 
-        # 获取中转站公钥
-        relay = _get_relay_config()
-        if not relay:
-            return json_response({"error": "relay not configured"}, status=400)
+        # 尝试从 assertion 中提取 nonce（未验签，仅用于查找 relay URL）
+        import jwt as _jwt
+        try:
+            unverified = _jwt.decode(assertion, options={"verify_signature": False})
+        except Exception:
+            return json_response({"error": "invalid assertion format"}, status=400)
 
-        relay_url = relay["url"].rstrip("/")
+        nonce = unverified.get("nonce", "")
+
+        # 确定 relay URL（正常模式 vs setup 模式）
+        relay = _get_relay_config()
+        setup_info = None
+
+        if relay:
+            relay_url = relay["url"].rstrip("/")
+        else:
+            # Setup 模式：从临时 nonce 状态查找
+            from mutbot.auth.setup import pop_setup_nonce
+            setup_info = pop_setup_nonce(nonce)
+            if setup_info:
+                relay_url = setup_info["relay_url"].rstrip("/")
+            else:
+                return json_response({"error": "relay not configured"}, status=400)
+
+        # 获取中转站公钥
         public_key = await _fetch_relay_public_key(relay_url)
         if not public_key:
             return json_response({"error": "failed to fetch relay public key"}, status=500)
@@ -265,7 +289,6 @@ class RelayCallbackView(View):
             return json_response({"error": "invalid assertion"}, status=401)
 
         # 验证 nonce
-        nonce = payload.get("nonce", "")
         if not _verify_nonce(nonce):
             return json_response({"error": "invalid or expired nonce"}, status=401)
 
@@ -276,7 +299,13 @@ class RelayCallbackView(View):
             return json_response({"error": "audience mismatch"}, status=401)
 
         sub = payload.get("sub", "")
-        # 白名单检查
+
+        # Setup 模式：保存 auth 配置
+        if setup_info:
+            from mutbot.auth.setup import save_auth_config
+            save_auth_config(relay_url, setup_info["access_mode"], sub)
+
+        # 白名单检查（setup 模式下刚保存的配置已生效）
         allowed = _get_allowed_users()
         if allowed is not None and sub not in allowed:
             return json_response({"error": f"user {sub} not allowed"}, status=403)
@@ -335,19 +364,28 @@ _RELAY_CALLBACK_HTML = """<!DOCTYPE html>
   body { font-family: system-ui, -apple-system, sans-serif; display: flex; justify-content: center;
          align-items: center; min-height: 100vh; margin: 0; background: #1f1f1f; color: #858585; }
   .error { color: #f14c4c; font-size: 14px; }
+  a { color: #569cd6; text-decoration: none; margin-top: 12px; display: inline-block; }
+  a:hover { text-decoration: underline; }
+  .container { text-align: center; }
 </style>
 </head>
 <body>
+<div class="container">
 <div id="msg">Signing in...</div>
+<div id="back" style="display:none"><a href="/">&#8592; Back to MutBot</a></div>
+</div>
 <script>
 (async () => {
   const hash = location.hash.substring(1);
   const params = new URLSearchParams(hash);
   const assertion = params.get('assertion');
+  const basePath = location.pathname.replace(/\\/auth\\/relay-callback$/, '') || '/';
   if (!assertion) {
     const el = document.getElementById('msg');
     el.className = 'error';
     el.textContent = 'Authentication failed: missing assertion';
+    document.getElementById('back').style.display = '';
+    document.querySelector('#back a').href = basePath;
     return;
   }
   try {
@@ -357,18 +395,21 @@ _RELAY_CALLBACK_HTML = """<!DOCTYPE html>
       body: JSON.stringify({ assertion }),
     });
     if (resp.ok) {
-      const basePath = location.pathname.replace(/\\/auth\\/relay-callback$/, '') || '/';
       location.href = basePath;
     } else {
       const data = await resp.json();
       const el = document.getElementById('msg');
       el.className = 'error';
       el.textContent = 'Authentication failed: ' + (data.error || resp.statusText);
+      document.getElementById('back').style.display = '';
+      document.querySelector('#back a').href = basePath;
     }
   } catch (e) {
     const el = document.getElementById('msg');
     el.className = 'error';
     el.textContent = 'Authentication failed: ' + e.message;
+    document.getElementById('back').style.display = '';
+    document.querySelector('#back a').href = basePath;
   }
 })();
 </script>
@@ -427,6 +468,10 @@ class ProvidersView(View):
     async def get(self, request: Request) -> Response:
         auth = _get_auth_config()
         if not auth:
+            return json_response({"providers": [], "auth_enabled": False})
+
+        # auth 存在但无登录方式（如仅有 relay_service）→ 视为未启用
+        if not auth.get("relay") and not auth.get("providers"):
             return json_response({"providers": [], "auth_enabled": False})
 
         options: list[dict[str, str]] = []

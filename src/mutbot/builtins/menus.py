@@ -439,6 +439,76 @@ class LogoutMenu(Menu):
             return False
         return bool(cfg.get("auth"))
 
+
+class AuthSetupMenu(Menu):
+    """全局菜单 — Auth 配置向导（仅在未配置 auth 时显示）"""
+    display_name = "Auth Setup"
+    display_icon = "shield"
+    display_category = "SessionList/Header"
+    display_order = "0tools:1"
+
+    @classmethod
+    def check_visible(cls, context: dict) -> bool | None:
+        """当没有可用的登录方式时显示（无 relay 且无 providers）"""
+        from mutbot.web import server as _server_mod
+        cfg = _server_mod.config
+        if cfg is None:
+            return True
+        auth = cfg.get("auth")
+        if not auth:
+            return True
+        # auth 存在但可能只有 relay_service（服务端配置），没有客户端登录方式
+        return not auth.get("relay") and not auth.get("providers")
+
+    async def execute(self, params: dict, context: RpcContext) -> MenuResult:
+        import asyncio
+        from mutbot.auth.setup import run_auth_setup_wizard
+
+        client = context.get_sender_client()
+        if client is None:
+            return MenuResult(action="error", data={"message": "client not found"})
+
+        context_id = f"auth-setup-{client.client_id}"
+
+        # 推算 self_origin（用于 OAuth 回调 URL）
+        # 复用 routes 中构造 RpcContext 时的 workspace 信息
+        # 简单方案：从 config 和常见默认值推算
+        self_origin = _get_self_origin(context)
+
+        asyncio.ensure_future(run_auth_setup_wizard(client, context_id, self_origin))
+        return MenuResult(action="workspace_ui", data={"context_id": context_id})
+
+
+def _get_self_origin(ctx: RpcContext) -> str:
+    """推算当前服务器的外部访问地址。"""
+    # 优先从 config 获取
+    config = ctx.config
+    port = 8741
+    host = "127.0.0.1"
+
+    if config:
+        listen = config.get("listen", default=[])
+        if isinstance(listen, list) and listen:
+            addr = str(listen[0])
+        elif listen:
+            addr = str(listen)
+        else:
+            addr = ""
+        if addr:
+            if ":" in addr:
+                host, port_str = addr.rsplit(":", 1)
+                port = int(port_str)
+            elif addr.isdigit():
+                port = int(addr)
+        base_path = config.get("base_path", default="") or ""
+    else:
+        base_path = ""
+
+    if host == "0.0.0.0":
+        host = "127.0.0.1"
+
+    return f"http://{host}:{port}{base_path}"
+
 # ---------------------------------------------------------------------------
 # 内置菜单：AgentPanel 标题栏菜单 (AgentPanel/Header)
 # ---------------------------------------------------------------------------

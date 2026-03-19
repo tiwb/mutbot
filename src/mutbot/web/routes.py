@@ -406,13 +406,28 @@ class WorkspaceWebSocket(WebSocketView):
 
                         ch = raw.get("ch", 0)
                         if ch == 0:
-                            # Workspace 级消息 → RPC dispatch
-                            context._post_send = None
-                            response = await workspace_dispatcher.dispatch(raw, context)
-                            if response is not None:
-                                client.enqueue("json", response)
-                            if context._post_send is not None:  # set by handler
-                                await context._post_send()  # pyright: ignore[reportGeneralTypeIssues]
+                            # Workspace 级消息
+                            if msg_type == "ui_event":
+                                # Workspace 级 UI 事件 → deliver_event
+                                from mutbot.ui.context_impl import deliver_event
+                                from mutbot.ui.events import UIEvent
+                                context_id = raw.get("context_id", "")
+                                if context_id:
+                                    event = UIEvent(
+                                        type=raw.get("event_type", ""),
+                                        data=raw.get("data", {}),
+                                        source=raw.get("source"),
+                                        context_id=context_id,
+                                    )
+                                    deliver_event(context_id, event)
+                            else:
+                                # RPC dispatch
+                                context._post_send = None
+                                response = await workspace_dispatcher.dispatch(raw, context)
+                                if response is not None:
+                                    client.enqueue("json", response)
+                                if context._post_send is not None:  # set by handler
+                                    await context._post_send()  # pyright: ignore[reportGeneralTypeIssues]
                         else:
                             # Channel 消息 → session.on_message
                             channel = cm.get_channel(ch)

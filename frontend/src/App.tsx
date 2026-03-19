@@ -36,6 +36,7 @@ import type { Workspace, Session } from "./lib/types";
 import MobileConnectDialog from "./components/MobileConnectDialog";
 import LoginPage from "./components/LoginPage";
 import { ConnectionStatusBar, type ConnectionPhase } from "./components/ConnectionStatusBar";
+import { ViewRenderer, type ViewSchema, type UIEventPayload } from "./components/ToolCallCard";
 
 // ---------- Helpers ----------
 
@@ -156,6 +157,9 @@ export default function App() {
     { url: string; via: string }[] | null
   >(null);
   const sidebarResizing = useRef(false);
+
+  // Workspace-level UI state (for backend-driven modals like Auth Setup)
+  const [workspaceUI, setWorkspaceUI] = useState<{ contextId: string; view: ViewSchema } | null>(null);
 
   // Toast notification state
   const [toast, setToast] = useState<string | null>(null);
@@ -404,6 +408,31 @@ export default function App() {
       wsRpc.on("server_restarting", () => {
         showToast("Server is restarting...", 0);
       }),
+
+      // Workspace-level UI events (backend-driven modals)
+      wsRpc.on("ui_view", (data) => {
+        const contextId = data.context_id as string;
+        const view = data.view as ViewSchema;
+        if (contextId && view) {
+          setWorkspaceUI({ contextId, view });
+        }
+      }),
+      wsRpc.on("ui_close", (data) => {
+        const contextId = data.context_id as string;
+        setWorkspaceUI((prev) => {
+          if (prev && prev.contextId === contextId) {
+            // Handle redirect or reload actions
+            const redirect = data.redirect as string | undefined;
+            if (redirect) {
+              setTimeout(() => { window.location.href = redirect; }, 100);
+            } else if (data.action === "reload") {
+              setTimeout(() => { window.location.reload(); }, 500);
+            }
+            return null;
+          }
+          return prev;
+        });
+      }),
     ];
 
     return () => {
@@ -532,6 +561,25 @@ export default function App() {
       }
     },
     [],
+  );
+
+  // Workspace-level UI event handler
+  const handleWorkspaceUIEvent = useCallback(
+    (event: UIEventPayload) => {
+      if (!workspaceUI || !rpc) return;
+      rpc.sendToChannel(0, {
+        type: "ui_event",
+        context_id: workspaceUI.contextId,
+        event_type: event.type,
+        data: event.data,
+        source: event.source,
+      });
+      // Cancel closes the modal immediately on the frontend side
+      if (event.type === "cancel") {
+        setWorkspaceUI(null);
+      }
+    },
+    [workspaceUI, rpc],
   );
 
   // ------------------------------------------------------------------
@@ -1293,6 +1341,13 @@ export default function App() {
           addresses={mobileConnectAddresses}
           onClose={() => setMobileConnectAddresses(null)}
         />
+      )}
+      {workspaceUI && (
+        <div className="workspace-ui-overlay">
+          <div className="workspace-ui-modal">
+            <ViewRenderer view={workspaceUI.view} mode="connected" onEvent={handleWorkspaceUIEvent} />
+          </div>
+        </div>
       )}
     </div>
   );

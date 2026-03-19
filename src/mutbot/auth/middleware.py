@@ -98,6 +98,10 @@ async def _mutbot_before_route(self: Server, scope: dict[str, Any], path: str) -
     if not auth_config:
         return None
 
+    # auth 存在但无登录方式（如仅有 relay_service）→ 放行
+    if not auth_config.get("relay") and not auth_config.get("providers"):
+        return None
+
     # 白名单路径 → 放行
     if _is_public_path(path):
         return None

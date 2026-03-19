@@ -107,7 +107,7 @@ async def wait_event(
 async def show(self: UIContext, view: dict) -> dict | None:
     self.set_view(view)
     event = await self.wait_event()
-    if event.type == "cancel":
+    if event.type in ("cancel", "disconnect"):
         return None
     return event.data
 
