@@ -103,6 +103,11 @@ export default function App() {
   const layoutRef = useRef<any>(null);
   const [, forceUpdate] = useState(0);
 
+  // Update browser tab title with workspace name
+  useEffect(() => {
+    document.title = workspace ? `${workspace.name} - MutBot` : "MutBot";
+  }, [workspace?.name]);
+
   // Auth state: null = checking, true = authenticated or no auth, false = need login
   const [authReady, setAuthReady] = useState<boolean | null>(null);
 
