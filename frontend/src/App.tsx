@@ -315,6 +315,14 @@ export default function App() {
   // Initialize WorkspaceRpc when workspace is available
   useEffect(() => {
     if (!workspace) return;
+    // 切换工作区时立即清空旧状态，避免显示上一个工作区的内容
+    setSessions([]);
+    if (!workspace.layout) {
+      modelRef.current = createModel();
+      hasOpenTabsRef.current = false;
+      setHasOpenTabs(false);
+      forceUpdate((n) => n + 1);
+    }
     hadConnectionRef.current = false;
     const wsRpc = new WorkspaceRpc(workspace.id, {
       onOpen: () => {
