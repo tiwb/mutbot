@@ -40,6 +40,37 @@ function execCopy(text: string) {
   document.body.removeChild(ta);
 }
 
+/**
+ * Get cleaned selection text from terminal buffer.
+ * - Trims trailing spaces on hard-wrapped lines
+ * - Joins soft-wrapped lines (isWrapped) without inserting newlines
+ */
+function getCleanSelection(term: Terminal): string {
+  const sel = term.getSelectionPosition();
+  if (!sel) return "";
+  const buf = term.buffer.active;
+  const parts: string[] = [];
+  for (let y = sel.start.y; y <= sel.end.y; y++) {
+    const line = buf.getLine(y);
+    if (!line) continue;
+    const startCol = y === sel.start.y ? sel.start.x : 0;
+    const endCol = y === sel.end.y ? sel.end.x : undefined;
+    // translateToString(trimRight, startCol, endCol)
+    let text = line.translateToString(false, startCol, endCol);
+    // Check if next line is a soft-wrap continuation
+    const nextLine = y < sel.end.y ? buf.getLine(y + 1) : null;
+    const nextIsWrapped = nextLine?.isWrapped ?? false;
+    if (!nextIsWrapped) {
+      text = text.trimEnd();
+    }
+    parts.push(text);
+    if (y < sel.end.y && !nextIsWrapped) {
+      parts.push("\n");
+    }
+  }
+  return parts.join("");
+}
+
 const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPanel({ sessionId, terminalId: initialId, workspaceId, nodeId, rpc, onTerminalCreated, onTerminalExited }, ref) {
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
@@ -427,7 +458,7 @@ const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPa
       if (e.type !== "keydown") return true;
       const mod = e.ctrlKey || e.metaKey;
       if (mod && e.key === "c") {
-        const sel = term.getSelection();
+        const sel = getCleanSelection(term);
         if (sel) {
           copyToClipboard(sel);
           term.clearSelection();
@@ -680,7 +711,7 @@ const TerminalPanel = forwardRef<TerminalPanelHandle, Props>(function TerminalPa
   const copyTermSelection = useCallback(() => {
     const term = termRef.current;
     if (!term) return;
-    const selection = term.getSelection();
+    const selection = getCleanSelection(term);
     if (!selection) return;
     if (navigator.clipboard?.writeText) {
       navigator.clipboard.writeText(selection).catch(() => execCopy(selection));
