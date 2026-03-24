@@ -308,6 +308,7 @@ class TerminalManager:
         buf.clear()
         feed_size = len(data)
         was_synchronized = term.screen.synchronized
+        prev_cx, prev_cy = term.screen.cursor.x, term.screen.cursor.y
         try:
             text = term.decoder.decode(data)
             if text:
@@ -357,6 +358,23 @@ class TerminalManager:
                 self._do_render_term(term_id)
             else:
                 self._schedule_render()
+        elif has_live and not term.screen.dirty:
+            # dirty 为空但光标移动了 → 发送轻量光标帧
+            cur = term.screen.cursor
+            if (cur.x, cur.y) != (prev_cx, prev_cy):
+                self._emit_cursor_frame(term_id, term)
+
+    def _emit_cursor_frame(self, term_id: str, term: "TerminalProcess") -> None:
+        """生成并推送轻量光标帧（仅含光标定位，不含行内容）。"""
+        screen = term.screen
+        if screen is None:
+            return
+        cx, cy = screen.cursor.x, screen.cursor.y
+        frame = f"\x1b[?25l\x1b[{cy + 1};{cx + 1}H\x1b[?25h".encode("utf-8")
+        for view in term.views.values():
+            if view.scroll_offset != 0:
+                continue
+            self._on_frame(term_id, view.id, frame)
 
     def _schedule_render(self) -> None:
         """调度渲染定时器（如果尚未调度）。"""
@@ -435,6 +453,9 @@ class TerminalManager:
         if term.screen.dirty:
             self._render_pending[term_id] = True
             self._do_render_term(term_id)
+        else:
+            # dirty 为空但光标可能已移动（BSU 期间累积的光标变化），发送光标帧兜底
+            self._emit_cursor_frame(term_id, term)
 
     # ------------------------------------------------------------------
     # I/O
