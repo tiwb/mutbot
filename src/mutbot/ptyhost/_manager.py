@@ -32,6 +32,109 @@ IS_WINDOWS = sys.platform == "win32"
 # Strip OSC 0/1/2 (window/icon title) sequences
 _OSC_TITLE_RE = re.compile(rb"\x1b\][012];[^\x07\x1b]*(?:\x07|\x1b\\)")
 
+# ---------------------------------------------------------------------------
+# pyte CSI 兼容层 — 绕过 pyte 0.8.2 对现代终端序列的解析缺陷
+# ---------------------------------------------------------------------------
+# pyte 0.8.2 是 PyPI 最新版，项目维护不活跃（已知 PR 挂 1.5 年未合并）。
+# 长远看需要完全重写终端状态机（pyte 为 LGPL v3，vendor 有许可约束）。
+# 本次采用最小侵入的预处理方案绕过以下两个缺陷：
+#
+# 缺陷 1：CSI `>` 前缀被静默忽略
+#   pyte 的 _parser_fsm 遇到 `>` 时执行 `pass`（本意跳过 Secondary DA），
+#   但后续参数仍被正常解析并分派。导致 CSI > Ps m（如 modifyOtherKeys）
+#   被误读为 SGR Ps m。例如 Claude Code 启动时发送 CSI > 4 ; 2 m
+#   （启用 modifyOtherKeys），pyte 误读为 SGR 4（underline ON），
+#   cursor.attrs.underscore 被卡死为 True，cls 清屏也无法恢复。
+#
+# 缺陷 2：冒号子参数（colon sub-parameters）不支持
+#   CSI 解析器不识别 `:` 作为 ITU T.416 子参数分隔符，遇到 `:` 时
+#   直接中断 CSI 解析。导致 \x1b[4:0m（underline OFF）无法被处理，
+#   冒号后内容被当作纯文本输出（\x1b[4:3m → "3m" 显示为可见文字）。
+#   参考：https://github.com/selectel/pyte/issues/179
+#         https://github.com/selectel/pyte/pull/180
+# ---------------------------------------------------------------------------
+
+# 匹配需要剥离的 CSI > 私有序列（pyte 会误解析 > 后的参数）
+# 覆盖 CSI > Ps ; Ps m/n/p 等所有 final characters
+_CSI_GT_RE = re.compile(r"\x1b\[>[0-9;]*[a-zA-Z]")
+
+# 匹配 SGR 序列：ESC[ + 数字/分号/冒号 + m
+_SGR_COLON_RE = re.compile(r"\x1b\[([0-9:;]*)m")
+
+
+def _normalize_sgr_group(group: str) -> str | None:
+    """归一化单个 SGR 参数组（`;` 分隔的一段）中的冒号子参数。
+
+    返回归一化后的参数字符串，或 None 表示该组应被删除。
+    """
+    parts = group.split(":")
+    main = parts[0]
+    subs = parts[1:]
+
+    # 4:N — underline 样式
+    if main == "4":
+        if subs and subs[0] == "0":
+            return "24"  # underline off
+        return "4"       # underline on（pyte 不支持样式区分）
+
+    # 38:2/48:2 — RGB 颜色（前景/背景）
+    # 标准: 38:2:CS:R:G:B（含 colorspace），实际常见: 38:2:R:G:B（省略 CS）
+    if main in ("38", "48") and len(subs) >= 1:
+        if subs[0] == "2":
+            # RGB — 按子参数个数判断是否含 colorspace ID
+            rgb = subs[1:]  # 去掉 "2"
+            if len(rgb) >= 4:
+                # 有 CS: 38:2:CS:R:G:B → 取后 3 个
+                r, g, b = rgb[1], rgb[2], rgb[3]
+            elif len(rgb) == 3:
+                # 无 CS: 38:2:R:G:B
+                r, g, b = rgb[0], rgb[1], rgb[2]
+            else:
+                return main  # 格式异常，保留主参数
+            return f"{main};2;{r};{g};{b}"
+        elif subs[0] == "5" and len(subs) >= 2:
+            # 256 色: 38:5:N → 38;5;N
+            return f"{main};5;{subs[1]}"
+        return main  # 未知子模式，保留主参数
+
+    # 58:... — underline color，pyte 无对应属性，整组删除
+    if main == "58":
+        return None
+
+    # 其他含冒号的参数：保留主参数，丢弃子参数
+    return main
+
+
+def _normalize_sgr_subparams(text: str) -> str:
+    """预处理终端输出，绕过 pyte 对现代 CSI 序列的解析缺陷。
+
+    在 pyte stream.feed() 之前调用，处理两类问题：
+    1. 剥离 CSI > 私有序列（pyte 会忽略 > 但误解析后续参数）
+    2. 归一化 SGR 冒号子参数（pyte 不支持 ITU T.416 子参数分隔符）
+    """
+    # 第一步：剥离 CSI > 序列（如 modifyOtherKeys: CSI > 4 ; 2 m）
+    text = _CSI_GT_RE.sub("", text)
+
+    # 第二步：归一化 SGR 冒号子参数
+    def replace_sgr(m: re.Match) -> str:
+        params_str = m.group(1)
+        if ":" not in params_str:
+            return m.group(0)  # 无冒号，原样返回
+
+        groups = params_str.split(";")
+        normalized: list[str] = []
+        for g in groups:
+            if ":" in g:
+                result = _normalize_sgr_group(g)
+                if result is not None:
+                    normalized.append(result)
+            else:
+                normalized.append(g)
+
+        return f"\x1b[{';'.join(normalized)}m"
+
+    return _SGR_COLON_RE.sub(replace_sgr, text)
+
 # 回调类型：(term_id, view_id, ansi_frame)
 FrameCallback = Callable[[str, str, bytes], None]
 ExitCallback = Callable[[str, int | None], None]  # (term_id, exit_code)
@@ -312,6 +415,7 @@ class TerminalManager:
         try:
             text = term.decoder.decode(data)
             if text:
+                text = _normalize_sgr_subparams(text)
                 term.stream.feed(text)
         except RuntimeError:
             logger.warning("pyte stream corrupted for %s, rebuilding", term_id)
