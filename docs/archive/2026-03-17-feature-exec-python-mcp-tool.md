@@ -1,6 +1,6 @@
 # 跨进程 Python 执行 MCP 工具
 
-**状态**：✅ 已完成（Ptyhost/Supervisor 待完全重启后验证）
+**状态**：✅ 已完成
 **日期**：2026-03-17
 **类型**：功能设计
 
@@ -79,20 +79,20 @@ mutbot 有三个进程：
 - [x] **Task 3**: Ptyhost 进程 — WebSocket eval 命令
   - [x] `_client.py` 新增 `eval_code(code)` 方法
   - [x] `_app.py` 命令分发新增 `elif action == "eval"` 分支
-  - [ ] 待验证：需要完全重启 mutbot（ptyhost 是独立进程，hot restart 不更新）
-  - 状态：🔄 进行中
+  - [x] 已验证：完全重启后 ptyhost eval 正常工作
+  - 状态：✅ 已完成
 
 - [x] **Task 4**: Supervisor 进程 — HTTP eval 端点
   - [x] `_handle_management` 新增 `/api/eval` 路由，含 Content-Length 读取
   - [x] localhost-only 安全检查
-  - [ ] 待验证：需要完全重启 mutbot（supervisor 是主进程，hot restart 不更新）
-  - 状态：🔄 进行中
+  - [x] 已验证：完全重启后 supervisor eval 正常工作
+  - 状态：✅ 已完成
 
-- [ ] **Task 5**: 测试验证
+- [x] **Task 5**: 测试验证
   - [x] Worker target 已验证
-  - [ ] Ptyhost target 待验证
-  - [ ] Supervisor target 待验证
-  - 状态：🔄 进行中
+  - [x] Ptyhost target 已验证
+  - [x] Supervisor target 已验证
+  - 状态：✅ 已完成
 
 ## 关键参考
 

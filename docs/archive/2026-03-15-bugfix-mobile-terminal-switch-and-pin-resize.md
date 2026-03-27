@@ -1,6 +1,6 @@
 # 移动端 Terminal 切换无效 & Pin Resize 不立即生效
 
-**状态**：🔄 待复现（问题二：Pin Resize 不立即生效）
+**状态**：✅ 已完成（问题一已修复；问题二无法复现，关闭）
 
 > **注**：手机断开重连后终端无画面的问题已合并到 `bugfix-terminal-content-loss-on-disconnect.md`，根因相同（`setRpc(null)` 导致 xterm 被 dispose）。
 **日期**：2026-03-15

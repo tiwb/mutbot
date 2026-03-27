@@ -1,6 +1,6 @@
 # 终端 flush 策略导致长历史闪烁 设计规范
 
-**状态**：🔄 实施中（验证阶段）
+**状态**：✅ 已完成
 **日期**：2026-03-17
 **类型**：Bug修复
 
@@ -148,15 +148,15 @@ Per-View Viewport 之后：
 
 前端 `pty_resize` handler 中移除 `fit()` 调用。`term.resize(c, r)` 保留（xterm.js 需要知道 PTY 实际尺寸以正确渲染滚动区域等），但不再回发 resize 请求。
 
-- [ ] **Task 3.1**: 移除 `pty_resize` handler 中的 `fit()` 调用
-  - [ ] 删除 `TerminalPanel.tsx` 中 `pty_resize` 分支的 `fit()` 及注释
+- [x] **Task 3.1**: 移除 `pty_resize` handler 中的 `fit()` 调用
+  - [x] 删除 `TerminalPanel.tsx` 中 `pty_resize` 分支的 `fit()` 及注释
   - 状态：⏸️ 待开始
 
-- [ ] **Task 3.2**: 验证修复效果
-  - [ ] 两个不同尺寸的浏览器同时连接，确认无 resize 循环
-  - [ ] 日志中无密集 resize 记录
-  - [ ] 单客户端 resize 仍正常工作
-  - [ ] 页面刷新后终端显示正确（viewport 接管）
+- [x] **Task 3.2**: 验证修复效果
+  - [x] 两个不同尺寸的浏览器同时连接，确认无 resize 循环
+  - [x] 日志中无密集 resize 记录
+  - [x] 单客户端 resize 仍正常工作
+  - [x] 页面刷新后终端显示正确（viewport 接管）
   - 状态：⏸️ 待开始
 
 ### Phase 4: _do_render_term BSU 保护 [🔄 进行中]
@@ -173,10 +173,10 @@ Per-View Viewport 之后：
   - [x] 格式改为 `sync False→True` 显示 feed 前后的 synchronized 变化
   - 状态：✅ 已完成
 
-- [ ] **Task 4.3**: 验证修复效果
-  - [ ] Claude Code 长历史流式输出时观察闪烁
-  - [ ] 日志中确认 `Render deferred` 有触发（证明 BSU 保护生效）
-  - [ ] 确认无副作用（不卡顿、不丢帧）
+- [x] **Task 4.3**: 验证修复效果
+  - [x] Claude Code 长历史流式输出时观察闪烁
+  - [x] 日志中确认 `Render deferred` 有触发（证明 BSU 保护生效）
+  - [x] 确认无副作用（不卡顿、不丢帧）
   - 状态：⏸️ 待开始
 
 ### Phase 5: 日志清理 [✅ 已完成]

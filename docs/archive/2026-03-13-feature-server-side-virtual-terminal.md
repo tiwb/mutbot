@@ -1,6 +1,6 @@
 # 服务端虚拟终端 设计规范
 
-**状态**：📝 设计中
+**状态**：✅ 已完成
 **日期**：2026-03-13
 **类型**：功能设计
 
@@ -160,26 +160,24 @@ class TerminalManager:
 
 引入 pyte 依赖，TerminalManager 中为每个终端创建 HistoryScreen + Stream。PTY 输出 feed 到 pyte，主客户端继续收 raw bytes，非主客户端收视口 ANSI 渲染。on_connect 统一用 pyte 快照替代 scrollback replay。前端移除 fitPaused 机制，xterm 始终 fit 容器。后续可扩展：视口滚动、增量 diff。
 
-## 待定问题
+## 实施记录
 
-### QUEST Q1: 视口滚动的交互方式
-**问题**：非主客户端目前视口固定在底部+左侧。后续如需视口滚动（上下/左右平移），前端交互如何设计？需要新的 UI（如拖拽平移、触摸滑动），还是复用 xterm 的滚动机制？
-**建议**：初版不实现视口滚动。后续需要时，可能在 xterm 外层加可平移的容器层。
+本文档是服务端虚拟终端的总体设计，后续拆分为独立文档逐步实施，全部已完成归档：
+
+| 文档 | 日期 | 覆盖内容 |
+|------|------|----------|
+| `feature-terminal-resize-control.md` | 03-13 | 主客户端优先 resize 策略 |
+| `bugfix-terminal-rendering-flicker.md` | 03-14 | pyte 集成 + 屏幕快照替代 scrollback replay |
+| `feature-pyte-frameskip-scroll.md` | 03-15 | 跳帧渲染 + 服务端滚动 |
+| `refactor-pyte-to-ptyhost.md` | 03-15 | pyte 下沉到 ptyhost 独立进程 |
+| `feature-per-view-viewport.md` | 03-17 | 视口裁剪 + 独立视口垂直滚动 |
+| `bugfix-terminal-flush-flicker.md` | 03-17 | flush 节流 + BSU 同步更新保护 |
+| `bugfix-resize-on-connect.md` | 03-17 | 连接时 register_size 替代 resize |
+| `bugfix-pyte-colon-subparam.md` | 03-26 | pyte SGR colon 子参数兼容修复 |
+
+待定问题 Q1（视口滚动）已在 `feature-per-view-viewport.md` 中实现垂直滚动；水平滚动暂不需要。
 
 ## 关键参考
 
-### 源码
-- `mutbot/src/mutbot/runtime/terminal.py` — TerminalManager（`_on_pty_output`, `attach`, `detach`, `resize`），TerminalSession @impl（`on_connect` 中的 scrollback 发送）
-- `mutbot/src/mutbot/ptyhost/_manager.py` — `SCROLLBACK_MAX = 64KB`，scrollback 累积逻辑，`get_scrollback()`
-- `mutbot/src/mutbot/ptyhost/_client.py` — `get_scrollback()` base64 编码传输
-- `mutbot/src/mutbot/ptyhost/_app.py` — ptyhost WebSocket 命令处理（scrollback 命令）
-- `mutbot/frontend/src/panels/TerminalPanel.tsx` — `handleJsonMessage`（pty_resize / resize_owner），`handleBinaryData`（raw PTY 输出写入 xterm），`fitPaused` 机制
-
-### 相关规范
-- `mutbot/docs/specifications/feature-terminal-resize-control.md` — 主客户端优先策略（🔄 实施中）
-
 ### 外部依赖
 - [pyte](https://github.com/selectel/pyte) — 纯 Python VT100 终端模拟器，零外部依赖，HistoryScreen 支持 scrollback + 分页（LGPL-3.0）
-
-### 日志证据
-- `server-20260313_100445` — WebSocket 高频断连重连（每秒一次），每次触发 on_connect 全量 scrollback replay

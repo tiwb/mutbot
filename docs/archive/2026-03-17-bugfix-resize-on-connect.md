@@ -39,18 +39,18 @@
 
 ## 实施步骤清单
 
-- [ ] **Task 1**: 前端 — ready 时发 `register_size` 替代 `resize`
-  - [ ] `TerminalPanel.tsx` ready 处理中，将 `sendResize()` 改为发送 `{ type: "register_size", rows, cols }`
-  - 状态：⏸️ 待开始
+- [x] **Task 1**: 前端 — ready 时发 `register_size` 替代 `resize`
+  - [x] `TerminalPanel.tsx` ready 处理中，将 `sendResize()` 改为发送 `{ type: "register_size", rows, cols }`
+  - 状态：✅ 已完成
 
-- [ ] **Task 2**: 后端 — on_message 增加 `register_size` 处理
-  - [ ] `terminal.py` on_message 中新增 `register_size` 分支：存入 `_client_sizes` + 设置 viewport，不调用 `tm.resize()`
-  - 状态：⏸️ 待开始
+- [x] **Task 2**: 后端 — on_message 增加 `register_size` 处理
+  - [x] `terminal.py` on_message 中新增 `register_size` 分支：存入 `_client_sizes` + 设置 viewport，不调用 `tm.resize()`
+  - 状态：✅ 已完成
 
-- [ ] **Task 3**: 构建验证
-  - [ ] 前端 build 通过
-  - [ ] 重启服务器，多客户端重连时不再互相抢 resize
-  - 状态：⏸️ 待开始
+- [x] **Task 3**: 构建验证
+  - [x] 前端 build 通过
+  - [x] 重启服务器，多客户端重连时不再互相抢 resize
+  - 状态：✅ 已完成
 
 ## 关键参考
 
