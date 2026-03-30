@@ -158,8 +158,8 @@ export default function App() {
   const [sidebarWidth, setSidebarWidth] = useState(260);
 
   // Mobile connect dialog state
-  const [mobileConnectAddresses, setMobileConnectAddresses] = useState<
-    { url: string; via: string }[] | null
+  const [mobileConnectData, setMobileConnectData] = useState<
+    { url: string; via: string; local?: boolean } | null
   >(null);
   const sidebarResizing = useRef(false);
 
@@ -536,8 +536,10 @@ export default function App() {
       }
 
       if (result.action === "mobile_connect") {
-        const addresses = (result.data?.addresses as { url: string; via: string }[]) || [];
-        setMobileConnectAddresses(addresses);
+        const url = (result.data?.url as string) || "";
+        const via = (result.data?.via as string) || "";
+        const local = (result.data?.local as boolean) || false;
+        if (url) setMobileConnectData({ url, via, local });
       }
     },
     [addTabForSession, showToast],
@@ -1261,10 +1263,12 @@ export default function App() {
             {toast}
           </div>
         )}
-        {mobileConnectAddresses !== null && (
+        {mobileConnectData !== null && (
           <MobileConnectDialog
-            addresses={mobileConnectAddresses}
-            onClose={() => setMobileConnectAddresses(null)}
+            url={mobileConnectData.url}
+            via={mobileConnectData.via}
+            local={mobileConnectData.local}
+            onClose={() => setMobileConnectData(null)}
           />
         )}
       </div>
@@ -1349,10 +1353,12 @@ export default function App() {
           {toast}
         </div>
       )}
-      {mobileConnectAddresses !== null && (
+      {mobileConnectData !== null && (
         <MobileConnectDialog
-          addresses={mobileConnectAddresses}
-          onClose={() => setMobileConnectAddresses(null)}
+          url={mobileConnectData.url}
+          via={mobileConnectData.via}
+          local={mobileConnectData.local}
+          onClose={() => setMobileConnectData(null)}
         />
       )}
       {workspaceUI && (

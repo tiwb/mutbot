@@ -183,6 +183,15 @@ def decode_varint(data: bytes | bytearray | memoryview, offset: int = 0) -> tupl
 ClientState = Literal["connected", "buffering", "expired"]
 
 
+def _origin_from_headers(headers: dict[str, str]) -> str:
+    """从 WebSocket 握手 headers 推算 origin（scheme://host）。"""
+    host = headers.get("host", "")
+    if not host:
+        return ""
+    scheme = "https" if headers.get("x-forwarded-proto") == "https" else "http"
+    return f"{scheme}://{host}"
+
+
 class Client:
     """一个 WebSocket 连接的可靠传输层。
 
@@ -207,6 +216,7 @@ class Client:
         self.workspace_id = workspace_id
         self.ws: WebSocket | None = ws
         self.state: ClientState = "connected"
+        self.origin: str = _origin_from_headers(getattr(ws, "headers", {}))
 
         # 可靠传输 — 发送 (Server→Client)
         self._send_queue: asyncio.Queue[tuple[FrameType, Any]] = asyncio.Queue()

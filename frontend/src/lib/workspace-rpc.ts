@@ -716,6 +716,10 @@ export class WorkspaceRpc {
     }
 
     this.startAckTimer();
+
+    // 推送客户端元信息（origin 等）到服务端
+    this.call("client.setInfo", { origin: window.location.origin }).catch(() => {});
+
     this.onOpenCb?.();
   }
 
