@@ -240,3 +240,18 @@ class DebugRpc(WorkspaceRpc):
             })
             return {"ok": True}
         return {"error": f"no pending eval: {eval_id}"}
+
+
+class ClientOps(WorkspaceRpc):
+    """客户端元信息操作。"""
+    namespace = "client"
+
+    async def setInfo(self, params: dict, ctx: RpcContext) -> dict:
+        """前端推送客户端元信息（origin 等），更新 Client 对象。"""
+        client = ctx.get_sender_client()
+        if client is None:
+            return {"error": "client not found"}
+        origin = params.get("origin")
+        if origin and isinstance(origin, str):
+            client.origin = origin
+        return {"ok": True}

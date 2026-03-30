@@ -4365,46 +4365,27 @@ body,
 }
 
 .mobile-connect-body {
-  padding: 16px;
+  padding: 20px 16px;
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 12px;
 }
 
-.mobile-connect-card {
-  display: flex;
-  gap: 16px;
-  align-items: flex-start;
-  padding: 12px;
-  border: 1px solid var(--border-color, #333);
-  border-radius: 6px;
-  background: var(--bg-secondary, #252525);
+.mobile-connect-single {
+  align-items: center;
+  text-align: center;
 }
 
-.mobile-connect-card svg {
-  flex-shrink: 0;
+.mobile-connect-single svg {
   background: #fff;
-  padding: 4px;
-  border-radius: 4px;
-}
-
-.mobile-connect-info {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  min-width: 0;
+  padding: 8px;
+  border-radius: 8px;
 }
 
 .mobile-connect-url {
   font-family: monospace;
   font-size: 13px;
   color: var(--text-primary, #ccc);
-  word-break: break-all;
-}
-
-.mobile-connect-via {
-  font-size: 12px;
-  color: var(--text-secondary, #888);
   word-break: break-all;
 }
 
@@ -4416,8 +4397,6 @@ body,
   font-size: 11px;
   padding: 2px 8px;
   cursor: pointer;
-  align-self: flex-start;
-  margin-top: 4px;
 }
 
 .mobile-connect-toggle:hover {

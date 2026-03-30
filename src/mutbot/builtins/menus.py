@@ -344,8 +344,6 @@ class MobileConnectMenu(Menu):
     display_order = "1workspace:2"
 
     async def execute(self, params: dict, context: RpcContext) -> MenuResult:
-        from mutbot.web.server import _enumerate_ips
-
         # 获取当前 workspace name，用于 URL 定位
         ws_suffix = ""
         if context.workspace_manager:
@@ -353,52 +351,27 @@ class MobileConnectMenu(Menu):
             if ws:
                 ws_suffix = f"/#{ws.name}"
 
-        # 从 config 获取监听地址
-        listen_values: list[str] = []
+        base_path = ""
         if context.config:
-            listen = context.config.get("listen", default=[])
-            if isinstance(listen, list):
-                listen_values = [str(v) for v in listen]
-            elif listen:
-                listen_values = [str(listen)]
+            base_path = context.config.get("base_path", default="") or ""
 
-        # 解析监听地址，展开 0.0.0.0
-        addresses: list[dict[str, str]] = []
-        seen: set[str] = set()
+        # 优先从 client.origin 获取当前访问地址
+        client = context.get_sender_client()
+        origin = client.origin if client else ""
+        if not origin:
+            origin = "http://127.0.0.1:8741"
 
-        if not listen_values:
-            listen_values = ["127.0.0.1:8741"]
+        # 检测是否为本地地址（手机无法访问）
+        from urllib.parse import urlparse
+        host = urlparse(origin).hostname or ""
+        is_local = host in ("127.0.0.1", "localhost", "::1") or host.startswith("127.")
 
-        for value in listen_values:
-            if ":" in value:
-                host, port_str = value.rsplit(":", 1)
-                p = int(port_str)
-            elif value.isdigit():
-                host, p = "127.0.0.1", int(value)
-            else:
-                host, p = value, 8741
-
-            if host == "0.0.0.0":
-                for ip in _enumerate_ips():
-                    if ip == "127.0.0.1":
-                        continue
-                    key = f"{ip}:{p}"
-                    if key not in seen:
-                        seen.add(key)
-                        addresses.append({
-                            "url": f"http://{ip}:{p}{ws_suffix}",
-                            "via": f"https://mutbot.ai/connect/#{ip}:{p}{ws_suffix}",
-                        })
-            elif host != "127.0.0.1":
-                key = f"{host}:{p}"
-                if key not in seen:
-                    seen.add(key)
-                    addresses.append({
-                        "url": f"http://{host}:{p}{ws_suffix}",
-                        "via": f"https://mutbot.ai/connect/#{host}:{p}{ws_suffix}",
-                    })
-
-        return MenuResult(action="mobile_connect", data={"addresses": addresses})
+        url = f"{origin}{base_path}{ws_suffix}"
+        return MenuResult(action="mobile_connect", data={
+            "url": url,
+            "via": f"https://mutbot.ai/connect/#{url.split('://', 1)[-1]}",
+            "local": is_local,
+        })
 
 
 class KillPtyHostMenu(Menu):
@@ -480,8 +453,18 @@ class AuthSetupMenu(Menu):
 
 
 def _get_self_origin(ctx: RpcContext) -> str:
-    """推算当前服务器的外部访问地址。"""
-    # 优先从 config 获取
+    """推算当前服务器的外部访问地址。
+
+    优先级：client.origin（前端推送或握手推算） > config listen 推算。
+    """
+    client = ctx.get_sender_client()
+    if client and client.origin:
+        base_path = ""
+        if ctx.config:
+            base_path = ctx.config.get("base_path", default="") or ""
+        return f"{client.origin}{base_path}"
+
+    # fallback: 从 config listen 推算（兼容旧前端 / 无 headers 场景）
     config = ctx.config
     port = 8741
     host = "127.0.0.1"

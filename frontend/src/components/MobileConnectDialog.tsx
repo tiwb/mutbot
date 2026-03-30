@@ -1,31 +1,18 @@
 import { useState } from "react";
 import { QRCodeSVG } from "qrcode.react";
 
-interface Address {
+interface Props {
   url: string;
   via: string;
-}
-
-interface Props {
-  addresses: Address[];
+  local?: boolean;
   onClose: () => void;
 }
 
-export default function MobileConnectDialog({ addresses, onClose }: Props) {
-  // Default mode based on whether we're currently on mutbot.ai
+export default function MobileConnectDialog({ url, via, local, onClose }: Props) {
   const defaultMode = window.location.hostname.endsWith("mutbot.ai") ? "via" : "direct";
+  const [mode, setMode] = useState<"via" | "direct">(defaultMode);
 
-  // Track which URL mode each address card uses
-  const [modes, setModes] = useState<Record<number, "via" | "direct">>({});
-
-  const toggleMode = (idx: number) => {
-    setModes((prev) => ({
-      ...prev,
-      [idx]: (prev[idx] || defaultMode) === "direct" ? "via" : "direct",
-    }));
-  };
-
-  const hasAddresses = addresses.length > 0;
+  const qrValue = mode === "via" ? via : url;
 
   return (
     <div className="mobile-connect-overlay" onClick={onClose}>
@@ -35,37 +22,26 @@ export default function MobileConnectDialog({ addresses, onClose }: Props) {
           <button className="mobile-connect-close" onClick={onClose}>&times;</button>
         </div>
 
-        {hasAddresses ? (
-          <div className="mobile-connect-body">
-            {addresses.map((addr, idx) => {
-              const mode = modes[idx] || defaultMode;
-              const qrValue = mode === "via" ? addr.via : addr.url;
-              return (
-                <div key={idx} className="mobile-connect-card">
-                  <QRCodeSVG value={qrValue} size={120} />
-                  <div className="mobile-connect-info">
-                    <div className="mobile-connect-url">{qrValue}</div>
-                    <button
-                      className="mobile-connect-toggle"
-                      onClick={() => toggleMode(idx)}
-                    >
-                      {mode === "via" ? "Direct" : "Via mutbot.ai"}
-                    </button>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        ) : (
+        {local ? (
           <div className="mobile-connect-empty">
-            <p>No external addresses available.</p>
-            <p>The server is listening on localhost only. To allow mobile connections, configure an external listen address:</p>
+            <p>The server is only accessible locally. To allow mobile connections, configure an external listen address:</p>
             <div className="mobile-connect-code">
               <div><strong>Config:</strong> <code>~/.mutbot/config.json</code></div>
               <pre>{`{ "listen": ["0.0.0.0:8741"] }`}</pre>
               <div><strong>CLI:</strong></div>
               <pre>python -m mutbot --listen 0.0.0.0:8741</pre>
             </div>
+          </div>
+        ) : (
+          <div className="mobile-connect-body mobile-connect-single">
+            <QRCodeSVG value={qrValue} size={200} />
+            <div className="mobile-connect-url">{qrValue}</div>
+            <button
+              className="mobile-connect-toggle"
+              onClick={() => setMode((m) => (m === "via" ? "direct" : "via"))}
+            >
+              {mode === "via" ? "Direct" : "Via mutbot.ai"}
+            </button>
           </div>
         )}
       </div>
