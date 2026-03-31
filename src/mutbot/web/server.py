@@ -336,6 +336,29 @@ def _build_banner_lines(
     return lines
 
 
+def _print_security_warning(
+    addresses: list[tuple[str, int]],
+    cfg: MutbotConfig,
+) -> None:
+    """检测非 loopback + 无 auth 时生成 setup token 并打印警告。"""
+    from mutbot.auth.network import is_loopback_only
+    if is_loopback_only(addresses):
+        return
+
+    auth_config = cfg.get("auth")
+    if auth_config and (auth_config.get("relay") or auth_config.get("providers")):
+        return  # 已配置 auth
+
+    # 非 loopback + 无 auth → 生成 token
+    from mutbot.auth.setup_token import generate
+    token = generate()
+    print("  WARNING: No auth configured. Remote access requires setup token:")
+
+    print()
+    print(f"      Setup Token: {token}")
+    print()
+
+
 def _format_banner_line(host: str, port: int) -> str:
     local_url = f"http://{host}:{port}"
     if host == "127.0.0.1" and port == _DEFAULT_PORT:
@@ -572,6 +595,8 @@ def _standalone_main(addresses: list[tuple[str, int]], debug: bool = False) -> N
         for line in banner_lines:
             print(line)
         print()
+        if config is not None:
+            _print_security_warning(addresses, config)
 
     @_impl(MutBotServer.on_shutdown)
     async def _mutbot_on_shutdown(self):
