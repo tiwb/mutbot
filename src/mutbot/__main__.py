@@ -81,12 +81,16 @@ def _log_command() -> None:
     log_main(sys.argv[2:])
 
 
-if __name__ == "__main__" or not hasattr(sys, "_called_from_test"):
-    # 检查子命令
+def main() -> None:
+    """入口函数 — console_scripts 和 python -m 共用。"""
     if len(sys.argv) > 1 and sys.argv[1] == "restart":
         _restart_command()
     elif len(sys.argv) > 1 and sys.argv[1] == "log":
         _log_command()
     else:
-        from mutbot.web.server import main
-        main()
+        from mutbot.web.server import main as server_main
+        server_main()
+
+
+if __name__ == "__main__":
+    main()
