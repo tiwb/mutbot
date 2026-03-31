@@ -132,14 +132,15 @@ class Supervisor:
             self._servers.append(server)
             logger.info("Supervisor listening on %s:%d", host, port)
 
+        # Banner（含 setup token 生成，必须在 spawn worker 之前，
+        # 确保 token 写入环境变量后 worker 子进程能继承）
+        self._print_banner()
+
         # Spawn 第一个 Worker
         await self._spawn_worker()
 
         # 启动 Worker 存活监控
         self._monitor_task = asyncio.create_task(self._monitor_workers())
-
-        # Banner
-        self._print_banner()
 
         # 主循环
         while not self._should_exit:
@@ -154,12 +155,14 @@ class Supervisor:
 
     def _print_banner(self) -> None:
         import mutbot
-        from mutbot.web.server import _build_banner_lines
+        from mutbot.web.server import _build_banner_lines, _print_security_warning
+        from mutbot.runtime.config import load_mutbot_config
         lines = _build_banner_lines(self.listen_addresses)
         print(f"\n  MutBot v{mutbot.__version__} (supervisor mode)\n")
         for line in lines:
             print(line)
         print()
+        _print_security_warning(self.listen_addresses, load_mutbot_config())
 
     # ------------------------------------------------------------------
     # 信号处理
@@ -360,7 +363,11 @@ class Supervisor:
         client_reader: asyncio.StreamReader,
         client_writer: asyncio.StreamWriter,
     ) -> None:
-        """TCP 透传：客户端 ↔ Worker 双向 pipe。"""
+        """TCP 透传：客户端 ↔ Worker 双向 pipe。
+
+        连接 Worker 后先发送 PROXY protocol v1 头传递真实客户端 IP，
+        然后将 first_line 和后续数据原样透传。
+        """
         try:
             w_reader, w_writer = await asyncio.open_connection("127.0.0.1", worker.port)
         except (ConnectionRefusedError, OSError):
@@ -369,7 +376,19 @@ class Supervisor:
 
         worker.active_connections += 1
         try:
-            # 补发偷看的第一行
+            # 发送 PROXY protocol v1 头
+            peername = client_writer.get_extra_info("peername")
+            if peername:
+                remote_ip = peername[0]
+                remote_port = peername[1]
+                proto = "TCP6" if ":" in remote_ip else "TCP4"
+                sockname = client_writer.get_extra_info("sockname")
+                local_ip = sockname[0] if sockname else "0.0.0.0"
+                local_port = sockname[1] if sockname else 0
+                proxy_line = f"PROXY {proto} {remote_ip} {local_ip} {remote_port} {local_port}\r\n"
+                w_writer.write(proxy_line.encode("ascii"))
+
+            # 转发请求行，后续数据由 pipe 处理
             w_writer.write(first_line)
             await w_writer.drain()
 
