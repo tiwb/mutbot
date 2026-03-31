@@ -434,63 +434,7 @@ class AuthSetupMenu(Menu):
         return not auth.get("relay") and not auth.get("providers")
 
     async def execute(self, params: dict, context: RpcContext) -> MenuResult:
-        import asyncio
-        from mutbot.auth.setup import run_auth_setup_wizard
-
-        client = context.get_sender_client()
-        if client is None:
-            return MenuResult(action="error", data={"message": "client not found"})
-
-        context_id = f"auth-setup-{client.client_id}"
-
-        # 推算 self_origin（用于 OAuth 回调 URL）
-        # 复用 routes 中构造 RpcContext 时的 workspace 信息
-        # 简单方案：从 config 和常见默认值推算
-        self_origin = _get_self_origin(context)
-
-        asyncio.ensure_future(run_auth_setup_wizard(client, context_id, self_origin))
-        return MenuResult(action="workspace_ui", data={"context_id": context_id})
-
-
-def _get_self_origin(ctx: RpcContext) -> str:
-    """推算当前服务器的外部访问地址。
-
-    优先级：client.origin（前端推送或握手推算） > config listen 推算。
-    """
-    client = ctx.get_sender_client()
-    if client and client.origin:
-        base_path = ""
-        if ctx.config:
-            base_path = ctx.config.get("base_path", default="") or ""
-        return f"{client.origin}{base_path}"
-
-    # fallback: 从 config listen 推算（兼容旧前端 / 无 headers 场景）
-    config = ctx.config
-    port = 8741
-    host = "127.0.0.1"
-
-    if config:
-        listen = config.get("listen", default=[])
-        if isinstance(listen, list) and listen:
-            addr = str(listen[0])
-        elif listen:
-            addr = str(listen)
-        else:
-            addr = ""
-        if addr:
-            if ":" in addr:
-                host, port_str = addr.rsplit(":", 1)
-                port = int(port_str)
-            elif addr.isdigit():
-                port = int(addr)
-        base_path = config.get("base_path", default="") or ""
-    else:
-        base_path = ""
-
-    if host == "0.0.0.0":
-        host = "127.0.0.1"
-
-    return f"http://{host}:{port}{base_path}"
+        return MenuResult(action="redirect", data={"url": "/auth/setup"})
 
 # ---------------------------------------------------------------------------
 # 内置菜单：AgentPanel 标题栏菜单 (AgentPanel/Header)

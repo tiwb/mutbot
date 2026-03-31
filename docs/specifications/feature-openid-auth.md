@@ -1,7 +1,7 @@
 # OpenID 身份验证 设计规范
 
-**状态**：✅ 已完成
-**日期**：2026-03-09（更新 2026-03-18）
+**状态**：🔄 实施中
+**日期**：2026-03-09（更新 2026-03-31）
 **类型**：功能设计
 
 ## 背景
@@ -499,3 +499,65 @@ WebSocket 不能用 HTTP 重定向：
 
 ### 相关规范
 - `mutbot.ai/docs/design/architecture.md` — mutbot.ai 架构，记录了未来跨域认证的前端侧流程
+
+---
+
+## 阶段十：Setup 页面改进
+
+### 问题
+
+`/auth/setup` 配置页存在三个问题：
+
+1. **按钮硬编码 "Sign in with GitHub"**（`views.py:781`）— 无论 relay server 支持什么 provider，按钮文字不变
+2. **hint 硬编码 "zero-config GitHub login"**（`views.py:767`）— 同上
+3. **Access Mode 暴露 "Anyone can log in"** — 首次配置场景下过于危险，不应提供此选项
+
+### 设计方案
+
+#### Setup 表单简化
+
+- 去掉 Access Mode radio group，后端硬编码 `only_me`（首次登录者成为管理员）
+- 表单仅保留 Relay URL 输入框 + Connect 按钮
+- 按钮文字改为 `"Connect →"`
+- hint 改为通用描述，不提及具体 provider
+
+#### 新增 provider 选择步骤
+
+Setup 流程从一步拆为两步（仍为服务端渲染 HTML，无 JS）：
+
+```
+Step 1: configure     → 填写 relay URL，点击 "Connect →"
+Step 2: select_provider → 显示 relay 支持的 provider 列表，用户点击选择后跳转 OAuth
+```
+
+`_handle_start_oauth` 拆分为两个 action：
+- `action=connect_relay`：校验 relay URL → fetch providers → 渲染 `select_provider` 页面
+- `action=start_oauth`：接收用户选择的 provider → 创建 nonce → 302 跳转 OAuth
+
+`select_provider` 页面渲染 provider 按钮列表（样式类似前端 LoginPage），每个按钮为表单提交（POST，携带 relay_url + provider name）。
+
+## 实施步骤清单
+
+### 阶段十：Setup 页面改进
+
+- [x] **Task 10.1**: `_render_setup_page` configure 步骤简化
+  - 去掉 Access Mode radio group
+  - 按钮从 `"Sign in with GitHub →"` 改为 `"Connect →"`
+  - hint 文字去掉 GitHub 硬编码
+  - form action 从 `start_oauth` 改为 `connect_relay`
+
+- [x] **Task 10.2**: `_render_setup_page` 新增 `select_provider` 步骤
+  - 接收 providers 列表参数，渲染 provider 按钮
+  - 每个 provider 为独立 form（POST，hidden fields: relay_url, provider, action=start_oauth）
+  - 按钮文字：`"Sign in with {Provider Label} →"`
+
+- [x] **Task 10.3**: `AuthSetupView` 拆分请求处理
+  - 新增 `_handle_connect_relay`：校验 relay URL → fetch providers → 渲染 select_provider
+  - 修改 `_handle_start_oauth`：从 form 获取 relay_url + provider → 创建 nonce → 跳转
+  - access_mode 硬编码为 `only_me`
+
+- [x] **Task 10.4**: 删除 WebSocket 向导，统一走 HTTP setup
+  - 删除 `setup.py` 中的 `run_auth_setup_wizard`、`_build_form_view`、`_build_provider_select_view`、`_make_client_broadcast` 等向导代码
+  - `AuthSetupMenu.execute` 改为返回 `redirect` action 跳转 `/auth/setup`
+  - 前端 `handleMenuResult` 新增 `redirect` action 处理（使用 `apiPath` 处理 base_path）
+  - 删除 `menus.py` 中不再使用的 `_get_self_origin`
