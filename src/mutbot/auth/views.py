@@ -508,3 +508,463 @@ class ProvidersView(View):
             "auth_enabled": True,
             "relay_domain": relay_domain,
         })
+
+
+# ---------------------------------------------------------------------------
+# AuthSetupView — 服务端渲染 Auth 配置页面
+# ---------------------------------------------------------------------------
+
+
+class AuthSetupView(View):
+    """Auth 配置引导页面（服务端渲染，不依赖 React 前端）。
+
+    GET /auth/setup          → 渲染 HTML 页面
+    POST /auth/setup         → 处理表单提交（token 验证 / relay 配置 / OAuth 跳转）
+    """
+    path = "/auth/setup"
+
+    async def get(self, request: Request) -> Response:
+        """渲染 setup 页面。
+
+        本地请求 → 直接显示配置表单
+        远程请求 → 先显示 token 输入（验证通过后通过 cookie 记住状态）
+        """
+        from mutbot.auth.network import is_loopback_ip
+        from mutbot.auth.middleware import current_client_ip
+        import mutbot.auth.setup_token as setup_token
+
+        # 已配置 auth → 显示已配置提示
+        auth = _get_auth_config()
+        if auth and (auth.get("relay") or auth.get("providers")):
+            return html_response(_render_setup_page(
+                step="already_configured",
+                relay_url=auth.get("relay", ""),
+            ))
+
+        # 判断是否本地请求
+        client_ip = current_client_ip.get()
+        is_local = is_loopback_ip(client_ip) if client_ip else True
+
+        # 本地请求或无活跃 token → 直接显示配置表单
+        if is_local or not setup_token.is_active():
+            return html_response(_render_setup_page(step="configure"))
+
+        # 远程请求 → 检查 cookie 中的验证状态
+        cookie = request.headers.get("cookie", "")
+        if _check_setup_verified_cookie(cookie):
+            return html_response(_render_setup_page(step="configure"))
+
+        # 远程请求，未验证 → 显示 token 输入
+        return html_response(_render_setup_page(step="token_input"))
+
+    async def post(self, request: Request) -> Response:
+        """处理表单提交。
+
+        action=verify_token  → 验证 token，成功则显示配置表单
+        action=connect_relay → 校验 relay URL，获取 provider 列表，显示选择页
+        action=start_oauth   → 用户选择 provider 后，创建 nonce，重定向到 OAuth
+        """
+        try:
+            body = await request.body()
+            from urllib.parse import parse_qs
+            form = parse_qs(body.decode("utf-8"))
+        except Exception:
+            return html_response(_render_setup_page(step="token_input", error="Invalid form data"))
+
+        action = (form.get("action", [""])[0])
+
+        if action == "verify_token":
+            return await self._handle_verify_token(request, form)
+        elif action == "connect_relay":
+            return await self._handle_connect_relay(request, form)
+        elif action == "start_oauth":
+            return await self._handle_start_oauth(request, form)
+
+        return html_response(_render_setup_page(step="token_input", error="Unknown action"))
+
+    async def _handle_verify_token(self, request: Request, form: dict) -> Response:
+        import mutbot.auth.setup_token as setup_token
+
+        token = (form.get("token", [""])[0]).strip()
+        if not token:
+            return html_response(_render_setup_page(step="token_input", error="Please enter the setup token"))
+
+        if not setup_token.verify(token):
+            return html_response(_render_setup_page(step="token_input", error="Invalid token. Check the server console output."))
+
+        # 验证通过 → 设置短期 httponly cookie，后续请求通过 cookie 判断已验证
+        resp = html_response(_render_setup_page(step="configure"))
+        _set_setup_verified_cookie(resp, secure=_is_secure(request))
+        return resp
+
+    async def _handle_connect_relay(self, request: Request, form: dict) -> Response:
+        """校验 relay URL，获取 provider 列表，渲染选择页。"""
+        import mutbot.auth.setup_token as setup_token
+        from mutbot.auth.network import is_loopback_ip
+        from mutbot.auth.middleware import current_client_ip
+
+        relay_url = (form.get("relay_url", ["https://mutbot.ai"])[0]).strip().rstrip("/")
+
+        # 远程请求需验证（通过 cookie 判断已验证）
+        client_ip = current_client_ip.get()
+        is_local = is_loopback_ip(client_ip) if client_ip else True
+
+        if not is_local and setup_token.is_active():
+            cookie = request.headers.get("cookie", "")
+            if not _check_setup_verified_cookie(cookie):
+                return html_response(_render_setup_page(step="token_input", error="Token expired or invalid. Please re-enter."))
+
+        # 校验 relay_url（防止 SSRF：scheme 必须是 https，或 http://localhost 用于开发）
+        ssrf_error = _validate_relay_url(relay_url)
+        if ssrf_error:
+            return html_response(_render_setup_page(
+                step="configure",
+                error=ssrf_error,
+            ))
+
+        # 从 relay 获取 provider 列表
+        provider_names = await _fetch_relay_providers(relay_url)
+        if not provider_names:
+            return html_response(_render_setup_page(
+                step="configure",
+                error=f"Cannot connect to relay server: {relay_url}",
+            ))
+
+        # 构造 provider 显示列表
+        providers = [
+            {"name": name, "label": name.replace("-", " ").replace("_", " ").title()}
+            for name in provider_names
+        ]
+
+        return html_response(_render_setup_page(
+            step="select_provider",
+            relay_url=relay_url,
+            providers=providers,
+        ))
+
+    async def _handle_start_oauth(self, request: Request, form: dict) -> Response:
+        """用户选择 provider 后，创建 nonce，重定向到 relay OAuth。"""
+        import mutbot.auth.setup_token as setup_token
+        from mutbot.auth.setup import store_setup_nonce
+        from mutbot.auth.network import is_loopback_ip
+        from mutbot.auth.middleware import current_client_ip
+
+        relay_url = (form.get("relay_url", ["https://mutbot.ai"])[0]).strip().rstrip("/")
+        provider = (form.get("provider", [""])[0]).strip()
+
+        if not provider:
+            return html_response(_render_setup_page(step="configure", error="No provider selected."))
+
+        # 远程请求需验证
+        client_ip = current_client_ip.get()
+        is_local = is_loopback_ip(client_ip) if client_ip else True
+
+        if not is_local and setup_token.is_active():
+            cookie = request.headers.get("cookie", "")
+            if not _check_setup_verified_cookie(cookie):
+                return html_response(_render_setup_page(step="token_input", error="Token expired or invalid. Please re-enter."))
+
+        # 创建 nonce 并存储（access_mode 固定为 only_me）
+        nonce = _create_nonce()
+        store_setup_nonce(nonce, relay_url, "only_me")
+
+        # 构造回调和登录 URL
+        callback_url = _get_callback_url(request, "/auth/relay-callback")
+        login_url = (
+            f"{relay_url}/auth/start"
+            f"?callback={quote(callback_url)}"
+            f"&provider={quote(provider)}"
+            f"&nonce={nonce}"
+        )
+
+        return Response(status=302, headers={"location": login_url})
+
+
+# ---------------------------------------------------------------------------
+# relay_url SSRF 防护
+# ---------------------------------------------------------------------------
+
+
+def _validate_relay_url(url: str) -> str | None:
+    """校验 relay_url 是否安全。返回错误消息或 None（通过）。
+
+    规则：scheme 必须是 https，或 http://localhost / http://127.0.0.1 用于开发。
+    拒绝私有 IP 段，防止 SSRF 攻击。
+    """
+    from urllib.parse import urlparse
+    import ipaddress
+
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return "Invalid URL format."
+
+    scheme = parsed.scheme.lower()
+    hostname = (parsed.hostname or "").lower()
+
+    if not hostname:
+        return "Invalid URL: missing hostname."
+
+    # 允许 http://localhost 和 http://127.0.0.1 用于开发
+    if scheme == "http":
+        if hostname not in ("localhost", "127.0.0.1", "::1"):
+            return "Relay URL must use HTTPS (http is only allowed for localhost)."
+        return None
+
+    if scheme != "https":
+        return "Relay URL must use HTTPS."
+
+    # HTTPS 场景：检查 hostname 是否指向私有 IP
+    try:
+        addr = ipaddress.ip_address(hostname)
+        if addr.is_private or addr.is_loopback or addr.is_reserved or addr.is_link_local:
+            return "Relay URL must not point to a private/reserved IP address."
+    except ValueError:
+        # hostname 是域名，不是 IP → 允许（DNS 解析后的 SSRF 防护交给 httpx 或网络层）
+        pass
+
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Setup verified cookie 辅助（短期 httponly cookie，验证 setup token 后设置）
+# ---------------------------------------------------------------------------
+
+_SETUP_COOKIE_NAME = "mutbot_setup_verified"
+_SETUP_COOKIE_MAX_AGE = 300  # 5 分钟
+
+
+def _set_setup_verified_cookie(resp: Response, *, secure: bool = False) -> None:
+    """设置短期 httponly cookie 标记 setup token 已验证。"""
+    flags = "HttpOnly; SameSite=Lax; Path=/auth/setup"
+    if secure:
+        flags += "; Secure"
+    cookie_val = f"{_SETUP_COOKIE_NAME}=1; Max-Age={_SETUP_COOKIE_MAX_AGE}; {flags}"
+    # Response headers 是 dict，set-cookie 需要追加
+    if hasattr(resp, 'headers') and isinstance(resp.headers, dict):
+        resp.headers["set-cookie"] = cookie_val
+
+
+def _check_setup_verified_cookie(cookie_header: str) -> bool:
+    """检查请求中是否携带有效的 setup verified cookie。"""
+    if not cookie_header:
+        return False
+    from http.cookies import SimpleCookie
+    try:
+        c = SimpleCookie(cookie_header)
+        return _SETUP_COOKIE_NAME in c and c[_SETUP_COOKIE_NAME].value == "1"
+    except Exception:
+        return False
+
+
+def _render_setup_page(
+    step: str = "token_input",
+    error: str = "",
+    relay_url: str = "",
+    providers: list[dict[str, str]] | None = None,
+) -> str:
+    """渲染 auth setup HTML 页面。"""
+    from html import escape
+
+    error_html = ""
+    if error:
+        error_html = f'<div class="error">{escape(error)}</div>'
+
+    if step == "already_configured":
+        content = f"""
+        <h2>Authentication Configured</h2>
+        <p class="hint">Auth is already set up{(' via <strong>' + escape(relay_url) + '</strong>') if relay_url else ''}.</p>
+        <a href="/" class="btn">Back to MutBot</a>
+        """
+    elif step == "token_input":
+        content = f"""
+        <h2>Setup Token Required</h2>
+        <p class="hint">This server has no authentication configured. Enter the setup token from the server console to continue.</p>
+        {error_html}
+        <form method="POST">
+            <input type="hidden" name="action" value="verify_token">
+            <label for="token">Setup Token</label>
+            <input type="text" id="token" name="token" placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+                   autocomplete="off" autofocus required>
+            <button type="submit" class="btn primary">Verify</button>
+        </form>
+        """
+    elif step == "configure":
+        content = f"""
+        <h2>Configure Authentication</h2>
+        <p class="hint">Set up login to control who can access this MutBot server.</p>
+        {error_html}
+        <form method="POST">
+            <input type="hidden" name="action" value="connect_relay">
+            <label for="relay_url">Relay Server</label>
+            <input type="text" id="relay_url" name="relay_url" value="https://mutbot.ai"
+                   placeholder="https://mutbot.ai">
+            <p class="field-hint">Uses a relay server for zero-config login. No registration needed.</p>
+
+            <button type="submit" class="btn primary">Connect &rarr;</button>
+        </form>
+        """
+    elif step == "select_provider":
+        provider_buttons = ""
+        for p in (providers or []):
+            name = escape(p["name"])
+            label = escape(p["label"])
+            url = escape(relay_url)
+            provider_buttons += f"""
+            <form method="POST" style="margin-bottom: 8px;">
+                <input type="hidden" name="action" value="start_oauth">
+                <input type="hidden" name="relay_url" value="{url}">
+                <input type="hidden" name="provider" value="{name}">
+                <button type="submit" class="btn primary provider-btn">Sign in with {label} &rarr;</button>
+            </form>"""
+        relay_hint = f'<p class="field-hint" style="text-align:center; margin-top: 16px;">via {escape(relay_url)}</p>' if relay_url else ""
+        content = f"""
+        <h2>Choose Login Provider</h2>
+        <p class="hint">Select a provider to sign in.</p>
+        {error_html}
+        <div class="provider-list">
+            {provider_buttons}
+        </div>
+        {relay_hint}
+        <div style="margin-top: 16px; text-align: center;">
+            <a href="/auth/setup" class="back-link">&larr; Back</a>
+        </div>
+        """
+    else:
+        content = "<p>Unknown step</p>"
+
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MutBot Setup</title>
+<style>
+  *, *::before, *::after {{ box-sizing: border-box; }}
+  body {{
+    font-family: system-ui, -apple-system, 'Segoe UI', sans-serif;
+    background: #1a1a1a;
+    color: #d4d4d4;
+    margin: 0;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    min-height: 100vh;
+  }}
+  .container {{
+    background: #252525;
+    border: 1px solid #333;
+    border-radius: 12px;
+    padding: 40px;
+    max-width: 440px;
+    width: 100%;
+    margin: 20px;
+  }}
+  h2 {{
+    margin: 0 0 8px 0;
+    font-size: 20px;
+    font-weight: 600;
+    color: #e5e5e5;
+  }}
+  .hint {{
+    color: #858585;
+    font-size: 14px;
+    line-height: 1.5;
+    margin: 0 0 24px 0;
+  }}
+  .field-hint {{
+    color: #666;
+    font-size: 12px;
+    margin: 4px 0 16px 0;
+  }}
+  .error {{
+    background: rgba(241, 76, 76, 0.1);
+    border: 1px solid rgba(241, 76, 76, 0.3);
+    border-radius: 6px;
+    color: #f14c4c;
+    padding: 10px 14px;
+    font-size: 13px;
+    margin-bottom: 16px;
+  }}
+  label {{
+    display: block;
+    font-size: 13px;
+    font-weight: 500;
+    color: #b0b0b0;
+    margin-bottom: 6px;
+  }}
+  input[type="text"] {{
+    width: 100%;
+    padding: 10px 12px;
+    background: #1a1a1a;
+    border: 1px solid #404040;
+    border-radius: 6px;
+    color: #d4d4d4;
+    font-size: 14px;
+    font-family: 'SF Mono', 'Cascadia Code', 'Consolas', monospace;
+    outline: none;
+    transition: border-color 0.15s;
+    margin-bottom: 16px;
+  }}
+  input[type="text"]:focus {{
+    border-color: #569cd6;
+  }}
+  .radio-group {{
+    margin-bottom: 20px;
+  }}
+  .radio-label {{
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 0;
+    cursor: pointer;
+    font-size: 14px;
+    color: #d4d4d4;
+  }}
+  .radio-label input[type="radio"] {{
+    accent-color: #569cd6;
+  }}
+  .btn {{
+    display: inline-block;
+    padding: 10px 20px;
+    border-radius: 6px;
+    font-size: 14px;
+    font-weight: 500;
+    text-decoration: none;
+    border: 1px solid #404040;
+    background: #333;
+    color: #d4d4d4;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s;
+  }}
+  .btn:hover {{
+    background: #3a3a3a;
+    border-color: #555;
+  }}
+  .btn.primary {{
+    background: #264f78;
+    border-color: #569cd6;
+    color: #fff;
+  }}
+  .btn.primary:hover {{
+    background: #2d5f8a;
+  }}
+  .provider-btn {{
+    width: 100%;
+  }}
+  .back-link {{
+    color: #858585;
+    text-decoration: none;
+    font-size: 13px;
+  }}
+  .back-link:hover {{
+    color: #b0b0b0;
+  }}
+</style>
+</head>
+<body>
+<div class="container">
+{content}
+</div>
+</body>
+</html>"""

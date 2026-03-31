@@ -541,6 +541,11 @@ export default function App() {
         const local = (result.data?.local as boolean) || false;
         if (url) setMobileConnectData({ url, via, local });
       }
+
+      if (result.action === "redirect") {
+        const url = (result.data?.url as string) || "";
+        if (url) window.location.href = apiPath(url);
+      }
     },
     [addTabForSession, showToast],
   );
