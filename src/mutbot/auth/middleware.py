@@ -31,6 +31,7 @@ _PUBLIC_PREFIXES = (
 _LOCAL_ONLY_PREFIXES = (
     "/mcp",
     "/internal/",
+    "/llm",
 )
 
 

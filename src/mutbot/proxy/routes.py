@@ -312,7 +312,7 @@ async def _proxy_stream(
         logger.info("Proxy stream completed (model=%s, duration=%dms)", model, duration_ms)
 
     return StreamingResponse(
-        event_generator(),
+        body_iterator=event_generator(),
         media_type="text/event-stream",
         headers={
             "cache-control": "no-cache",
