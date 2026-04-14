@@ -318,10 +318,9 @@ def build_default_agent(
     手动组装基础工具集：WebToolkit + ConfigToolkit + UIToolkit。
     无 LLM 配置时使用 NullProvider 触发配置向导。
     """
-    from mutagent.toolkits.web_toolkit import WebToolkit
+    from mutbot.builtins.pysandbox_toolkit import PySandboxToolkit
     from mutbot.builtins.config_toolkit import ConfigToolkit, NullProvider
     from mutbot.ui.toolkit import UIToolkit
-    import mutagent.builtins.web_local  # noqa: F401  -- 注册 LocalFetchImpl
 
     setup_environment(config)
 
@@ -336,7 +335,12 @@ def build_default_agent(
 
     # 手动组装基础工具集
     tool_set = ToolSet()
-    tool_set.add(WebToolkit(config=config))
+
+    # PySandbox — 从 server 获取 SandboxApp 单例
+    from mutbot.web.server import sandbox_app
+    if sandbox_app is not None:
+        tool_set.add(PySandboxToolkit(_app=sandbox_app, _state={}))
+
     tool_set.add(ConfigToolkit())
     tool_set.add(UIToolkit())
 

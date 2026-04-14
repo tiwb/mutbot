@@ -31,6 +31,7 @@ log_store: LogStore | None = None
 terminal_manager: TerminalManager | None = None
 channel_manager: Any = None
 config: MutbotConfig | None = None
+sandbox_app: Any = None  # SandboxApp | None
 
 
 # ---------------------------------------------------------------------------
@@ -95,6 +96,13 @@ async def _shutdown_cleanup():
     if terminal_manager is not None:
         await terminal_manager.close()
 
+    # 关闭 SandboxApp
+    if sandbox_app is not None:
+        from mutagent.sandbox.tools import PySandboxTools
+        await sandbox_app.shutdown()
+        PySandboxTools._app = None
+        logger.info("SandboxApp shut down")
+
 
 async def _watch_config_changes(cfg: MutbotConfig) -> None:
     """Background task: poll ~/.mutbot/config.json mtime every 5s."""
@@ -123,7 +131,7 @@ _background_tasks: list[asyncio.Task[Any]] = []
 
 async def _on_startup() -> None:
     """MutBot 启动逻辑（对应 Server.on_startup）。"""
-    global workspace_manager, session_manager, log_store, terminal_manager, channel_manager
+    global workspace_manager, session_manager, log_store, terminal_manager, channel_manager, sandbox_app
 
     assert config is not None, "config must be set before startup"
 
@@ -166,6 +174,20 @@ async def _on_startup() -> None:
     session_manager.log_dir = log_dir
     # Wire terminal_manager for Terminal Session lifecycle
     session_manager.terminal_manager = terminal_manager
+
+    # --- SandboxApp 初始化 ---
+    from mutagent.sandbox import SandboxApp
+    from mutagent.sandbox.tools import PySandboxTools
+    import mutagent.sandbox.tools  # noqa: F401 — 注册 PySandboxTools
+    import mutagent.builtins.web_local  # noqa: F401 — 注册 LocalFetchImpl
+    from mutbot.builtins.web_tools import set_config as _set_web_config
+    import mutbot.builtins.web_tools  # noqa: F401 — 注册 WebTools NamespaceTools
+    import mutbot.builtins.web_jina_ext  # noqa: F401 — 注册 Jina 覆盖实现
+    _set_web_config(config)
+    sandbox_app = SandboxApp(config=config)
+    await sandbox_app.setup()
+    PySandboxTools._app = sandbox_app
+    logger.info("SandboxApp initialized")
 
     # --- on_change 回调统一注册 ---
 
