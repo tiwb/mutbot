@@ -209,7 +209,7 @@ async def _on_startup() -> None:
     def _refresh_proxy(event):
         try:
             import mutbot.proxy.routes as _proxy_routes
-            _proxy_routes._providers_config = event.config.get("providers", default={}) or {}
+            _proxy_routes.initialize_providers(event.config.get("providers", default={}) or {})
         except ImportError:
             pass
 
@@ -231,11 +231,11 @@ async def _on_startup() -> None:
     # --- LLM proxy 初始配置 ---
     try:
         import mutbot.proxy.routes as _proxy_routes
-        _proxy_routes._providers_config = config.get("providers", default={}) or {}
-        logger.info("LLM proxy config loaded (%d providers)",
-                    len(_proxy_routes._providers_config))
+        _proxy_routes.initialize_providers(config.get("providers", default={}) or {})
+        logger.info("LLM proxy providers initialized (%d providers)",
+                    len(_proxy_routes._provider_instances))
     except Exception:
-        logger.warning("Failed to load LLM proxy config", exc_info=True)
+        logger.warning("Failed to initialize LLM proxy providers", exc_info=True)
 
     # --- Config file change watcher ---
     _background_tasks.append(asyncio.create_task(_watch_config_changes(config)))
