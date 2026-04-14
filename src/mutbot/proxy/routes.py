@@ -11,9 +11,10 @@ import logging
 import time
 from typing import Any
 
-import httpx
+import mutobj
 
 from mutagent.net.client import HttpClient
+from mutagent.provider import LLMProvider
 
 from mutbot.proxy.translation import (
     anthropic_request_to_openai,
@@ -27,7 +28,31 @@ logger = logging.getLogger(__name__)
 
 # 模块级配置（在 lifespan 中初始化）
 _providers_config: dict[str, dict[str, Any]] = {}
-_copilot_auth: Any = None  # 延迟 import CopilotAuth
+_provider_instances: dict[str, LLMProvider] = {}
+
+
+def initialize_providers(providers_config: dict[str, dict[str, Any]]) -> None:
+    """从 providers config 创建并缓存 provider 实例。
+
+    启动时和 config 变更时调用。
+    """
+    global _providers_config, _provider_instances
+    _providers_config = providers_config
+
+    # 确保内置 provider 已注册
+    import mutagent.builtins.anthropic_provider  # noqa: F401
+    import mutagent.builtins.openai_provider  # noqa: F401
+
+    instances: dict[str, LLMProvider] = {}
+    for name, conf in providers_config.items():
+        provider_path = conf.get("provider", "AnthropicProvider")
+        try:
+            provider_cls = mutobj.resolve_class(provider_path, base_cls=LLMProvider)
+            instances[name] = provider_cls.from_spec(conf)
+            logger.info("Proxy provider initialized: %s (%s)", name, provider_path)
+        except Exception:
+            logger.warning("Failed to initialize proxy provider '%s'", name, exc_info=True)
+    _provider_instances = instances
 
 
 # ---------------------------------------------------------------------------
@@ -90,23 +115,29 @@ class LlmCompletionsView(View):
 # Model resolution (provider 顺序搜索)
 # ---------------------------------------------------------------------------
 
-def _find_model_config(model_name: str) -> dict[str, Any] | None:
-    """根据模型名查找配置。按 provider 顺序搜索。"""
+def _find_model_config(model_name: str) -> tuple[dict[str, Any], LLMProvider] | None:
+    """根据模型名查找配置和 provider 实例。按 provider 顺序搜索。"""
     normalized = normalize_model_name(model_name)
 
-    for _prov_name, prov_conf in _providers_config.items():
+    for prov_name, prov_conf in _providers_config.items():
         models = prov_conf.get("models", [])
         if isinstance(models, list):
             for mid in models:
                 if mid == model_name or normalize_model_name(mid) == normalized:
                     result = {k: v for k, v in prov_conf.items() if k != "models"}
                     result["model_id"] = mid
-                    return result
+                    instance = _provider_instances.get(prov_name)
+                    if instance is not None:
+                        return result, instance
+                    return None
         elif isinstance(models, dict):
             if model_name in models:
                 result = {k: v for k, v in prov_conf.items() if k != "models"}
                 result["model_id"] = models[model_name]
-                return result
+                instance = _provider_instances.get(prov_name)
+                if instance is not None:
+                    return result, instance
+                return None
 
     return None
 
@@ -141,30 +172,30 @@ def _get_all_models() -> list[dict[str, str]]:
 # ---------------------------------------------------------------------------
 
 def _get_backend_info(
-    model_config: dict[str, Any],
+    provider: LLMProvider,
 ) -> tuple[str, str, dict[str, str]]:
-    """获取后端信息：(base_url, target_format, headers)。"""
-    provider = model_config.get("provider", "AnthropicProvider")
+    """从 provider 实例获取后端信息：(base_url, target_format, headers)。"""
+    from mutbot.copilot.provider import CopilotProvider
+    from mutagent.builtins.openai_provider import OpenAIProvider
 
-    if "CopilotProvider" in provider:
-        from mutbot.copilot.auth import CopilotAuth
-        auth = CopilotAuth.get_instance()
-        base_url = auth.get_base_url(model_config.get("account_type", "individual"))
-        headers = auth.get_headers()
+    if isinstance(provider, CopilotProvider):
+        base_url = provider.auth.get_base_url(provider.account_type)
+        headers = provider.auth.get_headers()
         return base_url, "openai", headers
 
-    elif "OpenAIProvider" in provider:
-        base_url = model_config.get("base_url", "https://api.openai.com/v1")
+    elif isinstance(provider, OpenAIProvider):
         headers = {
-            "Authorization": f"Bearer {model_config.get('auth_token', '')}",
+            "Authorization": f"Bearer {provider.api_key}",
             "Content-Type": "application/json",
         }
-        return base_url, "openai", headers
+        return provider.base_url, "openai", headers
 
     else:
-        base_url = model_config.get("base_url", "https://api.anthropic.com")
+        # AnthropicProvider 及其他
+        base_url = getattr(provider, 'base_url', 'https://api.anthropic.com')
+        api_key = getattr(provider, 'api_key', '')
         headers = {
-            "Authorization": f"Bearer {model_config.get('auth_token', '')}",
+            "Authorization": f"Bearer {api_key}",
             "anthropic-version": "2023-06-01",
             "Content-Type": "application/json",
         }
@@ -183,14 +214,15 @@ async def _proxy_request(
     model_name = body.get("model", "")
     stream = body.get("stream", False)
 
-    model_config = _find_model_config(model_name)
-    if model_config is None:
+    found = _find_model_config(model_name)
+    if found is None:
         return json_response(
             {"error": {"message": f"Model not found: {model_name}"}},
             status=404,
         )
 
-    base_url, target_format, headers = _get_backend_info(model_config)
+    model_config, provider = found
+    base_url, target_format, headers = _get_backend_info(provider)
     actual_model = model_config.get("model_id", model_name)
 
     # 构建后端请求
