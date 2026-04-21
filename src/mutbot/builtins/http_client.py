@@ -12,8 +12,9 @@ from mutagent.net.client import HttpClient
 
 
 @impl(HttpClient.create)
-def _create(**kwargs: Any) -> httpx.AsyncClient:
+def _create(*, user_agent: str | None = None, **kwargs: Any) -> httpx.AsyncClient:
+    ua = user_agent or f"MutBot.ai/{mutbot.__version__}"
     headers: dict[str, str] = dict(kwargs.pop("headers", None) or {})
-    headers.setdefault("user-agent", f"MutBot.ai/{mutbot.__version__}")
+    headers.setdefault("user-agent", ua)
     kwargs["headers"] = headers
     return httpx.AsyncClient(**kwargs)
