@@ -341,20 +341,32 @@ class TestSupervisorProxy:
 
     @pytest.mark.asyncio
     async def test_restart_endpoint(self):
-        """POST /api/restart 返回 200 并触发重启。"""
+        """POST /api/restart 等新 Worker ready 后返回 200,响应含 new_worker/old_worker。"""
         sup_port = _find_free_port()
         sup = Supervisor(listen_addresses=[("127.0.0.1", sup_port)], worker_args=[])
         sup._restarting = False
 
-        # Mock _do_restart 避免真正 spawn 子进程
-        restart_called = False
-        original_do_restart = sup._do_restart
+        # Mock _spawn_worker 避免真正 spawn 子进程
+        spawn_called = False
 
-        async def mock_do_restart():
-            nonlocal restart_called
-            restart_called = True
+        async def mock_spawn():
+            nonlocal spawn_called
+            spawn_called = True
+            sup._generation += 1
+            # 构造假 WorkerProcess
+            import subprocess as _sp
+            fake = WorkerProcess(port=9999, proc=_sp.Popen(["python", "-c", "import time; time.sleep(60)"]),
+                                 generation=sup._generation)
+            fake.ready = True
+            sup._active_worker = fake
+            return fake
 
-        sup._do_restart = mock_do_restart  # type: ignore
+        sup._spawn_worker = mock_spawn  # type: ignore
+
+        # mock drain 不做任何事
+        async def mock_drain_and_reap(old):
+            sup._restarting = False
+        sup._drain_and_reap = mock_drain_and_reap  # type: ignore
 
         try:
             server = await asyncio.start_server(
@@ -365,13 +377,15 @@ class TestSupervisorProxy:
             status, body = await _http_post(sup_port, "/api/restart")
             assert status == 200
             data = json.loads(body)
-            assert data["status"] == "restarting"
-
-            # 等待 mock task 执行
-            await asyncio.sleep(0.1)
-            assert restart_called
+            assert data["status"] == "ok"
+            assert "new_worker" in data
+            assert data["new_worker"]["generation"] >= 1
+            assert "supervisor" in data
+            assert spawn_called
 
         finally:
+            if sup._active_worker:
+                sup._active_worker.kill()
             for s in sup._servers:
                 s.close()
                 await s.wait_closed()

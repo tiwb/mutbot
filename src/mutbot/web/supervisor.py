@@ -21,6 +21,9 @@ from typing import Any
 
 logger = logging.getLogger("mutbot.supervisor")
 
+# Supervisor 启动时间（用于 uptime）
+_supervisor_start_time = time.monotonic()
+
 # 管理路径前缀
 _MANAGEMENT_PATHS = (b"/api/restart", b"/api/eval", b"/health")
 _INTERNAL_PREFIX = b"/internal/"
@@ -504,6 +507,7 @@ class Supervisor:
             "version": mutbot.__version__,
             "mode": "supervisor",
             "pid": os.getpid(),
+            "uptime_s": int(time.monotonic() - _supervisor_start_time),
             "worker": worker_info,
             "restarting": self._restarting,
         }
@@ -511,18 +515,67 @@ class Supervisor:
         await self._send_http_response(writer, 200, "OK", body=body, content_type="application/json")
 
     async def _handle_restart(self, writer: asyncio.StreamWriter) -> None:
-        """POST /api/restart — 触发 Worker 热重启。"""
+        """POST /api/restart — 触发 Worker 热重启，等待新 Worker ready 后返回。"""
         if self._restarting:
             body = json.dumps({"status": "already_restarting"}).encode("utf-8")
             await self._send_http_response(writer, 409, "Conflict", body=body, content_type="application/json")
             return
 
-        # 先返回响应（不阻塞客户端）
-        body = json.dumps({"status": "restarting"}).encode("utf-8")
+        # 记录旧 Worker 快照
+        old_worker = self._active_worker
+        old_snapshot: dict[str, Any] = {"status": "none"}
+        if old_worker:
+            old_snapshot = {
+                "pid": old_worker.proc.pid if old_worker.alive else None,
+                "generation": old_worker.generation,
+                "port": old_worker.port,
+            }
+
+        # 执行 spawn + 路由切换（同步等待）
+        self._restarting = True
+        t0 = time.monotonic()
+        try:
+            new_worker = await self._spawn_worker()
+        except Exception as e:
+            self._restarting = False
+            logger.exception("Restart failed: spawn new Worker error")
+            body = json.dumps({
+                "status": "error",
+                "error": f"spawn failed: {e}",
+                "old_worker": old_snapshot,
+            }, ensure_ascii=False).encode("utf-8")
+            await self._send_http_response(writer, 500, "Internal Server Error",
+                                           body=body, content_type="application/json")
+            return
+
+        elapsed = time.monotonic() - t0
+        logger.info("Route switched to Worker gen=%d (elapsed=%.2fs)", new_worker.generation, elapsed)
+
+        # 拼响应并返回（不等 drain)
+        import mutbot
+        sup_uptime = int(time.monotonic() - _supervisor_start_time)
+        resp = {
+            "status": "ok",
+            "version": mutbot.__version__,
+            "supervisor": {
+                "pid": os.getpid(),
+                "uptime_s": sup_uptime,
+            },
+            "old_worker": old_snapshot,
+            "new_worker": {
+                "pid": new_worker.proc.pid if new_worker.alive else None,
+                "generation": new_worker.generation,
+                "port": new_worker.port,
+                "ready": new_worker.ready,
+            },
+            "elapsed_s": round(elapsed, 2),
+            "drain": "background" if old_worker and old_worker.alive else "none",
+        }
+        body = json.dumps(resp, ensure_ascii=False).encode("utf-8")
         await self._send_http_response(writer, 200, "OK", body=body, content_type="application/json")
 
-        # 后台执行重启
-        self._restart_task = asyncio.create_task(self._do_restart())
+        # 后台 drain 旧 Worker
+        self._restart_task = asyncio.create_task(self._drain_and_reap(old_worker))
 
     async def _handle_eval(self, writer: asyncio.StreamWriter, body: bytes) -> None:
         """POST /api/eval — 在 Supervisor 进程中执行 Python 代码。"""
@@ -567,28 +620,9 @@ class Supervisor:
         resp_body = result_str.encode("utf-8")
         await self._send_http_response(writer, 200, "OK", body=resp_body, content_type="text/plain; charset=utf-8")
 
-    async def _do_restart(self) -> None:
-        """执行完整的热重启流程（蓝绿部署）。
-
-        顺序：先 spawn 新 Worker → 路由切换 → 再 drain 旧 Worker。
-        确保客户端重连时新 Worker 已就绪，避免连回旧 Worker。
-        """
-        self._restarting = True
-        old_worker = self._active_worker
+    async def _drain_and_reap(self, old_worker: "WorkerProcess | None") -> None:
+        """后台 drain 旧 Worker 并等待其退出。在 _handle_restart 返回响应后调用。"""
         try:
-            # 1. Spawn 新 Worker（旧 Worker 继续服务）
-            logger.info("Spawning new Worker...")
-            try:
-                new_worker = await self._spawn_worker()
-            except Exception:
-                logger.exception("Failed to spawn new Worker during restart")
-                self._restarting = False
-                return
-
-            # 2. 路由已切换（_spawn_worker 设置了 _active_worker）
-            logger.info("Route switched to Worker gen=%d", new_worker.generation)
-
-            # 3. Drain 旧 Worker（关闭 WS 连接，客户端重连时会路由到新 Worker）
             if old_worker and old_worker.alive:
                 old_worker.draining = True
                 logger.info("Draining Worker gen=%d (pid=%d)", old_worker.generation, old_worker.proc.pid)
@@ -596,13 +630,11 @@ class Supervisor:
                 if not drained:
                     logger.warning("Drain failed for Worker gen=%d, continuing", old_worker.generation)
 
-            # 4. 等待旧 Worker 退出
             if old_worker and old_worker.alive:
                 self._old_workers.append(old_worker)
                 asyncio.create_task(self._wait_old_worker_exit(old_worker))
-
         except Exception:
-            logger.exception("Restart failed")
+            logger.exception("Drain/reap failed")
         finally:
             self._restarting = False
 

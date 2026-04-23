@@ -175,7 +175,8 @@ class MutbotTools(NamespaceTools):
         """获取服务器全局运行状态:uptime、session 数、workspace 数、连接数、内存占用。
 
         Returns:
-            多行文本,包含版本、uptime、workspace/session/connection 数量、内存(MB)。
+            多行文本,包含版本、Supervisor/Worker PID + uptime + generation、
+            workspace/session/connection 数量、内存(MB)。
         """
         srv = _get_managers()
         try:
@@ -190,14 +191,47 @@ class MutbotTools(NamespaceTools):
         from mutbot.web.routes import _clients
         client_count = len(_clients)
 
-        uptime = time.monotonic() - _start_time
-        hours, remainder = divmod(int(uptime), 3600)
-        minutes, seconds = divmod(remainder, 60)
+        worker_uptime = time.monotonic() - _start_time
+        w_h, w_rem = divmod(int(worker_uptime), 3600)
+        w_m, w_s = divmod(w_rem, 60)
+
+        # 向 Supervisor 查询 /health 获取 supervisor uptime / worker generation
+        sup_info = ""
+        try:
+            import urllib.request
+            port = 8741
+            if srv.config:
+                listen = srv.config.get("listen", default=[])
+                if listen:
+                    addr = listen[0] if isinstance(listen, list) and listen else str(listen)
+                    if ":" in str(addr):
+                        port = int(str(addr).rsplit(":", 1)[1])
+                    elif str(addr).isdigit():
+                        port = int(addr)
+            with urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=2) as resp:
+                health = json.loads(resp.read())
+            sup_pid = health.get("pid")
+            sup_uptime_s = int(health.get("uptime_s", 0))
+            sh_h, sh_rem = divmod(sup_uptime_s, 3600)
+            sh_m, sh_s = divmod(sh_rem, 60)
+            worker = health.get("worker") or {}
+            sup_info = (
+                f"Supervisor:  pid={sup_pid}  uptime={sh_h}h{sh_m}m{sh_s}s\n"
+                f"Worker:      pid={worker.get('pid')}  gen={worker.get('generation')}  "
+                f"uptime={w_h}h{w_m}m{w_s}s"
+            )
+            if health.get("restarting"):
+                sup_info += "  [restarting]"
+            if worker.get("draining"):
+                sup_info += "  [draining]"
+            sup_info += "\n"
+        except Exception as e:
+            sup_info = f"Supervisor:  (查询失败: {e})\nWorker:      pid={os.getpid()}  uptime={w_h}h{w_m}m{w_s}s\n"
 
         mem_str = f"{mem_mb} MB" if mem_mb is not None else "N/A"
         return (
             f"mutbot v{mutbot.__version__}\n"
-            f"Uptime:      {hours}h{minutes}m{seconds}s\n"
+            f"{sup_info}"
             f"Workspaces:  {ws_count}\n"
             f"Sessions:    {sess_count}\n"
             f"Connections: {client_count}\n"
@@ -205,10 +239,11 @@ class MutbotTools(NamespaceTools):
         )
 
     async def restart(self) -> str:
-        """触发服务器热重启。通过 Supervisor 的 /api/restart 端点平滑交接(drain 旧 Worker → spawn 新 Worker)。
+        """触发服务器热重启。等待新 Worker ready 后返回确定结果(PID/generation 前后对比)。
 
         Returns:
-            JSON 字符串,包含 Supervisor 返回内容,或 {"error": ...}。
+            多行文本,包含新旧 Worker PID/generation、Supervisor 信息、耗时、drain 状态。
+            失败时返回错误信息。
         """
         import urllib.request
         srv = _get_managers()
@@ -225,11 +260,47 @@ class MutbotTools(NamespaceTools):
         url = f"http://127.0.0.1:{port}/api/restart"
         try:
             req = urllib.request.Request(url, data=b"", method="POST")
-            with urllib.request.urlopen(req, timeout=10) as resp:
+            # Supervisor 侧会等新 Worker ready 再响应,通常 2-3s,放宽到 30s
+            with urllib.request.urlopen(req, timeout=30) as resp:
                 result = json.loads(resp.read())
-                return json.dumps(result, ensure_ascii=False)
         except Exception as e:
-            return json.dumps({"error": str(e)}, ensure_ascii=False)
+            return f"重启失败: {e}"
+
+        if result.get("status") == "already_restarting":
+            return "重启失败: 已有重启任务在进行中"
+        if result.get("status") != "ok":
+            return f"重启失败: {result.get('error') or result}"
+
+        old = result.get("old_worker") or {}
+        new = result.get("new_worker") or {}
+        sup = result.get("supervisor") or {}
+
+        old_gen = old.get("generation")
+        new_gen = new.get("generation")
+        if old_gen is not None and new_gen is not None and new_gen <= old_gen:
+            return (
+                f"重启异常: generation 未递增 (old={old_gen} new={new_gen}),"
+                f"原始响应: {json.dumps(result, ensure_ascii=False)}"
+            )
+
+        sup_uptime = sup.get("uptime_s", 0)
+        sup_h, sup_rem = divmod(int(sup_uptime), 3600)
+        sup_m, sup_s = divmod(sup_rem, 60)
+
+        lines = [
+            "重启成功",
+            f"  Supervisor:  pid={sup.get('pid')}  uptime={sup_h}h{sup_m}m{sup_s}s",
+        ]
+        if old.get("status") == "none":
+            lines.append(f"  Worker:      新启动 gen={new_gen}  pid={new.get('pid')}")
+        else:
+            lines.append(
+                f"  Worker:      gen={old_gen} → gen={new_gen}  "
+                f"pid={old.get('pid')} → {new.get('pid')}  (新 Worker ready)"
+            )
+        lines.append(f"  耗时:        {result.get('elapsed_s')}s")
+        lines.append(f"  Drain:       {result.get('drain')}")
+        return "\n".join(lines)
 
     # ----- workspace -----
 
