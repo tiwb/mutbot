@@ -183,6 +183,7 @@ async def _on_startup() -> None:
     from mutbot.builtins.web_tools import set_config as _set_web_config
     import mutbot.builtins.web_tools  # noqa: F401 — 注册 WebTools NamespaceTools
     import mutbot.builtins.web_jina_ext  # noqa: F401 — 注册 Jina 覆盖实现
+    import mutbot.builtins.debug_tools  # noqa: F401 — 注册 MutbotTools NamespaceTools
     _set_web_config(config)
     sandbox_app = SandboxApp(config=config)
     await sandbox_app.setup()
