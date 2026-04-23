@@ -229,7 +229,7 @@ class DebugRpc(WorkspaceRpc):
 
     async def eval_result(self, params: dict, ctx: RpcContext) -> dict:
         """接收前端 eval_js 的执行结果，resolve 对应的 Future。"""
-        from mutbot.web.mcp import _eval_js_pending
+        from mutbot.builtins.debug_tools import _eval_js_pending
 
         eval_id = params.get("id", "")
         future = _eval_js_pending.get(eval_id)
