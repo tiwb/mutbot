@@ -3,6 +3,7 @@
 支持：
   python -m mutbot              — 启动服务器（默认 Supervisor 模式）
   python -m mutbot restart      — 触发运行中服务器的热重启
+  python -m mutbot pysandbox    — 向活 server 提交 Python 代码执行
   python -m mutbot --worker     — Worker 模式（仅 Supervisor 内部调用）
   python -m mutbot --no-supervisor — 单进程模式（调试用）
 """
@@ -75,18 +76,18 @@ def _restart_command() -> None:
     sys.exit(1)
 
 
-def _log_command() -> None:
-    """Delegate to mutbot.cli.log_query with remaining argv."""
-    from mutbot.cli.log_query import main as log_main
-    log_main(sys.argv[2:])
+def _pysandbox_command() -> None:
+    """Delegate to mutbot.cli.pysandbox with remaining argv."""
+    from mutbot.cli.pysandbox import main as pysandbox_main
+    pysandbox_main(sys.argv[2:])
 
 
 def main() -> None:
     """入口函数 — console_scripts 和 python -m 共用。"""
     if len(sys.argv) > 1 and sys.argv[1] == "restart":
         _restart_command()
-    elif len(sys.argv) > 1 and sys.argv[1] == "log":
-        _log_command()
+    elif len(sys.argv) > 1 and sys.argv[1] == "pysandbox":
+        _pysandbox_command()
     else:
         from mutbot.web.server import main as server_main
         server_main()

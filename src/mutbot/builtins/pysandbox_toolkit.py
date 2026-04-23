@@ -40,6 +40,7 @@ import is not supported.
 # ---------------------------------------------------------------------------
 
 import mutagent  # noqa: E402
+from mutagent.sandbox.tools import format_exec_result  # noqa: E402
 
 
 @mutagent.impl(PySandboxToolkit.pysandbox)
@@ -48,15 +49,5 @@ async def _pysandbox(self: PySandboxToolkit, code: str) -> str:
     result = await loop.run_in_executor(
         None, self._app.exec_code, code, self._state)
 
-    if "error" in result:
-        text = result["error"]
-        if result.get("traceback"):
-            text += "\n" + result["traceback"]
-        return text
-
-    parts = []
-    if result.get("stdout"):
-        parts.append(result["stdout"])
-    if result.get("result") is not None:
-        parts.append(repr(result["result"]))
-    return '\n'.join(parts) if parts else "(no output)"
+    text, _is_error = format_exec_result(result)
+    return text
