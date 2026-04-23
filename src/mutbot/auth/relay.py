@@ -177,8 +177,11 @@ class RelayProviderCallbackView(View):
         }
 
         try:
+            from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
             from cryptography.hazmat.primitives.serialization import load_pem_private_key
             private_key = load_pem_private_key(private_key_pem.encode("utf-8"), password=None)
+            if not isinstance(private_key, Ed25519PrivateKey):
+                raise TypeError(f"expected Ed25519 private key, got {type(private_key).__name__}")
             assertion = jwt.encode(assertion_payload, private_key, algorithm="EdDSA")
         except Exception as e:
             logger.error("签发断言失败: %s", e)
