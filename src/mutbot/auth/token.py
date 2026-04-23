@@ -105,8 +105,11 @@ def verify_relay_assertion(token: str, public_key_pem: str) -> dict[str, Any] | 
         验证通过返回 payload dict，否则返回 None。
     """
     try:
+        from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
         from cryptography.hazmat.primitives.serialization import load_pem_public_key
         key = load_pem_public_key(public_key_pem.encode("utf-8"))
+        if not isinstance(key, Ed25519PublicKey):
+            raise TypeError(f"expected Ed25519 public key, got {type(key).__name__}")
         # audience 由调用方单独校验，此处跳过
         return jwt.decode(token, key, algorithms=["EdDSA"], options={"verify_aud": False})
     except Exception as e:

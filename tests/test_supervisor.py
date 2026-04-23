@@ -36,6 +36,10 @@ async def _start_echo_server(port: int) -> asyncio.AbstractServer:
     async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
         try:
             first_line = await asyncio.wait_for(reader.readline(), timeout=5.0)
+            # supervisor 发送 PROXY protocol v1 header（"PROXY TCP4 ..."），
+            # echo server 不处理 PROXY，跳过后读取真正的 HTTP request line
+            if first_line.startswith(b"PROXY "):
+                first_line = await asyncio.wait_for(reader.readline(), timeout=5.0)
             # 读取剩余 headers
             while True:
                 line = await reader.readline()

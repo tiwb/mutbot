@@ -179,7 +179,7 @@ class MutbotTools(NamespaceTools):
         """
         srv = _get_managers()
         try:
-            import psutil
+            import psutil  # pyright: ignore[reportMissingModuleSource]
             mem_mb = round(psutil.Process(os.getpid()).memory_info().rss / 1024 / 1024, 1)
         except ImportError:
             mem_mb = None
