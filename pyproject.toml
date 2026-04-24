@@ -53,5 +53,6 @@ addopts = "-v --tb=short"
 
 [tool.pyright]
 pythonVersion = "3.11"
-pythonPlatform = "All"
+pythonPlatform = "Linux"
+include = ["src"]
 extraPaths = ["src"]
