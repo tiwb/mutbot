@@ -320,7 +320,7 @@ class RestartServerMenu(Menu):
                 elif str(addr).isdigit():
                     port = int(addr)
 
-        url = f"http://127.0.0.1:{port}/api/restart"
+        url = f"http://127.0.0.1:{port}/api/restart?wait=false"
         try:
             req = urllib.request.Request(url, data=b"", method="POST")
             with urllib.request.urlopen(req, timeout=10) as resp:
