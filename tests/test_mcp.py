@@ -15,11 +15,12 @@ from typing import Any
 
 import pytest
 
-from mutagent.net.server import Server
-from mutagent.net.mcp import MCPView, MCPToolSet
-from mutagent.net.client import MCPClient, MCPError
-from mutagent.net._mcp_impl import MCPToolProvider
-from mutagent.net._mcp_proto import (
+from mutio.net.server import Server
+from mutio.mcp.view import MCPView
+from mutio.mcp.toolset import MCPToolSet
+from mutio.mcp.client import MCPClient, MCPError
+from mutio.mcp._view_impl import MCPToolProvider
+from mutio.mcp.protocol import (
     JsonRpcDispatcher,
     JsonRpcError,
     PARSE_ERROR,
@@ -278,7 +279,7 @@ class TestMCPEndToEnd:
             client = MCPClient(url=f"http://127.0.0.1:{port}/test-mcp")
             await client.connect()
             try:
-                from mutagent.net._client_impl import _ext
+                from mutio.mcp._client_impl import _ext
                 ext = _ext(client)
                 assert ext._session_id is not None
                 assert len(ext._session_id) == 32  # hex(16 bytes)

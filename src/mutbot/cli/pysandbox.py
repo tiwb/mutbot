@@ -16,7 +16,7 @@ import asyncio
 import sys
 from typing import Any, Sequence
 
-from mutagent.net.client import MCPClient, MCPError
+from mutio.mcp.client import MCPClient, MCPError
 
 
 DEFAULT_PORT = 8741

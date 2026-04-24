@@ -17,8 +17,8 @@ from typing import Any
 
 import pytest
 
-from mutagent.net.asgi import Server
-from mutagent.net._protocol import HTTPProtocol, RequestResponseCycle, FlowControl, WSProtocol, format_sse
+from mutio.net.asgi import Server
+from mutio.net._protocol import HTTPProtocol, RequestResponseCycle, FlowControl, WSProtocol, format_sse
 
 
 # ---------------------------------------------------------------------------

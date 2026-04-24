@@ -13,7 +13,7 @@ from typing import Any
 
 import mutobj
 
-from mutagent.net.client import HttpClient
+from mutio.net.client import HttpClient
 from mutagent.provider import LLMProvider
 
 from mutbot.proxy.translation import (
@@ -22,7 +22,7 @@ from mutbot.proxy.translation import (
     openai_response_to_anthropic,
     openai_sse_to_anthropic_events,
 )
-from mutagent.net.server import View, Request, Response, StreamingResponse, json_response, html_response
+from mutio.net.server import View, Request, Response, StreamingResponse, json_response, html_response
 
 logger = logging.getLogger(__name__)
 

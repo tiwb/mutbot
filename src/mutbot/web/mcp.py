@@ -7,7 +7,7 @@ sandbox namespace ``mutbot.*``,见 ``mutbot/builtins/debug_tools.py``。
 from __future__ import annotations
 
 import mutbot
-from mutagent.net.mcp import MCPView
+from mutio.mcp.view import MCPView
 from mutio.mcp import MCPPromptSet
 
 

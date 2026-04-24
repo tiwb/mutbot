@@ -1,0 +1,30 @@
+/**
+ * Setup 页暗色主题 — 抄自 mutgui/frontend/src/plugins/theme-dark/dark.css
+ *
+ * 在 body.mutgui-dark 下覆盖 mutgui 的 --mutgui-* token，
+ * 并设置 body 背景、前景色、color-scheme。
+ */
+@layer mutgui.theme {
+  html:has(body.mutgui-dark),
+  body.mutgui-dark,
+  body.mutgui-dark .mutgui-root {
+    color-scheme: dark;
+  }
+
+  body.mutgui-dark,
+  body.mutgui-dark .mutgui-root {
+    --mutgui-accent:    oklch(0.55 0.17 240);
+    --mutgui-bg:        oklch(0.2393 0 0);
+    --mutgui-surface:   oklch(0.2659 0 0);
+    --mutgui-text:      oklch(0.85 0 0);
+    --mutgui-text-dim:  oklch(0.60 0 0);
+    --mutgui-border:    oklch(0.3562 0 0);
+
+    --mutgui-scrollbar-thumb: rgba(121, 121, 121, 0.4);
+  }
+
+  body.mutgui-dark {
+    background: var(--mutgui-bg);
+    color: var(--mutgui-text);
+  }
+}

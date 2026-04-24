@@ -26,7 +26,7 @@ def main() -> None:
     )
 
     from mutbot.ptyhost._app import PtyHostApp
-    from mutagent.net.asgi import Server as _ASGIServer
+    from mutio.net.asgi import Server as _ASGIServer
 
     app = PtyHostApp()
 

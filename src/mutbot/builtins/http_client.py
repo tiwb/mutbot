@@ -8,7 +8,7 @@ import httpx
 
 import mutbot
 from mutagent import impl
-from mutagent.net.client import HttpClient
+from mutio.net.client import HttpClient
 
 
 @impl(HttpClient.create)

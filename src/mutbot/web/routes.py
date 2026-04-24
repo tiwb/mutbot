@@ -12,7 +12,7 @@ from typing import Any, TYPE_CHECKING
 if TYPE_CHECKING:
     from mutbot.runtime.config import MutbotConfig
 
-from mutagent.net.server import View, WebSocketView, WebSocketConnection, WebSocketDisconnect, json_response, Response
+from mutio.net.server import View, WebSocketView, WebSocketConnection, WebSocketDisconnect, json_response, Response
 from mutbot.web.rpc import (
     RpcDispatcher, RpcContext, make_event,
     AppRpc, WorkspaceRpc, SessionRpc,

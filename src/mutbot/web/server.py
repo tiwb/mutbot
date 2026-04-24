@@ -17,7 +17,7 @@ from mutbot.runtime.workspace import WorkspaceManager
 from mutbot.runtime.session_manager import SessionManager
 from mutbot.runtime.terminal import TerminalManager
 from mutbot.runtime.config import MutbotConfig, load_mutbot_config
-from mutagent.net.server import Server, StaticView
+from mutio.net.server import Server, StaticView
 
 logger = logging.getLogger(__name__)
 
@@ -139,6 +139,7 @@ async def _on_startup() -> None:
     import mutbot.auth.views as _auth_views  # noqa: F401
     import mutbot.auth.relay as _auth_relay  # noqa: F401
     import mutbot.auth.middleware as _auth_mw  # noqa: F401
+    import mutbot.auth.setup_view as _auth_setup_view  # noqa: F401
 
     workspace_manager = WorkspaceManager()
     session_manager = SessionManager(config=config)
@@ -468,7 +469,7 @@ def _parse_args():
 def worker_main(port: int, debug: bool = False) -> None:
     """Worker 进程入口：监听 localhost 指定端口，运行完整 MutBotServer。"""
     import mutbot
-    from mutagent.net.server import Server as _Server
+    from mutio.net.server import Server as _Server
     from mutagent import impl as _impl
 
     # 1. Config
@@ -581,7 +582,7 @@ def main():
 def _standalone_main(addresses: list[tuple[str, int]], debug: bool = False) -> None:
     """单进程模式（与原来的 main() 行为一致）。"""
     import mutbot
-    from mutagent.net.server import Server as _Server
+    from mutio.net.server import Server as _Server
     from mutagent import impl as _impl
 
     # 1. Config

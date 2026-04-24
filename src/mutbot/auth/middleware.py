@@ -10,7 +10,7 @@ import logging
 from typing import Any
 
 import mutobj
-from mutagent.net.server import Server, Response
+from mutio.net.server import Server, Response
 
 from mutbot.auth.token import verify_session_token, extract_token_from_cookie
 from mutbot.auth.network import resolve_client_ip, is_loopback_ip
@@ -125,6 +125,10 @@ async def _mutbot_before_route(self: Server, scope: dict[str, Any], path: str) -
         # 非本地请求 → 拦截，重定向到 /auth/setup
         # 白名单路径放行（/auth/ 前缀包含 /auth/setup）
         if _is_public_path(path):
+            return None
+
+        # 静态资源放行（setup 页需要加载 setup.js / setup.css 等）
+        if _is_static_path(path):
             return None
 
         # 其余非本地请求（含根路径）→ 重定向到 /auth/setup

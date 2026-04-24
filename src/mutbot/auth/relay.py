@@ -14,7 +14,7 @@ from typing import Any
 from urllib.parse import urlencode
 
 import jwt
-from mutagent.net.server import View, Request, Response, json_response
+from mutio.net.server import View, Request, Response, json_response
 
 from mutbot.auth.providers import create_provider_from_config
 

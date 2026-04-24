@@ -16,6 +16,7 @@ keywords = ["ai", "agent", "llm", "runtime", "hot-reload"]
 dependencies = [
     "mutagent[web-extract]~=0.7.0",
     "mutio~=0.7.0",
+    "mutgui~=0.1.0",
     "pyte>=0.8.0",
     "PyJWT[crypto]>=2.8.0",
     "pywinpty>=2.0.0; sys_platform == 'win32'",
