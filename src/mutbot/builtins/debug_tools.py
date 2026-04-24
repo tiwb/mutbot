@@ -257,7 +257,7 @@ class MutbotTools(NamespaceTools):
                 elif str(addr).isdigit():
                     port = int(addr)
 
-        url = f"http://127.0.0.1:{port}/api/restart"
+        url = f"http://127.0.0.1:{port}/api/restart?wait=true"
         try:
             req = urllib.request.Request(url, data=b"", method="POST")
             # Supervisor 侧会等新 Worker ready 再响应,通常 2-3s,放宽到 30s

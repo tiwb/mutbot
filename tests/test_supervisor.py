@@ -340,8 +340,8 @@ class TestSupervisorProxy:
                 await s.wait_closed()
 
     @pytest.mark.asyncio
-    async def test_restart_endpoint(self):
-        """POST /api/restart 等新 Worker ready 后返回 200,响应含 new_worker/old_worker。"""
+    async def test_restart_endpoint_wait_true(self):
+        """POST /api/restart?wait=true 等新 Worker ready 后返回 200,响应含 new_worker/old_worker。"""
         sup_port = _find_free_port()
         sup = Supervisor(listen_addresses=[("127.0.0.1", sup_port)], worker_args=[])
         sup._restarting = False
@@ -374,7 +374,7 @@ class TestSupervisorProxy:
             )
             sup._servers.append(server)
 
-            status, body = await _http_post(sup_port, "/api/restart")
+            status, body = await _http_post(sup_port, "/api/restart?wait=true")
             assert status == 200
             data = json.loads(body)
             assert data["status"] == "ok"
@@ -385,6 +385,79 @@ class TestSupervisorProxy:
 
         finally:
             if sup._active_worker:
+                sup._active_worker.kill()
+            for s in sup._servers:
+                s.close()
+                await s.wait_closed()
+
+    @pytest.mark.asyncio
+    async def test_restart_endpoint_default_no_wait(self):
+        """POST /api/restart 默认 wait=false：立即返回 status=restarting，spawn 在后台。"""
+        sup_port = _find_free_port()
+        sup = Supervisor(listen_addresses=[("127.0.0.1", sup_port)], worker_args=[])
+        sup._restarting = False
+
+        # 设置一个 mock 旧 Worker 用于快照
+        old_mock_proc = MagicMock()
+        old_mock_proc.poll.return_value = None
+        old_mock_proc.pid = 11111
+        old_worker = WorkerProcess(port=8888, proc=old_mock_proc, generation=3)
+        old_worker.ready = True
+        sup._active_worker = old_worker
+
+        # 用 Event 控制 spawn 何时完成，验证响应是在 spawn 之前返回的
+        spawn_started = asyncio.Event()
+        spawn_can_finish = asyncio.Event()
+        spawn_called = False
+
+        async def mock_spawn():
+            nonlocal spawn_called
+            spawn_called = True
+            spawn_started.set()
+            await spawn_can_finish.wait()
+            sup._generation += 1
+            import subprocess as _sp
+            fake = WorkerProcess(port=9999, proc=_sp.Popen(["python", "-c", "import time; time.sleep(60)"]),
+                                 generation=sup._generation)
+            fake.ready = True
+            sup._active_worker = fake
+            return fake
+
+        sup._spawn_worker = mock_spawn  # type: ignore
+
+        async def mock_drain_and_reap(old):
+            sup._restarting = False
+        sup._drain_and_reap = mock_drain_and_reap  # type: ignore
+
+        try:
+            server = await asyncio.start_server(
+                sup._handle_connection, host="127.0.0.1", port=sup_port,
+            )
+            sup._servers.append(server)
+
+            # 不指定 wait → 默认 false
+            status, body = await _http_post(sup_port, "/api/restart")
+            assert status == 200
+            data = json.loads(body)
+            assert data["status"] == "restarting"
+            # 旧 Worker 快照应包含
+            assert data["old_worker"]["generation"] == 3
+            assert data["old_worker"]["pid"] == 11111
+            # 响应里不应有 new_worker（spawn 还在后台）
+            assert "new_worker" not in data
+            # 此时 spawn 已经被后台任务启动
+            await asyncio.wait_for(spawn_started.wait(), timeout=2.0)
+            assert spawn_called
+
+        finally:
+            spawn_can_finish.set()
+            # 让后台 task 走完
+            if sup._restart_task:
+                try:
+                    await asyncio.wait_for(sup._restart_task, timeout=2.0)
+                except Exception:
+                    pass
+            if sup._active_worker and sup._active_worker is not old_worker:
                 sup._active_worker.kill()
             for s in sup._servers:
                 s.close()

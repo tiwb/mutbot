@@ -469,7 +469,9 @@ class Supervisor:
                 await self._send_http_response(client_writer, 403, "Forbidden")
                 return
             if method == b"POST":
-                await self._handle_restart(client_writer)
+                # ?wait=true → 同步等新 Worker ready 再返回（默认 false，立即返回）
+                wait = b"wait=true" in path
+                await self._handle_restart(client_writer, wait=wait)
             else:
                 await self._send_http_response(client_writer, 405, "Method Not Allowed")
         elif path == b"/api/eval" or path.startswith(b"/api/eval?"):
@@ -514,8 +516,14 @@ class Supervisor:
         body = json.dumps(data, ensure_ascii=False).encode("utf-8")
         await self._send_http_response(writer, 200, "OK", body=body, content_type="application/json")
 
-    async def _handle_restart(self, writer: asyncio.StreamWriter) -> None:
-        """POST /api/restart — 触发 Worker 热重启，等待新 Worker ready 后返回。"""
+    async def _handle_restart(self, writer: asyncio.StreamWriter, wait: bool = False) -> None:
+        """POST /api/restart — 触发 Worker 热重启。
+
+        wait=True:  同步等新 Worker spawn + 路由切换完成才返回（drain 后台），
+                    响应含 old/new worker PID + generation，agent 可立刻确认。
+        wait=False: 立即返回 status=restarting + 旧 Worker 快照，spawn 和 drain 都在后台。
+                    适合 UI 触发，避免前端卡顿。
+        """
         if self._restarting:
             body = json.dumps({"status": "already_restarting"}).encode("utf-8")
             await self._send_http_response(writer, 409, "Conflict", body=body, content_type="application/json")
@@ -531,8 +539,19 @@ class Supervisor:
                 "port": old_worker.port,
             }
 
-        # 执行 spawn + 路由切换（同步等待）
         self._restarting = True
+
+        if not wait:
+            # 立即返回，spawn + drain 都放后台
+            body = json.dumps({
+                "status": "restarting",
+                "old_worker": old_snapshot,
+            }, ensure_ascii=False).encode("utf-8")
+            await self._send_http_response(writer, 200, "OK", body=body, content_type="application/json")
+            self._restart_task = asyncio.create_task(self._spawn_and_drain_bg(old_worker))
+            return
+
+        # wait=True：同步等待 spawn + 路由切换完成
         t0 = time.monotonic()
         try:
             new_worker = await self._spawn_worker()
@@ -576,6 +595,26 @@ class Supervisor:
 
         # 后台 drain 旧 Worker
         self._restart_task = asyncio.create_task(self._drain_and_reap(old_worker))
+
+    async def _spawn_and_drain_bg(self, old_worker: "WorkerProcess | None") -> None:
+        """后台执行完整重启：spawn 新 Worker → drain 旧 Worker。
+
+        wait=False 路径专用。失败只记日志（client 已收到响应，无法回报）。
+        """
+        try:
+            try:
+                new_worker = await self._spawn_worker()
+            except Exception:
+                logger.exception("Background restart failed: spawn new Worker error")
+                self._restarting = False
+                return
+            logger.info("Route switched to Worker gen=%d (background restart)", new_worker.generation)
+        except Exception:
+            logger.exception("Background restart failed unexpectedly")
+            self._restarting = False
+            return
+        # drain 旧 Worker（_drain_and_reap 自带 finally 清 _restarting）
+        await self._drain_and_reap(old_worker)
 
     async def _handle_eval(self, writer: asyncio.StreamWriter, body: bytes) -> None:
         """POST /api/eval — 在 Supervisor 进程中执行 Python 代码。"""
