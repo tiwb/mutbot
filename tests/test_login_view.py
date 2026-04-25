@@ -51,7 +51,7 @@ class TestLoginPageView:
     async def test_get_renders_html(self) -> None:
         view = LoginPageView()
         resp = await view.get(_make_request())
-        assert resp.status == 200
+        assert resp.status_code == 200
         assert b"<title>MutBot" in resp.body
         assert b"Sign in to continue" in resp.body
         # JS 引用 /auth/providers
@@ -61,7 +61,7 @@ class TestLoginPageView:
     async def test_get_embeds_safe_next_into_js(self) -> None:
         view = LoginPageView()
         resp = await view.get(_make_request(query={"next": "/auth/setup"}))
-        assert resp.status == 200
+        assert resp.status_code == 200
         # next 通过 repr() 嵌入 JS 常量 NEXT
         assert b"const NEXT = '/auth/setup'" in resp.body
 

@@ -13,7 +13,7 @@ import logging
 from html import escape
 from urllib.parse import parse_qsl
 
-from mutio.net.server import Request, Response, View, html_response
+from mutio.net.server import HTMLResponse, RedirectResponse, Request, Response, View
 
 from mutbot.auth.token import create_session_token, set_session_cookie
 
@@ -109,14 +109,14 @@ class SetupTokenLoginView(View):
         import mutbot.auth.setup_token as setup_token
         if not setup_token.is_active():
             # token 已被消费(auth 已配置 / 主动失效)— 跳回主登录页
-            return Response(status=302, headers={"location": "/auth/login"})
+            return RedirectResponse("/auth/login", status_code=302)
         next_url = _safe_next(request.query_params.get("next", ""))
-        return html_response(_render_form(next_url=next_url))
+        return HTMLResponse(_render_form(next_url=next_url))
 
     async def post(self, request: Request) -> Response:
         import mutbot.auth.setup_token as setup_token
         if not setup_token.is_active():
-            return Response(status=302, headers={"location": "/auth/login"})
+            return RedirectResponse("/auth/login", status_code=302)
 
         body = await request.body()
         form = dict(parse_qsl(body.decode("utf-8", errors="replace")))
@@ -124,11 +124,11 @@ class SetupTokenLoginView(View):
         next_url = _safe_next(form.get("next") or "")
 
         if not token:
-            return html_response(_render_form(error="Please enter a token", next_url=next_url), status=400)
+            return HTMLResponse(_render_form(error="Please enter a token", next_url=next_url), status_code=400)
 
         if not setup_token.verify(token):
             logger.info("setup-token login failed: invalid token")
-            return html_response(_render_form(error="Invalid token", next_url=next_url), status=401)
+            return HTMLResponse(_render_form(error="Invalid token", next_url=next_url), status_code=401)
 
         session_token = create_session_token(
             sub=SETUP_BOOTSTRAP_SUB,
@@ -139,11 +139,11 @@ class SetupTokenLoginView(View):
         )
         # next 优先(如来自 /auth/login?next=/auth/setup),否则默认 /auth/setup
         target = next_url if next_url else "/auth/setup"
-        headers: dict[str, str] = {"location": target}
-        set_session_cookie(headers, session_token, secure=_is_secure(request))
+        cookie_headers: dict[str, str] = {}
+        set_session_cookie(cookie_headers, session_token, secure=_is_secure(request))
         logger.info("setup-token login succeeded; session issued (sub=%s) → %s",
                     SETUP_BOOTSTRAP_SUB, target)
-        return Response(status=302, headers=headers)
+        return RedirectResponse(target, status_code=302, headers=cookie_headers)
 
 
 __all__ = ["SetupTokenLoginView", "SETUP_BOOTSTRAP_SUB", "SETUP_SESSION_TTL"]

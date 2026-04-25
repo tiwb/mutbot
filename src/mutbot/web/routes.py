@@ -12,7 +12,7 @@ from typing import Any, TYPE_CHECKING
 if TYPE_CHECKING:
     from mutbot.runtime.config import MutbotConfig
 
-from mutio.net.server import View, WebSocketView, WebSocketConnection, WebSocketDisconnect, json_response, Response
+from mutio.net.server import JSONResponse, Response, View, WebSocketConnection, WebSocketDisconnect, WebSocketView
 from mutbot.web.rpc import (
     RpcDispatcher, RpcContext, make_event,
     AppRpc, WorkspaceRpc, SessionRpc,
@@ -89,7 +89,7 @@ class HealthView(View):
 
     async def get(self, request):
         import mutbot
-        return json_response({"status": "ok", "version": mutbot.__version__})
+        return JSONResponse({"status": "ok", "version": mutbot.__version__})
 
 
 # ---------------------------------------------------------------------------
@@ -142,7 +142,7 @@ class InternalDrainView(View):
                 except Exception:
                     pass
 
-        return json_response({"status": "drained"})
+        return JSONResponse({"status": "drained"})
 
 
 # ---------------------------------------------------------------------------

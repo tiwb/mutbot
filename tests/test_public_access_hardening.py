@@ -241,7 +241,7 @@ class TestMiddleware:
             scope = _make_scope("/api/sessions", client_ip="10.0.0.1")
             result = await _mutbot_before_route(None, scope, "/api/sessions")
             assert result is not None, "远程 + 无 auth 应拦截请求"
-            assert result.status == 302
+            assert result.status_code == 302
             location = result.headers.get("location", "")
             assert location.startswith("/auth/login")
             assert "next=/api/sessions" in location
@@ -259,7 +259,7 @@ class TestMiddleware:
                 scope = _make_scope("/api/sessions", client_ip="10.0.0.1")
                 result = await _mutbot_before_route(None, scope, "/api/sessions")
                 assert result is not None, "远程 + 无 auth + 有 token 应拦截请求"
-                assert result.status == 302
+                assert result.status_code == 302
                 assert result.headers.get("location", "").startswith("/auth/login")
         finally:
             st.invalidate()
@@ -285,7 +285,7 @@ class TestMiddleware:
             scope = _make_scope("/ws/app", client_ip="10.0.0.1", scope_type="websocket")
             result = await _mutbot_before_route(None, scope, "/ws/app")
             assert result is not None
-            assert result.status == 4401
+            assert result.status_code == 4401
 
     @pytest.mark.asyncio
     async def test_setup_path_unauthenticated_redirects(self):
@@ -297,7 +297,7 @@ class TestMiddleware:
             scope = _make_scope("/auth/setup", client_ip="10.0.0.1")
             result = await _mutbot_before_route(None, scope, "/auth/setup")
             assert result is not None
-            assert result.status == 302
+            assert result.status_code == 302
             location = result.headers.get("location", "")
             assert location.startswith("/auth/login")
             assert "next=/auth/setup" in location
@@ -312,7 +312,7 @@ class TestMiddleware:
             scope = _make_scope("/auth/setup", client_ip="127.0.0.1")
             result = await _mutbot_before_route(None, scope, "/auth/setup")
             assert result is not None
-            assert result.status == 302
+            assert result.status_code == 302
 
     @pytest.mark.asyncio
     async def test_setup_ws_unauthenticated_4401(self):
@@ -324,7 +324,7 @@ class TestMiddleware:
             scope = _make_scope("/auth/setup/ws", client_ip="10.0.0.1", scope_type="websocket")
             result = await _mutbot_before_route(None, scope, "/auth/setup/ws")
             assert result is not None
-            assert result.status == 4401
+            assert result.status_code == 4401
 
     @pytest.mark.asyncio
     async def test_setup_bootstrap_session_can_access_setup(self):
@@ -355,7 +355,7 @@ class TestMiddleware:
             scope = _make_scope("/", client_ip="10.0.0.1")
             result = await _mutbot_before_route(None, scope, "/")
             assert result is not None
-            assert result.status == 302
+            assert result.status_code == 302
             assert result.headers.get("location", "").endswith("/auth/setup")
 
     @pytest.mark.asyncio
@@ -372,7 +372,7 @@ class TestMiddleware:
             scope = _make_scope("/api/sessions", client_ip="10.0.0.1")
             result = await _mutbot_before_route(None, scope, "/api/sessions")
             assert result is not None
-            assert result.status == 403
+            assert result.status_code == 403
 
     @pytest.mark.asyncio
     async def test_setup_bootstrap_can_access_relay_callback(self):
@@ -396,7 +396,7 @@ class TestMiddleware:
             scope = _make_scope("/", client_ip="10.0.0.1")
             result = await _mutbot_before_route(None, scope, "/")
             assert result is not None
-            assert result.status == 302
+            assert result.status_code == 302
             assert result.headers.get("location", "").startswith("/auth/login")
 
     @pytest.mark.asyncio
@@ -410,7 +410,7 @@ class TestMiddleware:
             scope = _make_scope("/internal/drain", client_ip="10.0.0.1")
             result = await _mutbot_before_route(None, scope, "/internal/drain")
             assert result is not None
-            assert result.status == 403
+            assert result.status_code == 403
 
     @pytest.mark.asyncio
     async def test_mcp_path_blocked_for_remote(self):
@@ -423,7 +423,7 @@ class TestMiddleware:
             scope = _make_scope("/mcp", client_ip="10.0.0.1")
             result = await _mutbot_before_route(None, scope, "/mcp")
             assert result is not None
-            assert result.status == 403
+            assert result.status_code == 403
 
     @pytest.mark.asyncio
     async def test_mcp_allowed_for_local(self):
@@ -447,7 +447,7 @@ class TestMiddleware:
             scope = _make_scope("/auth", client_ip="10.0.0.1")
             result = await _mutbot_before_route(None, scope, "/auth")
             assert result is not None
-            assert result.status == 302
+            assert result.status_code == 302
             assert result.headers.get("location") == "/auth/login"
 
     @pytest.mark.asyncio
@@ -460,7 +460,7 @@ class TestMiddleware:
             scope = _make_scope("/auth/", client_ip="127.0.0.1")
             result = await _mutbot_before_route(None, scope, "/auth/")
             assert result is not None
-            assert result.status == 302
+            assert result.status_code == 302
             assert result.headers.get("location") == "/auth/login"
 
     @pytest.mark.asyncio
@@ -473,7 +473,7 @@ class TestMiddleware:
             scope = _make_scope("/auth", client_ip="10.0.0.1", query_string=b"next=/auth/setup")
             result = await _mutbot_before_route(None, scope, "/auth")
             assert result is not None
-            assert result.status == 302
+            assert result.status_code == 302
             location = result.headers.get("location", "")
             assert location.startswith("/auth/login")
             assert "next=/auth/setup" in location
@@ -488,7 +488,7 @@ class TestMiddleware:
             scope = _make_scope("/auth", client_ip="10.0.0.1", query_string=b"next=//evil.com")
             result = await _mutbot_before_route(None, scope, "/auth")
             assert result is not None
-            assert result.status == 302
+            assert result.status_code == 302
             assert result.headers.get("location") == "/auth/login"
 
 

@@ -22,7 +22,7 @@ from mutbot.proxy.translation import (
     openai_response_to_anthropic,
     openai_sse_to_anthropic_events,
 )
-from mutio.net.server import View, Request, Response, StreamingResponse, json_response, html_response
+from mutio.net.server import HTMLResponse, JSONResponse, Request, Response, StreamingResponse, View
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +64,7 @@ class LlmInfoView(View):
     path = "/llm"
 
     async def get(self, request: Request) -> Response:
-        return html_response(_render_info_page())
+        return HTMLResponse(_render_info_page())
 
 
 class LlmInfoSlashView(View):
@@ -72,7 +72,7 @@ class LlmInfoSlashView(View):
     path = "/llm/"
 
     async def get(self, request: Request) -> Response:
-        return html_response(_render_info_page())
+        return HTMLResponse(_render_info_page())
 
 
 class LlmModelsView(View):
@@ -90,7 +90,7 @@ class LlmModelsView(View):
                 "owned_by": m["provider_name"],
                 "model_id": m["model_id"],
             })
-        return json_response({"object": "list", "data": data})
+        return JSONResponse({"object": "list", "data": data})
 
 
 class LlmMessagesView(View):
@@ -216,9 +216,9 @@ async def _proxy_request(
 
     found = _find_model_config(model_name)
     if found is None:
-        return json_response(
+        return JSONResponse(
             {"error": {"message": f"Model not found: {model_name}"}},
-            status=404,
+            status_code=404,
         )
 
     model_config, provider = found
@@ -237,14 +237,14 @@ async def _proxy_request(
         backend_body["model"] = normalize_model_name(actual_model)
         endpoint = f"{base_url}/chat/completions"
     elif client_format == "openai" and target_format == "anthropic":
-        return json_response(
+        return JSONResponse(
             {"error": {"message": "OpenAI-to-Anthropic proxy not implemented"}},
-            status=501,
+            status_code=501,
         )
     else:
-        return json_response(
+        return JSONResponse(
             {"error": {"message": f"Unknown format: {client_format} → {target_format}"}},
-            status=400,
+            status_code=400,
         )
 
     t0 = time.monotonic()
@@ -281,7 +281,7 @@ async def _proxy_no_stream(
 
     if resp.status_code != 200:
         logger.warning("Proxy backend error (%d): %s", resp.status_code, resp.text[:200])
-        return json_response(data, status=resp.status_code)
+        return JSONResponse(data, status_code=resp.status_code)
 
     # 响应格式转换
     if client_format != target_format:
@@ -289,7 +289,7 @@ async def _proxy_no_stream(
             data = openai_response_to_anthropic(data, model=model)
 
     _log_proxy_call(client_format, model, body, data, duration_ms)
-    return json_response(data)
+    return JSONResponse(data)
 
 
 async def _proxy_stream(

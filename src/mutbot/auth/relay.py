@@ -14,7 +14,7 @@ from typing import Any
 from urllib.parse import urlencode
 
 import jwt
-from mutio.net.server import View, Request, Response, json_response
+from mutio.net.server import JSONResponse, RedirectResponse, Request, Response, View
 
 from mutbot.auth.providers import create_provider_from_config
 
@@ -75,25 +75,25 @@ class RelayStartView(View):
     async def get(self, request: Request) -> Response:
         relay_cfg = _get_relay_service_config()
         if not relay_cfg:
-            return json_response({"error": "relay service not configured"}, status=404)
+            return JSONResponse({"error": "relay service not configured"}, status_code=404)
 
         callback = request.query_params.get("callback", "")
         provider_name = request.query_params.get("provider", "github")
         nonce = request.query_params.get("nonce", "")
 
         if not callback or not nonce:
-            return json_response({"error": "missing callback or nonce"}, status=400)
+            return JSONResponse({"error": "missing callback or nonce"}, status_code=400)
 
         # 校验 callback URL：必须是 /auth/relay-callback 路径
         from urllib.parse import urlparse
         parsed_cb = urlparse(callback)
         if parsed_cb.path.rstrip("/") != "/auth/relay-callback":
-            return json_response({"error": "invalid callback path"}, status=400)
+            return JSONResponse({"error": "invalid callback path"}, status_code=400)
 
         # 获取对应 Provider
         providers_cfg = relay_cfg.get("providers", {})
         if provider_name not in providers_cfg:
-            return json_response({"error": f"unsupported provider: {provider_name}"}, status=400)
+            return JSONResponse({"error": f"unsupported provider: {provider_name}"}, status_code=400)
 
         provider = create_provider_from_config(provider_name, providers_cfg[provider_name])
 
@@ -106,7 +106,7 @@ class RelayStartView(View):
 
         redirect_uri = _get_callback_url_for_relay(request)
         url = provider.authorize_url(redirect_uri, state)
-        return Response(status=302, headers={"location": url})
+        return RedirectResponse(url, status_code=302)
 
 
 def _get_callback_url_for_relay(request: Request) -> str:
@@ -128,17 +128,17 @@ class RelayProviderCallbackView(View):
     async def get(self, request: Request) -> Response:
         relay_cfg = _get_relay_service_config()
         if not relay_cfg:
-            return json_response({"error": "relay service not configured"}, status=404)
+            return JSONResponse({"error": "relay service not configured"}, status_code=404)
 
         code = request.query_params.get("code", "")
         state_str = request.query_params.get("state", "")
         if not code or not state_str:
-            return json_response({"error": "missing code or state"}, status=400)
+            return JSONResponse({"error": "missing code or state"}, status_code=400)
 
         try:
             state = _decode_state(state_str)
         except Exception:
-            return json_response({"error": "invalid state"}, status=400)
+            return JSONResponse({"error": "invalid state"}, status_code=400)
 
         callback = state.get("callback", "")
         nonce = state.get("nonce", "")
@@ -147,7 +147,7 @@ class RelayProviderCallbackView(View):
         # 获取 Provider
         providers_cfg = relay_cfg.get("providers", {})
         if provider_name not in providers_cfg:
-            return json_response({"error": f"unknown provider: {provider_name}"}, status=400)
+            return JSONResponse({"error": f"unknown provider: {provider_name}"}, status_code=400)
 
         provider = create_provider_from_config(provider_name, providers_cfg[provider_name])
 
@@ -157,12 +157,12 @@ class RelayProviderCallbackView(View):
             userinfo = await provider.get_userinfo(access_token)
         except Exception as e:
             logger.error("中转 Provider 回调失败: %s", e)
-            return json_response({"error": "authentication failed"}, status=500)
+            return JSONResponse({"error": "authentication failed"}, status_code=500)
 
         # 签发断言 JWT（Ed25519）
         private_key_pem = _get_private_key_pem(relay_cfg)
         if not private_key_pem:
-            return json_response({"error": "relay private key not configured"}, status=500)
+            return JSONResponse({"error": "relay private key not configured"}, status_code=500)
 
         now = int(time.time())
         assertion_payload = {
@@ -185,13 +185,13 @@ class RelayProviderCallbackView(View):
             assertion = jwt.encode(assertion_payload, private_key, algorithm="EdDSA")
         except Exception as e:
             logger.error("签发断言失败: %s", e)
-            return json_response({"error": "assertion signing failed"}, status=500)
+            return JSONResponse({"error": "assertion signing failed"}, status_code=500)
 
         # 重定向回 mutbot 实例，assertion 在 URL fragment 中
         from urllib.parse import urlparse
         parsed = urlparse(callback)
         redirect_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}#assertion={assertion}"
-        return Response(status=302, headers={"location": redirect_url})
+        return RedirectResponse(redirect_url, status_code=302)
 
 
 # ---------------------------------------------------------------------------
@@ -206,7 +206,7 @@ class RelayMetaView(View):
     async def get(self, request: Request) -> Response:
         relay_cfg = _get_relay_service_config()
         if not relay_cfg:
-            return json_response({"error": "relay service not configured"}, status=404)
+            return JSONResponse({"error": "relay service not configured"}, status_code=404)
 
         # 导出公钥
         private_key_pem = _get_private_key_pem(relay_cfg)
@@ -220,7 +220,7 @@ class RelayMetaView(View):
         # 支持的 Provider 列表
         providers = list(relay_cfg.get("providers", {}).keys())
 
-        return json_response({
+        return JSONResponse({
             "name": "MutBot Auth Relay",
             "version": 1,
             "providers": providers,

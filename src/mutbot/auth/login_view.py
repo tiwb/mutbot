@@ -17,7 +17,7 @@ from __future__ import annotations
 import logging
 from html import escape
 
-from mutio.net.server import Request, Response, View, html_response
+from mutio.net.server import HTMLResponse, Request, Response, View
 
 logger = logging.getLogger(__name__)
 
@@ -199,7 +199,7 @@ class LoginPageView(View):
             "logged_out": "You have been signed out.",
             "session_expired": "Your session has expired. Please sign in again.",
         }.get(message, "")
-        return html_response(_render_login(next_url=next_url, message=message_text))
+        return HTMLResponse(_render_login(next_url=next_url, message=message_text))
 
 
 __all__ = ["LoginPageView"]

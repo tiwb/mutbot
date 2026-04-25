@@ -37,7 +37,7 @@ class TestGet:
         setup_token.generate()
         view = SetupTokenLoginView()
         resp = await view.get(_make_request())
-        assert resp.status == 200
+        assert resp.status_code == 200
         assert b"Setup Token Required" in resp.body
         assert b'name="token"' in resp.body
 
@@ -45,7 +45,7 @@ class TestGet:
     async def test_get_redirects_when_token_inactive(self) -> None:
         view = SetupTokenLoginView()
         resp = await view.get(_make_request())
-        assert resp.status == 302
+        assert resp.status_code == 302
         assert resp.headers.get("location") == "/auth/login"
 
 
@@ -54,7 +54,7 @@ class TestPost:
     async def test_post_redirects_when_token_inactive(self) -> None:
         view = SetupTokenLoginView()
         resp = await view.post(_make_request(body=b"token=anything"))
-        assert resp.status == 302
+        assert resp.status_code == 302
         assert resp.headers.get("location") == "/auth/login"
 
     @pytest.mark.asyncio
@@ -62,7 +62,7 @@ class TestPost:
         setup_token.generate()
         view = SetupTokenLoginView()
         resp = await view.post(_make_request(body=b"token="))
-        assert resp.status == 400
+        assert resp.status_code == 400
         assert b"Please enter" in resp.body
 
     @pytest.mark.asyncio
@@ -70,7 +70,7 @@ class TestPost:
         setup_token.generate()
         view = SetupTokenLoginView()
         resp = await view.post(_make_request(body=b"token=wrong-token"))
-        assert resp.status == 401
+        assert resp.status_code == 401
         assert b"Invalid token" in resp.body
 
     @pytest.mark.asyncio
@@ -80,7 +80,7 @@ class TestPost:
         body = f"token={token}".encode("utf-8")
         resp = await view.post(_make_request(body=body))
 
-        assert resp.status == 302
+        assert resp.status_code == 302
         assert resp.headers.get("location") == "/auth/setup"
         cookie = resp.headers.get("set-cookie", "")
         assert COOKIE_NAME in cookie
@@ -110,4 +110,4 @@ class TestPost:
         # 模拟 URL encoding(token 含 -,通常不需要 encoding,但确保 parse_qsl 正常)
         body = f"token={token}&extra=ignored".encode("utf-8")
         resp = await view.post(_make_request(body=body))
-        assert resp.status == 302
+        assert resp.status_code == 302

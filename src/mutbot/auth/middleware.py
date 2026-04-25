@@ -10,7 +10,7 @@ import logging
 from typing import Any
 
 import mutobj
-from mutio.net.server import Server, Response
+from mutio.net.server import RedirectResponse, Response, Server
 
 from mutbot.auth.token import verify_session_token, extract_token_from_cookie
 from mutbot.auth.network import resolve_client_ip, is_loopback_ip
@@ -133,7 +133,7 @@ async def _mutbot_before_route(self: Server, scope: dict[str, Any], path: str) -
     setup-token session(sub=setup:bootstrap)→ 仅放行 setup 相关路径,/ 跳 setup,其他 403
     已认证 → 放行(用户信息注入 scope)
     未认证 HTTP(含 /) → 302 到 /auth/login?next=<原路径>
-    未认证 WebSocket → Response(status=4401) → _server_impl 转为 ws.close
+    未认证 WebSocket → Response(status_code=4401) → _server_impl 转为 ws.close
     """
     from mutbot.auth.setup_login import SETUP_BOOTSTRAP_SUB
     # import 触发 LoginPageView 注册
@@ -170,7 +170,7 @@ async def _mutbot_before_route(self: Server, scope: dict[str, Any], path: str) -
         target = base_path + "/auth/login"
         if next_param:
             target = target + "?next=" + quote(next_param, safe="/")
-        return Response(status=302, headers={"location": target})
+        return RedirectResponse(target, status_code=302)
 
     # setup 路径需要登录 — 即使本地访问也不再特殊放行
     # 这是"setup 是 root 级操作,一律鉴权"的落地点
@@ -196,10 +196,10 @@ async def _mutbot_before_route(self: Server, scope: dict[str, Any], path: str) -
             scope_type = scope.get("type")
             if scope_type == "websocket":
                 logger.info("reject ws (setup needs login): %s %s", client_ip, path)
-                return Response(status=4401)
+                return Response(status_code=4401)
             target = _login_redirect_target(base_path, path)
             logger.info("redirect to login (setup needs login): %s → %s", client_ip, target)
-            return Response(status=302, headers={"location": target})
+            return RedirectResponse(target, status_code=302)
 
         # 静态资源放行(/auth/login 是纯 HTML 不依赖,但 React App 加载需要)
         if _is_static_path(path):
@@ -209,13 +209,10 @@ async def _mutbot_before_route(self: Server, scope: dict[str, Any], path: str) -
         scope_type = scope.get("type")
         if scope_type == "websocket":
             logger.info("reject ws (no auth): %s %s", client_ip, path)
-            return Response(status=4401)
+            return Response(status_code=4401)
         target = _login_redirect_target(base_path, path)
         logger.info("redirect to login (no auth): %s → %s", client_ip, target)
-        return Response(
-            status=302,
-            headers={"location": target},
-        )
+        return RedirectResponse(target, status_code=302)
 
     # 白名单路径 → 放行
     if _is_public_path(path):
@@ -227,7 +224,7 @@ async def _mutbot_before_route(self: Server, scope: dict[str, Any], path: str) -
             if is_loopback_ip(client_ip):
                 return None
             logger.warning("deny local-only path: %s %s", client_ip, path)
-            return Response(status=403)
+            return Response(status_code=403)
 
     # 静态资源 → 放行(登录页面需要加载 CSS/JS)
     if _is_static_path(path):
@@ -244,14 +241,14 @@ async def _mutbot_before_route(self: Server, scope: dict[str, Any], path: str) -
             return None
         # 根路径 → 强制跳到 setup 页(避免 React App 加载后所有 API 都 403 的烂体验)
         if path == "/" or path == "":
-            return Response(status=302, headers={"location": base_path + "/auth/setup"})
+            return RedirectResponse(base_path + "/auth/setup", status_code=302)
         # 其他业务路径 → 403
         scope_type = scope.get("type")
         if scope_type == "websocket":
             logger.info("reject ws (setup-bootstrap restricted): %s", path)
-            return Response(status=4401)
+            return Response(status_code=4401)
         logger.info("deny setup-bootstrap business path: %s", path)
-        return Response(status=403)
+        return Response(status_code=403)
 
     if user:
         # 认证通过,注入用户信息到 scope
@@ -263,12 +260,9 @@ async def _mutbot_before_route(self: Server, scope: dict[str, Any], path: str) -
     scope_type = scope.get("type")
     if scope_type == "websocket":
         logger.info("reject ws (unauthenticated): %s %s", client_ip, path)
-        return Response(status=4401)
+        return Response(status_code=4401)
 
     # HTTP: 重定向到登录页(带上原路径作为 next)
     target = _login_redirect_target(base_path, path)
     logger.info("redirect to login: %s %s → %s", client_ip, path, target)
-    return Response(
-        status=302,
-        headers={"location": target},
-    )
+    return RedirectResponse(target, status_code=302)

@@ -18,7 +18,7 @@ import time
 from typing import Any
 from urllib.parse import quote
 
-from mutio.net.server import View, Request, Response, json_response, html_response
+from mutio.net.server import HTMLResponse, JSONResponse, RedirectResponse, Request, Response, View
 
 from mutbot.auth.token import (
     create_session_token,
@@ -165,30 +165,30 @@ class CallbackView(View):
             providers = _get_providers()
             provider = providers.get(provider_name)
             if not provider:
-                return json_response({"error": f"unknown provider: {provider_name}"}, status=400)
+                return JSONResponse({"error": f"unknown provider: {provider_name}"}, status_code=400)
             state = _create_nonce() + "|" + provider_name
             redirect_uri = _get_callback_url(request, "/auth/callback")
             url = provider.authorize_url(redirect_uri, state)
-            return Response(status=302, headers={"location": url})
+            return RedirectResponse(url, status_code=302)
 
         # Provider 回调
         code = request.query_params.get("code", "")
         state = request.query_params.get("state", "")
         if not code or not state:
-            return json_response({"error": "missing code or state"}, status=400)
+            return JSONResponse({"error": "missing code or state"}, status_code=400)
 
         # 解析 state
         parts = state.split("|", 1)
         if len(parts) != 2:
-            return json_response({"error": "invalid state"}, status=400)
+            return JSONResponse({"error": "invalid state"}, status_code=400)
         nonce, provider_name = parts
         if not _verify_nonce(nonce):
-            return json_response({"error": "invalid or expired state"}, status=400)
+            return JSONResponse({"error": "invalid or expired state"}, status_code=400)
 
         providers = _get_providers()
         provider = providers.get(provider_name)
         if not provider:
-            return json_response({"error": f"unknown provider: {provider_name}"}, status=400)
+            return JSONResponse({"error": f"unknown provider: {provider_name}"}, status_code=400)
 
         try:
             redirect_uri = _get_callback_url(request, "/auth/callback")
@@ -196,15 +196,15 @@ class CallbackView(View):
             userinfo = await provider.get_userinfo(access_token)
         except Exception as e:
             logger.error("OIDC 回调失败: %s", e)
-            return json_response({"error": "authentication failed"}, status=500)
+            return JSONResponse({"error": "authentication failed"}, status_code=500)
 
         # 白名单检查
         allowed = _get_allowed_users()
         if allowed is not None and userinfo.sub not in allowed:
             from html import escape
-            return html_response(
+            return HTMLResponse(
                 f"<h1>403 Forbidden</h1><p>User {escape(userinfo.sub)} is not allowed.</p>",
-                status=403,
+                status_code=403,
             )
 
         # 签发 session
@@ -215,9 +215,9 @@ class CallbackView(View):
             provider=userinfo.provider,
             ttl=_get_session_ttl(),
         )
-        headers: dict[str, str] = {"location": "/"}
-        set_session_cookie(headers, token, secure=_is_secure(request))
-        return Response(status=302, headers=headers)
+        cookie_headers: dict[str, str] = {}
+        set_session_cookie(cookie_headers, token, secure=_is_secure(request))
+        return RedirectResponse("/", status_code=302, headers=cookie_headers)
 
 
 # ---------------------------------------------------------------------------
@@ -235,7 +235,7 @@ class RelayCallbackView(View):
 
     async def get(self, request: Request) -> Response:
         """返回中转页面，JS 从 fragment 提取 assertion 并 POST。"""
-        return html_response(_RELAY_CALLBACK_HTML)
+        return HTMLResponse(_RELAY_CALLBACK_HTML)
 
     async def post(self, request: Request) -> Response:
         """接收 assertion JWT，验证后签发 session。
@@ -248,17 +248,17 @@ class RelayCallbackView(View):
             body = await request.json()
             assertion = body.get("assertion", "")
         except Exception:
-            return json_response({"error": "invalid body"}, status=400)
+            return JSONResponse({"error": "invalid body"}, status_code=400)
 
         if not assertion:
-            return json_response({"error": "missing assertion"}, status=400)
+            return JSONResponse({"error": "missing assertion"}, status_code=400)
 
         # 尝试从 assertion 中提取 nonce（未验签，仅用于查找 relay URL）
         import jwt as _jwt
         try:
             unverified = _jwt.decode(assertion, options={"verify_signature": False})
         except Exception:
-            return json_response({"error": "invalid assertion format"}, status=400)
+            return JSONResponse({"error": "invalid assertion format"}, status_code=400)
 
         nonce = unverified.get("nonce", "")
 
@@ -275,27 +275,27 @@ class RelayCallbackView(View):
             if setup_info:
                 relay_url = setup_info["relay_url"].rstrip("/")
             else:
-                return json_response({"error": "relay not configured"}, status=400)
+                return JSONResponse({"error": "relay not configured"}, status_code=400)
 
         # 获取中转站公钥
         public_key = await _fetch_relay_public_key(relay_url)
         if not public_key:
-            return json_response({"error": "failed to fetch relay public key"}, status=500)
+            return JSONResponse({"error": "failed to fetch relay public key"}, status_code=500)
 
         # 验证断言
         payload = verify_relay_assertion(assertion, public_key)
         if not payload:
-            return json_response({"error": "invalid assertion"}, status=401)
+            return JSONResponse({"error": "invalid assertion"}, status_code=401)
 
         # 验证 nonce
         if not _verify_nonce(nonce):
-            return json_response({"error": "invalid or expired nonce"}, status=401)
+            return JSONResponse({"error": "invalid or expired nonce"}, status_code=401)
 
         # 验证 audience
         expected_aud = _get_callback_url(request, "/auth/relay-callback")
         if payload.get("aud") != expected_aud:
             logger.warning("audience 不匹配: %s != %s", payload.get("aud"), expected_aud)
-            return json_response({"error": "audience mismatch"}, status=401)
+            return JSONResponse({"error": "audience mismatch"}, status_code=401)
 
         sub = payload.get("sub", "")
 
@@ -307,7 +307,7 @@ class RelayCallbackView(View):
         # 白名单检查（setup 模式下刚保存的配置已生效）
         allowed = _get_allowed_users()
         if allowed is not None and sub not in allowed:
-            return json_response({"error": f"user {sub} not allowed"}, status=403)
+            return JSONResponse({"error": f"user {sub} not allowed"}, status_code=403)
 
         # 签发 session
         token = create_session_token(
@@ -321,7 +321,7 @@ class RelayCallbackView(View):
         headers: dict[str, str] = {"content-type": "application/json; charset=utf-8"}
         set_session_cookie(headers, token, secure=_is_secure(request))
         return Response(
-            status=200,
+            status_code=200,
             body=json.dumps(resp_data).encode(),
             headers=headers,
         )
@@ -430,9 +430,9 @@ class LogoutView(View):
         from mutbot.web import server as _server_mod
         if _server_mod.config is not None:
             base_path = _server_mod.config.get("base_path", default="") or ""
-        headers: dict[str, str] = {"location": f"{base_path}/"}
-        clear_session_cookie(headers, secure=_is_secure(request))
-        return Response(status=302, headers=headers)
+        cookie_headers: dict[str, str] = {}
+        clear_session_cookie(cookie_headers, secure=_is_secure(request))
+        return RedirectResponse(f"{base_path}/", status_code=302, headers=cookie_headers)
 
 
 # ---------------------------------------------------------------------------
@@ -448,11 +448,11 @@ class UserinfoView(View):
         cookie = request.headers.get("cookie", "")
         token = extract_token_from_cookie(cookie)
         if not token:
-            return json_response({"error": "not authenticated"}, status=401)
+            return JSONResponse({"error": "not authenticated"}, status_code=401)
         payload = verify_session_token(token)
         if not payload:
-            return json_response({"error": "invalid token"}, status=401)
-        return json_response({
+            return JSONResponse({"error": "invalid token"}, status_code=401)
+        return JSONResponse({
             "sub": payload.get("sub"),
             "name": payload.get("name"),
             "avatar": payload.get("avatar"),
@@ -482,12 +482,12 @@ class ProvidersView(View):
 
         if not auth:
             providers = [setup_option] if setup_option else []
-            return json_response({"providers": providers, "auth_enabled": False})
+            return JSONResponse({"providers": providers, "auth_enabled": False})
 
         # auth 存在但无登录方式(如仅有 relay_service)→ 视为未启用
         if not auth.get("relay") and not auth.get("providers"):
             providers = [setup_option] if setup_option else []
-            return json_response({"providers": providers, "auth_enabled": False})
+            return JSONResponse({"providers": providers, "auth_enabled": False})
 
         options: list[dict[str, str]] = []
 
@@ -522,7 +522,7 @@ class ProvidersView(View):
                     "url": f"{relay_url}/auth/start?callback={quote(callback)}&provider={quote(rp)}&nonce={nonce}",
                 })
 
-        return json_response({
+        return JSONResponse({
             "providers": options,
             "auth_enabled": True,
             "relay_domain": relay_domain,
@@ -559,7 +559,7 @@ class AuthSetupView(View):
     path = "/auth/setup"
 
     async def get(self, request: Request) -> Response:
-        return html_response(_SETUP_HTML)
+        return HTMLResponse(_SETUP_HTML)
 
 
 # ---------------------------------------------------------------------------
