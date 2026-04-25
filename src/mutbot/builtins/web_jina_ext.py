@@ -7,12 +7,8 @@
 from __future__ import annotations
 
 import mutagent
-from mutagent.builtins.web_jina import (
-    JinaFetchImpl,
-    JinaSearchImpl,
-    _jina_fetch as _base_fetch,
-    _jina_search as _base_search,
-)
+import mutobj
+from mutagent.builtins.web_jina import JinaFetchImpl, JinaSearchImpl
 
 _CONFIG_HINT = (
     "[ACTION REQUIRED] You MUST call Config-update now to set the API key. "
@@ -36,7 +32,7 @@ def _enrich_error(exc: RuntimeError) -> RuntimeError:
 @mutagent.impl(JinaSearchImpl.search)
 async def _jina_search(self: JinaSearchImpl, query: str, max_results: int = 5) -> str:
     try:
-        return await _base_search(self, query, max_results)
+        return await mutobj.call_super_impl(JinaSearchImpl.search, self, query, max_results)
     except RuntimeError as e:
         raise _enrich_error(e) from e
 
@@ -44,6 +40,6 @@ async def _jina_search(self: JinaSearchImpl, query: str, max_results: int = 5) -
 @mutagent.impl(JinaFetchImpl.fetch)
 async def _jina_fetch(self: JinaFetchImpl, url: str, format: str = "markdown") -> str:
     try:
-        return await _base_fetch(self, url, format)
+        return await mutobj.call_super_impl(JinaFetchImpl.fetch, self, url, format)
     except RuntimeError as e:
         raise _enrich_error(e) from e
