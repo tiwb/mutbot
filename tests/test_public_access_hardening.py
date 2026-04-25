@@ -199,6 +199,7 @@ def _make_scope(
     client_ip: str = "127.0.0.1",
     scope_type: str = "http",
     headers: list | None = None,
+    query_string: bytes = b"",
 ) -> dict[str, Any]:
     """构造 ASGI scope。"""
     return {
@@ -206,7 +207,7 @@ def _make_scope(
         "path": path,
         "client": (client_ip, 12345),
         "headers": headers or [],
-        "query_string": b"",
+        "query_string": query_string,
     }
 
 
@@ -224,10 +225,11 @@ class TestMiddleware:
             assert result is None  # 放行
 
     @pytest.mark.asyncio
-    async def test_remote_no_auth_redirects_to_setup(self):
-        """远程访问 + 无 auth → 重定向到 /auth/setup。
+    async def test_remote_no_auth_redirects_to_login(self):
+        """远程访问 + 无 auth → 重定向到 /(主登录页)。
 
-        这是核心安全测试：非 loopback 请求在无 auth 时必须被拦截。
+        这是核心安全测试:非 loopback 请求在无 auth 时必须被拦截,
+        但 setup-token 已升级为登录方式,所以入口是独立登录页 /auth/login。
         """
         import mutbot.auth.setup_token as st
         from mutbot.auth.middleware import _mutbot_before_route
@@ -235,15 +237,18 @@ class TestMiddleware:
 
         with patch("mutbot.auth.middleware._get_auth_config", return_value=None), \
              patch("mutbot.auth.middleware._get_trusted_proxies", return_value=["127.0.0.1", "::1"]):
-            scope = _make_scope("/", client_ip="10.0.0.1")
-            result = await _mutbot_before_route(None, scope, "/")
+            # 业务路径 → 重定向到 /auth/login?next=/api/sessions
+            scope = _make_scope("/api/sessions", client_ip="10.0.0.1")
+            result = await _mutbot_before_route(None, scope, "/api/sessions")
             assert result is not None, "远程 + 无 auth 应拦截请求"
             assert result.status == 302
-            assert "/auth/setup" in result.headers.get("location", "")
+            location = result.headers.get("location", "")
+            assert location.startswith("/auth/login")
+            assert "next=/api/sessions" in location
 
     @pytest.mark.asyncio
     async def test_remote_no_auth_with_active_token_redirects(self):
-        """远程访问 + 无 auth + 有活跃 token → 也应重定向。"""
+        """远程访问 + 无 auth + 有活跃 token → 也应重定向到 /auth/login(独立登录页会显示 setup-token 选项)。"""
         import mutbot.auth.setup_token as st
         from mutbot.auth.middleware import _mutbot_before_route
         st.generate()
@@ -251,22 +256,23 @@ class TestMiddleware:
         try:
             with patch("mutbot.auth.middleware._get_auth_config", return_value=None), \
                  patch("mutbot.auth.middleware._get_trusted_proxies", return_value=["127.0.0.1", "::1"]):
-                scope = _make_scope("/", client_ip="10.0.0.1")
-                result = await _mutbot_before_route(None, scope, "/")
+                scope = _make_scope("/api/sessions", client_ip="10.0.0.1")
+                result = await _mutbot_before_route(None, scope, "/api/sessions")
                 assert result is not None, "远程 + 无 auth + 有 token 应拦截请求"
                 assert result.status == 302
+                assert result.headers.get("location", "").startswith("/auth/login")
         finally:
             st.invalidate()
 
     @pytest.mark.asyncio
-    async def test_remote_no_auth_whitelist_allows(self):
-        """远程 + 无 auth，但白名单路径（/auth/）应放行。"""
+    async def test_remote_no_auth_setup_token_login_whitelist_allows(self):
+        """远程 + 无 auth,/auth/setup-token-login(登录入口)应放行。"""
         from mutbot.auth.middleware import _mutbot_before_route
 
         with patch("mutbot.auth.middleware._get_auth_config", return_value=None), \
              patch("mutbot.auth.middleware._get_trusted_proxies", return_value=["127.0.0.1", "::1"]):
-            scope = _make_scope("/auth/setup", client_ip="10.0.0.1")
-            result = await _mutbot_before_route(None, scope, "/auth/setup")
+            scope = _make_scope("/auth/setup-token-login", client_ip="10.0.0.1")
+            result = await _mutbot_before_route(None, scope, "/auth/setup-token-login")
             assert result is None  # 白名单放行
 
     @pytest.mark.asyncio
@@ -282,17 +288,116 @@ class TestMiddleware:
             assert result.status == 4401
 
     @pytest.mark.asyncio
+    async def test_setup_path_unauthenticated_redirects(self):
+        """/auth/setup 未登录 → 重定向到 /auth/login(setup 是 root 级,不再公开)。"""
+        from mutbot.auth.middleware import _mutbot_before_route
+
+        with patch("mutbot.auth.middleware._get_auth_config", return_value=None), \
+             patch("mutbot.auth.middleware._get_trusted_proxies", return_value=["127.0.0.1", "::1"]):
+            scope = _make_scope("/auth/setup", client_ip="10.0.0.1")
+            result = await _mutbot_before_route(None, scope, "/auth/setup")
+            assert result is not None
+            assert result.status == 302
+            location = result.headers.get("location", "")
+            assert location.startswith("/auth/login")
+            assert "next=/auth/setup" in location
+
+    @pytest.mark.asyncio
+    async def test_setup_path_local_unauthenticated_also_redirects(self):
+        """本地访问 /auth/setup 未登录也跳 /(行为变化:本地不再免鉴权)。"""
+        from mutbot.auth.middleware import _mutbot_before_route
+
+        with patch("mutbot.auth.middleware._get_auth_config", return_value=None), \
+             patch("mutbot.auth.middleware._get_trusted_proxies", return_value=["127.0.0.1", "::1"]):
+            scope = _make_scope("/auth/setup", client_ip="127.0.0.1")
+            result = await _mutbot_before_route(None, scope, "/auth/setup")
+            assert result is not None
+            assert result.status == 302
+
+    @pytest.mark.asyncio
+    async def test_setup_ws_unauthenticated_4401(self):
+        """/auth/setup/ws 未登录 → 4401。"""
+        from mutbot.auth.middleware import _mutbot_before_route
+
+        with patch("mutbot.auth.middleware._get_auth_config", return_value=None), \
+             patch("mutbot.auth.middleware._get_trusted_proxies", return_value=["127.0.0.1", "::1"]):
+            scope = _make_scope("/auth/setup/ws", client_ip="10.0.0.1", scope_type="websocket")
+            result = await _mutbot_before_route(None, scope, "/auth/setup/ws")
+            assert result is not None
+            assert result.status == 4401
+
+    @pytest.mark.asyncio
+    async def test_setup_bootstrap_session_can_access_setup(self):
+        """setup-bootstrap session 访问 /auth/setup → 放行。"""
+        from mutbot.auth.middleware import _mutbot_before_route
+        from mutbot.auth.setup_login import SETUP_BOOTSTRAP_SUB
+
+        fake_user = {"sub": SETUP_BOOTSTRAP_SUB, "name": "Setup Admin"}
+        with patch("mutbot.auth.middleware._get_auth_config", return_value=None), \
+             patch("mutbot.auth.middleware._get_trusted_proxies", return_value=["127.0.0.1", "::1"]), \
+             patch("mutbot.auth.middleware._extract_user_from_scope", return_value=fake_user):
+            scope = _make_scope("/auth/setup", client_ip="10.0.0.1")
+            result = await _mutbot_before_route(None, scope, "/auth/setup")
+            assert result is None
+            assert scope.get("user") == fake_user
+
+    @pytest.mark.asyncio
+    async def test_setup_bootstrap_root_redirects_to_setup(self):
+        """setup-bootstrap session 访问 / → 302 到 /auth/setup(避免 React App 加载后所有 API 都 403)。"""
+        from mutbot.auth.middleware import _mutbot_before_route
+        from mutbot.auth.setup_login import SETUP_BOOTSTRAP_SUB
+
+        fake_user = {"sub": SETUP_BOOTSTRAP_SUB, "name": "Setup Admin"}
+        auth_config = {"relay": "https://mutbot.ai"}
+        with patch("mutbot.auth.middleware._get_auth_config", return_value=auth_config), \
+             patch("mutbot.auth.middleware._get_trusted_proxies", return_value=["127.0.0.1", "::1"]), \
+             patch("mutbot.auth.middleware._extract_user_from_scope", return_value=fake_user):
+            scope = _make_scope("/", client_ip="10.0.0.1")
+            result = await _mutbot_before_route(None, scope, "/")
+            assert result is not None
+            assert result.status == 302
+            assert result.headers.get("location", "").endswith("/auth/setup")
+
+    @pytest.mark.asyncio
+    async def test_setup_bootstrap_business_path_403(self):
+        """setup-bootstrap session 访问业务路径 → 403。"""
+        from mutbot.auth.middleware import _mutbot_before_route
+        from mutbot.auth.setup_login import SETUP_BOOTSTRAP_SUB
+
+        fake_user = {"sub": SETUP_BOOTSTRAP_SUB, "name": "Setup Admin"}
+        auth_config = {"relay": "https://mutbot.ai"}
+        with patch("mutbot.auth.middleware._get_auth_config", return_value=auth_config), \
+             patch("mutbot.auth.middleware._get_trusted_proxies", return_value=["127.0.0.1", "::1"]), \
+             patch("mutbot.auth.middleware._extract_user_from_scope", return_value=fake_user):
+            scope = _make_scope("/api/sessions", client_ip="10.0.0.1")
+            result = await _mutbot_before_route(None, scope, "/api/sessions")
+            assert result is not None
+            assert result.status == 403
+
+    @pytest.mark.asyncio
+    async def test_setup_bootstrap_can_access_relay_callback(self):
+        """setup-bootstrap session 访问 /auth/relay-callback → 放行(白名单 + 已登录身份)。"""
+        from mutbot.auth.middleware import _mutbot_before_route
+
+        with patch("mutbot.auth.middleware._get_auth_config", return_value=None), \
+             patch("mutbot.auth.middleware._get_trusted_proxies", return_value=["127.0.0.1", "::1"]):
+            scope = _make_scope("/auth/relay-callback", client_ip="10.0.0.1")
+            result = await _mutbot_before_route(None, scope, "/auth/relay-callback")
+            assert result is None  # 白名单本就放行
+
+    @pytest.mark.asyncio
     async def test_remote_with_auth_uses_oidc(self):
-        """远程 + 有 auth → 走正常 OIDC 流程（不影响）。"""
+        """远程 + 有 auth + 未登录 → 根路径也跳 /auth/login。"""
         from mutbot.auth.middleware import _mutbot_before_route
 
         auth_config = {"relay": "https://mutbot.ai"}
         with patch("mutbot.auth.middleware._get_auth_config", return_value=auth_config), \
              patch("mutbot.auth.middleware._get_trusted_proxies", return_value=["127.0.0.1", "::1"]):
-            # 根路径放行（让前端加载）
             scope = _make_scope("/", client_ip="10.0.0.1")
             result = await _mutbot_before_route(None, scope, "/")
-            assert result is None  # 根路径放行
+            assert result is not None
+            assert result.status == 302
+            assert result.headers.get("location", "").startswith("/auth/login")
 
     @pytest.mark.asyncio
     async def test_internal_path_blocked_for_remote(self):
@@ -331,6 +436,60 @@ class TestMiddleware:
             scope = _make_scope("/mcp", client_ip="127.0.0.1")
             result = await _mutbot_before_route(None, scope, "/mcp")
             assert result is None
+
+    @pytest.mark.asyncio
+    async def test_auth_redirects_to_login(self):
+        """`/auth` → 302 到 `/auth/login`(URL 规范化,无视登录态)。"""
+        from mutbot.auth.middleware import _mutbot_before_route
+
+        with patch("mutbot.auth.middleware._get_auth_config", return_value=None), \
+             patch("mutbot.auth.middleware._get_trusted_proxies", return_value=["127.0.0.1", "::1"]):
+            scope = _make_scope("/auth", client_ip="10.0.0.1")
+            result = await _mutbot_before_route(None, scope, "/auth")
+            assert result is not None
+            assert result.status == 302
+            assert result.headers.get("location") == "/auth/login"
+
+    @pytest.mark.asyncio
+    async def test_auth_trailing_slash_redirects_to_login(self):
+        """`/auth/`(带斜杠)→ 302 到 `/auth/login`(URL 规范化,无视登录态)。"""
+        from mutbot.auth.middleware import _mutbot_before_route
+
+        with patch("mutbot.auth.middleware._get_auth_config", return_value=None), \
+             patch("mutbot.auth.middleware._get_trusted_proxies", return_value=["127.0.0.1", "::1"]):
+            scope = _make_scope("/auth/", client_ip="127.0.0.1")
+            result = await _mutbot_before_route(None, scope, "/auth/")
+            assert result is not None
+            assert result.status == 302
+            assert result.headers.get("location") == "/auth/login"
+
+    @pytest.mark.asyncio
+    async def test_auth_redirect_preserves_safe_next(self):
+        """`/auth?next=/auth/setup` → 302 保留 next 参数。"""
+        from mutbot.auth.middleware import _mutbot_before_route
+
+        with patch("mutbot.auth.middleware._get_auth_config", return_value=None), \
+             patch("mutbot.auth.middleware._get_trusted_proxies", return_value=["127.0.0.1", "::1"]):
+            scope = _make_scope("/auth", client_ip="10.0.0.1", query_string=b"next=/auth/setup")
+            result = await _mutbot_before_route(None, scope, "/auth")
+            assert result is not None
+            assert result.status == 302
+            location = result.headers.get("location", "")
+            assert location.startswith("/auth/login")
+            assert "next=/auth/setup" in location
+
+    @pytest.mark.asyncio
+    async def test_auth_redirect_drops_unsafe_next(self):
+        """`/auth?next=//evil.com` → 302 丢弃不安全 next。"""
+        from mutbot.auth.middleware import _mutbot_before_route
+
+        with patch("mutbot.auth.middleware._get_auth_config", return_value=None), \
+             patch("mutbot.auth.middleware._get_trusted_proxies", return_value=["127.0.0.1", "::1"]):
+            scope = _make_scope("/auth", client_ip="10.0.0.1", query_string=b"next=//evil.com")
+            result = await _mutbot_before_route(None, scope, "/auth")
+            assert result is not None
+            assert result.status == 302
+            assert result.headers.get("location") == "/auth/login"
 
 
 # ---------------------------------------------------------------------------

@@ -465,15 +465,35 @@ class ProvidersView(View):
     path = "/auth/providers"
 
     async def get(self, request: Request) -> Response:
-        auth = _get_auth_config()
-        if not auth:
-            return json_response({"providers": [], "auth_enabled": False})
+        import mutbot.auth.setup_token as _setup_token
 
-        # auth 存在但无登录方式（如仅有 relay_service）→ 视为未启用
+        auth = _get_auth_config()
+
+        # setup token 激活时,无论 auth 是否配置都追加 setup-token 选项
+        # 用于:首次配置 / reconfigure 后管理员锁出自己的恢复
+        setup_option: dict[str, str] | None = None
+        if _setup_token.is_active():
+            setup_option = {
+                "name": "setup-token",
+                "label": "Setup Token",
+                "type": "setup-token",
+                "url": "/auth/setup-token-login",
+            }
+
+        if not auth:
+            providers = [setup_option] if setup_option else []
+            return json_response({"providers": providers, "auth_enabled": False})
+
+        # auth 存在但无登录方式(如仅有 relay_service)→ 视为未启用
         if not auth.get("relay") and not auth.get("providers"):
-            return json_response({"providers": [], "auth_enabled": False})
+            providers = [setup_option] if setup_option else []
+            return json_response({"providers": providers, "auth_enabled": False})
 
         options: list[dict[str, str]] = []
+
+        # setup-token 优先放在最前面(临时入口,显眼)
+        if setup_option:
+            options.append(setup_option)
 
         # 直连 Provider
         providers = _get_providers()

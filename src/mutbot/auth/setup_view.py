@@ -2,11 +2,14 @@
 
 替代旧 `auth/views.py:_render_setup_page` 的 970 行 HTML 模板。
 
-- `AuthSetupView` (mutgui.View)：单一 View，按 step 状态渲染不同 UI。
-- `AuthSetupWsView` (WebSocketView)：每个 WS 连接独立创建一个 `AuthSetupView`
-  实例 + `ViewPort`，经由 `MutguiChannel` 发送 wire tree。
+- `AuthSetupView` (mutgui.View):单一 View,按 step 状态渲染不同 UI。
+- `AuthSetupWsView` (WebSocketView):每个 WS 连接独立创建一个 `AuthSetupView`
+  实例 + `ViewPort`,经由 `MutguiChannel` 发送 wire tree。
 
-HTTP 入口（30 行 HTML 壳，挂载 setup.js）保留在 `auth/views.py` 中。
+HTTP 入口(30 行 HTML 壳,挂载 setup.js)保留在 `auth/views.py` 中。
+
+鉴权由 middleware 在连接级处理(见 `auth/middleware.py` 和
+`docs/specifications/refactor-setup-auth-gate.md`)。本 View 不做任何鉴权检查。
 """
 
 from __future__ import annotations
@@ -67,48 +70,30 @@ def _is_already_configured() -> bool:
     return bool(auth.get("relay") or auth.get("providers"))
 
 
-def _print_setup_token_console(token: str) -> None:
-    """重新激活 setup token 时在服务端控制台打印（reconfigure 远程准入用）。"""
-    print()
-    print("  WARNING: Reconfigure requested. Setup token re-issued:")
-    print()
-    print(f"      Setup Token: {token}")
-    print()
-
-
 class AuthSetupView(View):
     """Auth setup wizard 单 View 状态机。
 
-    step 取值：
-      - "token_input"        — 远程访问需输入 setup token
+    step 取值:
       - "configure"          — 输入 relay URL
-      - "select_provider"    — 从 relay 拉到 provider 列表，选 provider
-      - "already_configured" — 已配置，提供 Reconfigure 入口
+      - "select_provider"    — 从 relay 拉到 provider 列表,选 provider
+      - "already_configured" — 已配置,提供 Reconfigure 入口
       - "redirecting"        — 通过 mutbot.Redirect 让前端 location.href 跳到 OAuth
+
+    鉴权由 middleware 处理 — 能进 View 就说明已通过登录(普通用户或 setup-bootstrap)。
     """
 
-    def __init__(self, *, is_local: bool) -> None:
+    def __init__(self) -> None:
         super().__init__()
-        self.is_local = is_local
 
         if _is_already_configured():
             self.step = "already_configured"
         else:
-            import mutbot.auth.setup_token as setup_token
-            if not is_local and setup_token.is_active():
-                self.step = "token_input"
-            else:
-                self.step = "configure"
+            self.step = "configure"
 
         self.error: str = ""
         self.relay_url: str = "https://mutbot.ai"
         self.providers: list[dict[str, str]] = []
-        self.token_input: str = ""
-        # 远程 token 验证后置真，控制 reconfigure → 进入 configure 时是否清空配置
-        self.setup_verified: bool = False
-        # token_input 验证完成后是否执行 reconfigure（清空配置）
-        self.pending_reconfigure: bool = False
-        # 需要前端跳转的 URL（step == "redirecting" 时使用）
+        # 需要前端跳转的 URL(step == "redirecting" 时使用)
         self.redirect_url: str = ""
 
     # ---- render ----
@@ -117,8 +102,6 @@ class AuthSetupView(View):
         step = self.step
         if step == "already_configured":
             return self._render_already_configured()
-        if step == "token_input":
-            return self._render_token_input()
         if step == "configure":
             return self._render_configure()
         if step == "select_provider":
@@ -173,27 +156,6 @@ class AuthSetupView(View):
                       "danger": True, "children": "Reconfigure",
                       "onClick": Callback(self._on_reconfigure)},
                  ]},
-            ],
-        )
-
-    def _render_token_input(self) -> ViewBlock:
-        return self._container(
-            title="Setup Token Required",
-            subtitle=(
-                "This server has no authentication configured. "
-                "Enter the setup token printed on the server console to continue."
-            ),
-            children=[
-                {"$component": "antd.Input", "$id": "token",
-                 "value": self.token_input,
-                 "placeholder": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx",
-                 "autoFocus": True,
-                 "style": {"fontFamily": "monospace", "marginBottom": 16},
-                 "onChange": Bind(self, "token_input", "$0.target.value"),
-                 "onPressEnter": Callback(self._on_verify_token)},
-                {"$component": "antd.Button", "$id": "verify",
-                 "type": "primary", "block": True, "children": "Verify",
-                 "onClick": Callback(self._on_verify_token)},
             ],
         )
 
@@ -270,48 +232,14 @@ class AuthSetupView(View):
         self.step = "redirecting"
         self.invalidate()
 
-    async def _on_reconfigure(self) -> None:
-        """Reconfigure 入口准入控制：本地直接进入 configure；远程触发 token 重新激活。
+    def _on_reconfigure(self) -> None:
+        """Reconfigure — 已通过 middleware 鉴权,直接进入 configure。
 
-        不在此处清空旧配置 —— 新配置会在 OAuth 回调成功时由 save_auth_config 覆盖。
-        预先清空会导致用户中途退出（刷新/关闭）后旧配置丢失。
+        不在此处清空旧配置 — 新配置会在 OAuth 回调成功时由 save_auth_config 覆盖。
+        预先清空会导致用户中途退出(刷新/关闭)后旧配置丢失。
         """
-        if self.is_local:
-            self.step = "configure"
-            self.error = ""
-            self.relay_url = _read_current_relay() or "https://mutbot.ai"
-            self.invalidate()
-            return
-
-        # 远程：重新激活 setup token，控制台打印新 token，进入 token_input
-        import mutbot.auth.setup_token as setup_token
-        token = setup_token.generate()
-        _print_setup_token_console(token)
-        self.pending_reconfigure = True
-        self.step = "token_input"
-        self.error = ""
-        self.token_input = ""
-        self.setup_verified = False
-        self.invalidate()
-
-    async def _on_verify_token(self) -> None:
-        import mutbot.auth.setup_token as setup_token
-        token = (self.token_input or "").strip()
-        if not token:
-            self.error = "Please enter the setup token"
-            self.invalidate()
-            return
-        if not setup_token.verify(token):
-            self.error = "Invalid token. Check the server console output."
-            self.invalidate()
-            return
-
-        self.setup_verified = True
-        self.error = ""
-        self.token_input = ""
-        self.pending_reconfigure = False
-
         self.step = "configure"
+        self.error = ""
         self.relay_url = _read_current_relay() or "https://mutbot.ai"
         self.invalidate()
 
@@ -319,14 +247,6 @@ class AuthSetupView(View):
         relay_url = (self.relay_url or "").strip().rstrip("/")
         if not relay_url:
             self.error = "Please enter a relay URL"
-            self.invalidate()
-            return
-
-        # 远程未通过 token 验证（且 setup token 仍处于 active）→ 退回 token_input
-        import mutbot.auth.setup_token as setup_token
-        if (not self.is_local) and setup_token.is_active() and not self.setup_verified:
-            self.step = "token_input"
-            self.error = "Token expired or invalid. Please re-enter."
             self.invalidate()
             return
 
@@ -358,7 +278,7 @@ class AuthSetupView(View):
         self.invalidate()
 
     def _on_back_to_configured(self) -> None:
-        """从 configure 退回 already_configured（前提：仍处于已配置状态）。"""
+        """从 configure 退回 already_configured(前提:仍处于已配置状态)。"""
         self.step = "already_configured"
         self.error = ""
         self.invalidate()
@@ -369,21 +289,13 @@ class AuthSetupView(View):
             self.invalidate()
             return
 
-        # 远程未通过 token 验证 → 退回 token_input
-        import mutbot.auth.setup_token as setup_token
-        if (not self.is_local) and setup_token.is_active() and not self.setup_verified:
-            self.step = "token_input"
-            self.error = "Token expired or invalid. Please re-enter."
-            self.invalidate()
-            return
-
         from mutbot.auth.views import _create_nonce
         from mutbot.auth.setup import store_setup_nonce
 
         nonce = _create_nonce()
         store_setup_nonce(nonce, self.relay_url, "only_me")
 
-        # 回调 URL 取自当前 server 配置（base_path）
+        # 回调 URL 取自当前 server 配置(base_path)
         callback_url = self._build_callback_url("/auth/relay-callback")
         login_url = (
             f"{self.relay_url}/auth/start"
@@ -404,25 +316,12 @@ class AuthSetupView(View):
         cfg = _server_mod.config
         if cfg is not None:
             base_path = cfg.get("base_path", default="") or ""
-        # WebSocket 上下文下没有原始 HTTP request，scheme/host 从连接 headers 取
+        # WebSocket 上下文下没有原始 HTTP request,scheme/host 从连接 headers 取
         host = self._ws_host or "localhost:8741"
         scheme = "https" if self._ws_secure else "http"
         return f"{scheme}://{host}{base_path}{path}"
 
-    @staticmethod
-    def _clear_auth_config() -> None:
-        """清空 auth 配置（保留 auth 下的其他 key 如 relay_service）。"""
-        from mutbot.web import server as _server_mod
-        cfg = _server_mod.config
-        if cfg is None:
-            return
-        auth = cfg.get("auth") or {}
-        for key in ("relay", "providers", "allowed_users"):
-            if key in auth:
-                cfg.set(f"auth.{key}", None)
-        logger.info("Auth config cleared (reconfigure)")
-
-    # 由 AuthSetupWsView 在创建实例后注入（用于构造 callback URL）
+    # 由 AuthSetupWsView 在创建实例后注入(用于构造 callback URL)
     _ws_host: str = ""
     _ws_secure: bool = False
 
@@ -433,21 +332,18 @@ class AuthSetupView(View):
 
 
 class AuthSetupWsView(WebSocketView):
-    """每个 WS 连接独立创建一个 AuthSetupView 实例。"""
+    """每个 WS 连接独立创建一个 AuthSetupView 实例。
+
+    鉴权由 middleware 处理,本 View 进来即认为已通过。
+    """
 
     path = "/auth/setup/ws"
 
     async def connect(self, ws: WebSocketConnection) -> None:
         await ws.accept()
 
-        # 从中间件 ContextVar 读取 client IP，决定是否本地
-        from mutbot.auth.middleware import current_client_ip
-        from mutbot.auth.network import is_loopback_ip
-        client_ip = current_client_ip.get()
-        is_local = is_loopback_ip(client_ip) if client_ip else True
-
-        view = AuthSetupView(is_local=is_local)
-        # 把 host / scheme 透传给 view（用于构造 OAuth callback URL）
+        view = AuthSetupView()
+        # 把 host / scheme 透传给 view(用于构造 OAuth callback URL)
         view._ws_host = ws.headers.get("host", "")
         view._ws_secure = ws.headers.get("x-forwarded-proto", "") == "https"
 

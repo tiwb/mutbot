@@ -1,16 +1,18 @@
 """mutbot.auth.setup_view — AuthSetupView (mutgui) 状态机单元测试。
 
-不启动 WebSocket，纯 Python 测试 View 的状态转换。
-mock 关键外部依赖：mutbot.web.server.config / setup_token / _fetch_relay_providers。
+不启动 WebSocket,纯 Python 测试 View 的状态转换。
+mock 关键外部依赖:mutbot.web.server.config / _fetch_relay_providers。
+
+鉴权由 middleware 在连接级处理(见 test_public_access_hardening.py),
+本 View 不做任何鉴权检查 — 进来即认为已通过。
 """
 from __future__ import annotations
 
-from typing import Any, Iterator
+from typing import Any
 
 import pytest
 
 import mutbot.web.server as _server_mod
-import mutbot.auth.setup_token as setup_token
 import mutbot.auth.views as _auth_views
 
 from mutbot.auth.setup_view import AuthSetupView
@@ -55,71 +57,19 @@ def fake_configured(monkeypatch: pytest.MonkeyPatch) -> _FakeConfig:
     return cfg
 
 
-@pytest.fixture(autouse=True)
-def _reset_setup_token() -> Iterator[None]:
-    setup_token.invalidate()
-    yield
-    setup_token.invalidate()
-
-
 # ---------------------------------------------------------------------------
-# 初始 step 由 is_local + setup_token + 已配置状态决定
+# 初始 step 由是否已配置决定
 # ---------------------------------------------------------------------------
 
 
 class TestInitialStep:
-    def test_local_unconfigured_starts_at_configure(self, fake_unconfigured: _FakeConfig) -> None:
-        v = AuthSetupView(is_local=True)
+    def test_unconfigured_starts_at_configure(self, fake_unconfigured: _FakeConfig) -> None:
+        v = AuthSetupView()
         assert v.step == "configure"
-
-    def test_remote_unconfigured_no_token_starts_at_configure(self, fake_unconfigured: _FakeConfig) -> None:
-        v = AuthSetupView(is_local=False)
-        assert v.step == "configure"
-
-    def test_remote_unconfigured_with_token_starts_at_token_input(self, fake_unconfigured: _FakeConfig) -> None:
-        setup_token.generate()
-        v = AuthSetupView(is_local=False)
-        assert v.step == "token_input"
 
     def test_already_configured_starts_at_already_configured(self, fake_configured: _FakeConfig) -> None:
-        v = AuthSetupView(is_local=False)
+        v = AuthSetupView()
         assert v.step == "already_configured"
-
-
-# ---------------------------------------------------------------------------
-# Token 验证
-# ---------------------------------------------------------------------------
-
-
-class TestVerifyToken:
-    @pytest.mark.asyncio
-    async def test_empty_token_sets_error(self, fake_unconfigured: _FakeConfig) -> None:
-        setup_token.generate()
-        v = AuthSetupView(is_local=False)
-        v.token_input = "   "
-        await v._on_verify_token()
-        assert v.step == "token_input"
-        assert "enter" in v.error.lower()
-
-    @pytest.mark.asyncio
-    async def test_wrong_token_sets_error(self, fake_unconfigured: _FakeConfig) -> None:
-        setup_token.generate()
-        v = AuthSetupView(is_local=False)
-        v.token_input = "not-the-token"
-        await v._on_verify_token()
-        assert v.step == "token_input"
-        assert "invalid" in v.error.lower()
-
-    @pytest.mark.asyncio
-    async def test_correct_token_advances_to_configure(self, fake_unconfigured: _FakeConfig) -> None:
-        token = setup_token.generate()
-        v = AuthSetupView(is_local=False)
-        v.token_input = token
-        await v._on_verify_token()
-        assert v.step == "configure"
-        assert v.setup_verified is True
-        assert v.error == ""
-        assert v.token_input == ""
 
 
 # ---------------------------------------------------------------------------
@@ -129,12 +79,12 @@ class TestVerifyToken:
 
 class TestConnectRelay:
     @pytest.mark.asyncio
-    async def test_local_connect_success(self, fake_unconfigured: _FakeConfig, monkeypatch: pytest.MonkeyPatch) -> None:
+    async def test_connect_success(self, fake_unconfigured: _FakeConfig, monkeypatch: pytest.MonkeyPatch) -> None:
         async def _fake_fetch(_url: str) -> list[str]:
             return ["github", "google"]
         monkeypatch.setattr(_auth_views, "_fetch_relay_providers", _fake_fetch)
 
-        v = AuthSetupView(is_local=True)
+        v = AuthSetupView()
         v.relay_url = "https://relay.example.com"
         await v._on_connect_relay()
         assert v.step == "select_provider"
@@ -146,7 +96,7 @@ class TestConnectRelay:
             return []
         monkeypatch.setattr(_auth_views, "_fetch_relay_providers", _fake_fetch)
 
-        v = AuthSetupView(is_local=True)
+        v = AuthSetupView()
         v.relay_url = "https://relay.example.com"
         await v._on_connect_relay()
         assert v.step == "configure"
@@ -154,24 +104,19 @@ class TestConnectRelay:
 
     @pytest.mark.asyncio
     async def test_ssrf_blocked(self, fake_unconfigured: _FakeConfig) -> None:
-        v = AuthSetupView(is_local=True)
+        v = AuthSetupView()
         v.relay_url = "http://192.168.1.1"
         await v._on_connect_relay()
         assert v.step == "configure"
         assert v.error  # SSRF error 文案
 
     @pytest.mark.asyncio
-    async def test_remote_unverified_with_token_active_falls_back(
-        self, fake_unconfigured: _FakeConfig, monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        setup_token.generate()
-        v = AuthSetupView(is_local=False)
-        # 跳过初始 token_input：手动放到 configure 但未 verified
-        v.step = "configure"
-        v.setup_verified = False
-        v.relay_url = "https://relay.example.com"
+    async def test_empty_relay_url_sets_error(self, fake_unconfigured: _FakeConfig) -> None:
+        v = AuthSetupView()
+        v.relay_url = "  "
         await v._on_connect_relay()
-        assert v.step == "token_input"
+        assert v.step == "configure"
+        assert "Please enter" in v.error
 
 
 # ---------------------------------------------------------------------------
@@ -182,7 +127,7 @@ class TestConnectRelay:
 class TestStartOAuth:
     @pytest.mark.asyncio
     async def test_start_oauth_sets_redirect(self, fake_unconfigured: _FakeConfig) -> None:
-        v = AuthSetupView(is_local=True)
+        v = AuthSetupView()
         v.relay_url = "https://relay.example.com"
         v._ws_host = "localhost:8741"
         await v._on_start_oauth("github")
@@ -192,41 +137,54 @@ class TestStartOAuth:
         assert "callback=" in v.redirect_url
         assert "nonce=" in v.redirect_url
 
+    @pytest.mark.asyncio
+    async def test_empty_provider_sets_error(self, fake_unconfigured: _FakeConfig) -> None:
+        v = AuthSetupView()
+        await v._on_start_oauth("")
+        assert v.step != "redirecting"
+        assert v.error
+
 
 # ---------------------------------------------------------------------------
-# Reconfigure 流程
+# Reconfigure 流程 — 简化为单分支(鉴权由 middleware 处理)
 # ---------------------------------------------------------------------------
 
 
 class TestReconfigure:
-    @pytest.mark.asyncio
-    async def test_local_reconfigure_clears_and_advances(self, fake_configured: _FakeConfig) -> None:
-        v = AuthSetupView(is_local=True)
+    def test_reconfigure_advances_to_configure(self, fake_configured: _FakeConfig) -> None:
+        v = AuthSetupView()
         assert v.step == "already_configured"
-        await v._on_reconfigure()
+        v._on_reconfigure()
         assert v.step == "configure"
-        # config.auth.relay 被清空
-        assert fake_configured.get("auth.relay") is None
+        # 不再清空 config — 保持旧配置直到 OAuth 成功覆盖
+        assert fake_configured.get("auth.relay") == "https://mutbot.ai"
+        # relay_url 预填当前值
+        assert v.relay_url == "https://mutbot.ai"
 
-    @pytest.mark.asyncio
-    async def test_remote_reconfigure_requires_token(self, fake_configured: _FakeConfig, capsys: pytest.CaptureFixture[str]) -> None:
-        v = AuthSetupView(is_local=False)
+
+# ---------------------------------------------------------------------------
+# 后退导航
+# ---------------------------------------------------------------------------
+
+
+class TestBackNavigation:
+    def test_back_to_configure(self, fake_unconfigured: _FakeConfig) -> None:
+        v = AuthSetupView()
+        v.step = "select_provider"
+        v.error = "stale"
+        v._on_back_to_configure()
+        assert v.step == "configure"
+        assert v.error == ""
+
+    def test_back_home_triggers_redirect(self, fake_configured: _FakeConfig) -> None:
+        v = AuthSetupView()
+        v._on_back_home()
+        assert v.step == "redirecting"
+        assert v.redirect_url == "/"
+
+    def test_back_to_configured_from_configure(self, fake_configured: _FakeConfig) -> None:
+        v = AuthSetupView()
+        v._on_reconfigure()
+        assert v.step == "configure"
+        v._on_back_to_configured()
         assert v.step == "already_configured"
-        await v._on_reconfigure()
-        assert v.step == "token_input"
-        assert v.pending_reconfigure is True
-        assert setup_token.is_active() is True
-        out = capsys.readouterr().out
-        assert "Setup Token" in out
-
-    @pytest.mark.asyncio
-    async def test_remote_reconfigure_after_token_clears_config(self, fake_configured: _FakeConfig) -> None:
-        v = AuthSetupView(is_local=False)
-        await v._on_reconfigure()
-        token = setup_token._token  # 拿当前生成的 token
-        assert token is not None
-        v.token_input = token
-        await v._on_verify_token()
-        assert v.step == "configure"
-        assert v.pending_reconfigure is False
-        assert fake_configured.get("auth.relay") is None
