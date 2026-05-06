@@ -126,22 +126,35 @@ class TestConnectRelay:
 
 class TestStartOAuth:
     @pytest.mark.asyncio
-    async def test_start_oauth_sets_redirect(self, fake_unconfigured: _FakeConfig) -> None:
+    async def test_start_oauth_sends_redirect_command(
+        self,
+        fake_unconfigured: _FakeConfig,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
         v = AuthSetupView()
         v.relay_url = "https://relay.example.com"
         v._ws_host = "localhost:8741"
+        sent: list[tuple[str, dict[str, Any]]] = []
+
+        async def _fake_send_command(name: str, /, **args: Any) -> None:
+            sent.append((name, args))
+
+        monkeypatch.setattr(v, "send_command", _fake_send_command)
         await v._on_start_oauth("github")
-        assert v.step == "redirecting"
-        assert v.redirect_url.startswith("https://relay.example.com/auth/start")
-        assert "provider=github" in v.redirect_url
-        assert "callback=" in v.redirect_url
-        assert "nonce=" in v.redirect_url
+        assert sent
+        name, args = sent[0]
+        assert name == "mutgui.redirect"
+        url = args["url"]
+        assert url.startswith("https://relay.example.com/auth/start")
+        assert "provider=github" in url
+        assert "callback=" in url
+        assert "nonce=" in url
 
     @pytest.mark.asyncio
     async def test_empty_provider_sets_error(self, fake_unconfigured: _FakeConfig) -> None:
         v = AuthSetupView()
         await v._on_start_oauth("")
-        assert v.step != "redirecting"
+        assert v.step == "configure"
         assert v.error
 
 
@@ -176,11 +189,21 @@ class TestBackNavigation:
         assert v.step == "configure"
         assert v.error == ""
 
-    def test_back_home_triggers_redirect(self, fake_configured: _FakeConfig) -> None:
+    @pytest.mark.asyncio
+    async def test_back_home_triggers_redirect(
+        self,
+        fake_configured: _FakeConfig,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
         v = AuthSetupView()
-        v._on_back_home()
-        assert v.step == "redirecting"
-        assert v.redirect_url == "/"
+        sent: list[tuple[str, dict[str, Any]]] = []
+
+        async def _fake_send_command(name: str, /, **args: Any) -> None:
+            sent.append((name, args))
+
+        monkeypatch.setattr(v, "send_command", _fake_send_command)
+        await v._on_back_home()
+        assert sent == [("mutgui.redirect", {"url": "/"})]
 
     def test_back_to_configured_from_configure(self, fake_configured: _FakeConfig) -> None:
         v = AuthSetupView()

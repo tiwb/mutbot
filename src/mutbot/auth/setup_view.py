@@ -77,7 +77,6 @@ class AuthSetupView(View):
       - "configure"          — 输入 relay URL
       - "select_provider"    — 从 relay 拉到 provider 列表,选 provider
       - "already_configured" — 已配置,提供 Reconfigure 入口
-      - "redirecting"        — 通过 mutbot.Redirect 让前端 location.href 跳到 OAuth
 
     鉴权由 middleware 处理 — 能进 View 就说明已通过登录(普通用户或 setup-bootstrap)。
     """
@@ -93,8 +92,6 @@ class AuthSetupView(View):
         self.error: str = ""
         self.relay_url: str = "https://mutbot.ai"
         self.providers: list[dict[str, str]] = []
-        # 需要前端跳转的 URL(step == "redirecting" 时使用)
-        self.redirect_url: str = ""
 
     # ---- render ----
 
@@ -106,8 +103,6 @@ class AuthSetupView(View):
             return self._render_configure()
         if step == "select_provider":
             return self._render_select_provider()
-        if step == "redirecting":
-            return self._render_redirecting()
         return ViewBlock([
             {"$component": "antd.Alert", "$id": "err",
              "type": "error", "message": f"Unknown step: {step}"},
@@ -219,18 +214,10 @@ class AuthSetupView(View):
             ],
         )
 
-    def _render_redirecting(self) -> ViewBlock:
-        return ViewBlock([
-            {"$component": "mutbot.Redirect", "$id": "redir",
-             "url": self.redirect_url},
-        ])
-
     # ---- 回调 ----
 
-    def _on_back_home(self) -> None:
-        self.redirect_url = "/"
-        self.step = "redirecting"
-        self.invalidate()
+    async def _on_back_home(self) -> None:
+        await self.send_command("mutgui.redirect", url="/")
 
     def _on_reconfigure(self) -> None:
         """Reconfigure — 已通过 middleware 鉴权,直接进入 configure。
@@ -304,9 +291,7 @@ class AuthSetupView(View):
             f"&nonce={nonce}"
         )
 
-        self.redirect_url = login_url
-        self.step = "redirecting"
-        self.invalidate()
+        await self.send_command("mutgui.redirect", url=login_url)
 
     # ---- 工具 ----
 

@@ -5,6 +5,8 @@ import * as antd from "antd";
 import {
   MutguiView,
   registerComponents,
+  registerCommands,
+  resolveCommand,
   ConnectionProvider,
   type MutguiConnection,
   type ViewPath,
@@ -12,8 +14,6 @@ import {
 } from "@mutgui/core";
 import "@mutgui/core/styles.css";
 import "./theme-dark.css";
-
-import { Redirect } from "./Redirect";
 
 // 与 mutgui demo 一致的暗色主题
 document.body.classList.add("mutgui-dark");
@@ -31,10 +31,15 @@ registerComponents({
   ...(antd as unknown as Record<string, unknown>),
 });
 
-// 注册 mutbot 命名空间（目前只有 Redirect）
-registerComponents({
-  __name__: "mutbot",
-  Redirect,
+registerCommands({
+  __name__: "mutgui",
+  redirect: ({ url, replace }: { url: string; replace?: boolean }) => {
+    if (replace) {
+      window.location.replace(url);
+      return;
+    }
+    window.location.href = url;
+  },
 });
 
 function createConnection(ws: WebSocket): MutguiConnection {
@@ -49,6 +54,17 @@ function createConnection(ws: WebSocket): MutguiConnection {
       cache.set(key, msg.tree);
       const cb = subs.get(key);
       if (cb) cb(msg.tree);
+      return;
+    }
+
+    if (msg.type === "command") {
+      const viewId: ViewPath = msg.viewId || [];
+      const cmd = resolveCommand(msg.name);
+      if (!cmd) {
+        console.warn(`[mutbot setup] Unknown command: ${String(msg.name)}`, msg);
+        return;
+      }
+      cmd((msg.args || {}) as Record<string, unknown>, { viewId });
     }
   });
 
