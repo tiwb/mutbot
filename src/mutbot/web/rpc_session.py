@@ -96,11 +96,7 @@ class SessionOps(SessionRpc):
 
         from mutbot.session import Session
         if not session_type:
-            existing = sm.list_by_workspace(ws.id)
-            if not existing:
-                session_type = "mutbot.session.AgentSession"
-            else:
-                return {"error": "session type is required"}
+            return {"error": "session type is required"}
         try:
             Session.get_session_class(session_type)
         except ValueError:
@@ -124,7 +120,7 @@ class SessionOps(SessionRpc):
     async def types(self, params: dict, ctx: RpcContext) -> list[dict]:
         """返回可用的 Session 类型列表"""
         import mutobj
-        from mutbot.session import Session, AgentSession
+        from mutbot.session import Session
 
         result = []
         for cls in mutobj.discover_subclasses(Session):
@@ -136,7 +132,7 @@ class SessionOps(SessionRpc):
                 "kind": kind,
                 "label": label,
                 "icon": icon,
-                "is_agent": issubclass(cls, AgentSession),
+                "is_agent": False,  # agent 已剥离
             })
         return result
 
@@ -167,7 +163,7 @@ class SessionOps(SessionRpc):
         return session_dict(session)
 
     async def messages(self, params: dict, ctx: RpcContext) -> dict:
-        """获取 Session 的持久化消息"""
+        """获取 Session 的持久化消息（agent 剩离后只读磁盘，不再访问 runtime agent）"""
         sm = ctx.session_manager
         if not sm:
             return {"error": "session_manager not available"}
@@ -182,16 +178,11 @@ class SessionOps(SessionRpc):
         if avatar:
             agent_display["avatar"] = avatar
 
-        from mutbot.web.serializers import serialize_message
+        from mutbot.runtime import storage
         messages: list = []
-        rt = sm.get_agent_runtime(session_id)
-        if rt and rt.agent and rt.agent.context.messages:
-            messages = [serialize_message(m) for m in rt.agent.context.messages]
-        else:
-            from mutbot.runtime import storage
-            data = storage.load_session_metadata(session_id)
-            if data:
-                messages = data.get("messages", [])
+        data = storage.load_session_metadata(session_id)
+        if data:
+            messages = data.get("messages", [])
 
         return {
             "session_id": session_id,
@@ -342,43 +333,9 @@ class SessionOps(SessionRpc):
         return {"session_id": session_id, "terminal_id": new_term_id}
 
     async def run_tool(self, params: dict, ctx: RpcContext) -> dict:
-        """在指定 session 中请求执行一个工具调用。"""
-        sm = ctx.session_manager
-        if not sm:
-            return {"error": "session_manager not available"}
-        session_id = params.get("session_id", "")
-        tool_name = params.get("tool", "")
-        tool_input = params.get("input", {})
-        if not session_id or not tool_name:
-            return {"error": "session_id and tool are required"}
-
-        bridge = sm.get_bridge(session_id)
-        if not bridge:
-            return {"error": "session not running"}
-
-        bridge.request_tool(tool_name, tool_input)
-        return {"ok": True}
+        """在指定 session 中请求执行一个工具调用（agent 已剥离后不可用）。"""
+        return {"error": "agent runtime not available (stripped from mutbot)"}
 
     async def run_setup(self, params: dict, ctx: RpcContext) -> dict:
-        """在指定 session 上触发 Config-llm 配置工具。"""
-        sm = ctx.session_manager
-        if not sm:
-            return {"error": "session manager not available"}
-
-        session_id = params.get("session_id", "")
-        if not session_id:
-            return {"error": "session_id is required"}
-
-        session = sm.get(session_id)
-        if session is None:
-            return {"error": f"session {session_id} not found"}
-
-        loop = asyncio.get_running_loop()
-        try:
-            bridge = sm.start(session_id, loop)
-        except Exception as exc:
-            logger.exception("Failed to start bridge for setup session=%s", session_id)
-            return {"error": str(exc)}
-
-        bridge.request_tool("Config-llm")
-        return {"ok": True, "session_id": session_id}
+        """运行 LLM 配置向导（agent 已剥离后不可用）。"""
+        return {"error": "agent runtime not available (stripped from mutbot)"}

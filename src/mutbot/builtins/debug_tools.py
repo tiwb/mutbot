@@ -341,12 +341,13 @@ class MutbotTools(NamespaceTools):
             sessions = list(srv.session_manager._sessions.values())
         if not sessions:
             return "(no sessions)"
-        from mutbot.session import AgentSession
+        # AgentSession 已从 mutbot 剥离：model 字段探测性读取，类型不存在时跳过
         lines: list[str] = []
         for s in sessions:
             parts = [s.id[:8], s.type or "?", f"[{s.status}]"]
-            if isinstance(s, AgentSession) and s.model:
-                parts.append(s.model)
+            model = getattr(s, "model", "")
+            if model:
+                parts.append(model)
             if s.title:
                 parts.append(s.title)
             lines.append("  ".join(parts))
@@ -364,11 +365,12 @@ class MutbotTools(NamespaceTools):
         srv = _get_managers()
         if not srv.session_manager:
             return "error: session_manager not initialized"
+        from mutbot.runtime import storage as _storage
         s = srv.session_manager.get(session_id)
         if not s:
             return f"error: session {session_id} not found"
 
-        from mutbot.session import AgentSession
+        # AgentSession 已剥离：model/tokens/runtime 详情字段探测性读取
         lines: list[str] = [
             f"Session:  {s.id}",
             f"Type:     {s.type}",
@@ -378,21 +380,18 @@ class MutbotTools(NamespaceTools):
             f"Updated:  {s.updated_at}",
         ]
 
-        if isinstance(s, AgentSession):
-            lines.append(f"Model:    {s.model}")
-            lines.append(f"Tokens:   {s.total_tokens}")
+        model = getattr(s, "model", "")
+        if model:
+            lines.append(f"Model:    {model}")
+        total_tokens = getattr(s, "total_tokens", 0)
+        if total_tokens:
+            lines.append(f"Tokens:   {total_tokens}")
 
         rt = srv.session_manager.get_runtime(session_id)
         if rt:
-            from mutbot.runtime.session_manager import AgentSessionRuntime
-            lines.append(f"Runtime:  active")
-            if isinstance(rt, AgentSessionRuntime):
-                lines.append(f"  Agent:  {'yes' if rt.agent else 'no'}")
-                lines.append(f"  Bridge: {'yes' if rt.bridge else 'no'}")
-                if isinstance(s, AgentSession):
-                    lines.append(f"  Context: {s.context_used}/{s.context_window}")
+            lines.append("Runtime:  active")
         else:
-            lines.append(f"Runtime:  inactive")
+            lines.append("Runtime:  inactive")
 
         if srv.channel_manager:
             channels = srv.channel_manager.get_channels_for_session(session_id)
@@ -406,64 +405,18 @@ class MutbotTools(NamespaceTools):
     async def session_messages(
         self, session_id: str, last_n: int = 10, role: str = "", full: bool = False,
     ) -> str:
-        """查看 agent session 的对话历史。
+        """查看 agent session 的对话历史（agent 已剥离后不可用）。
 
         Args:
             session_id: session 的完整 ID。
-            last_n: 返回最近 N 条消息,默认 10。
-            role: 可选过滤 "user"/"assistant"/"tool"。
-            full: True 返回完整内容,False 截取前 500 字符(默认)。
+            last_n: 保留参数，当前无效。
+            role: 保留参数，当前无效。
+            full: 保留参数，当前无效。
 
         Returns:
-            多行文本,"--- [role] ---" 分隔每条消息,含 tool 调用名和 token 信息。
+            提示文本。
         """
-        last_n = _int(last_n, 10)
-        full = _bool(full)
-        srv = _get_managers()
-        if not srv.session_manager:
-            return "error: session_manager not initialized"
-
-        from mutbot.runtime.session_manager import AgentSessionRuntime
-        rt = srv.session_manager.get_runtime(session_id)
-        if not rt or not isinstance(rt, AgentSessionRuntime) or not rt.agent:
-            return f"error: no agent runtime for session {session_id}"
-
-        messages = rt.agent.context.messages
-        if role:
-            messages = [m for m in messages if m.role == role]
-        messages = messages[-last_n:]
-
-        lines: list[str] = []
-        for m in messages:
-            text_parts: list[str] = []
-            tool_names: list[str] = []
-            for b in m.blocks:
-                if b.type == "text":
-                    text_parts.append(b.text)
-                elif b.type == "tool_use":
-                    tool_names.append(f"{b.name}({b.status})")
-                elif b.type == "thinking":
-                    if b.thinking:
-                        text_parts.append(
-                            f"[thinking: {b.thinking[:100]}...]"
-                            if len(b.thinking) > 100 else f"[thinking: {b.thinking}]"
-                        )
-
-            content = "\n".join(text_parts)
-            if not full and len(content) > 500:
-                content = content[:500] + "..."
-
-            token_info = ""
-            if m.input_tokens or m.output_tokens:
-                token_info = f"  (in={m.input_tokens} out={m.output_tokens})"
-            header = f"--- [{m.role}]{token_info} ---"
-            lines.append(header)
-            if tool_names:
-                lines.append(f"tools: {', '.join(tool_names)}")
-            if content:
-                lines.append(content)
-
-        return "\n".join(lines) if lines else "(no messages)"
+        return "error: agent runtime not available (stripped from mutbot)"
 
     # ----- connections -----
 

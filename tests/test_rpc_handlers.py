@@ -180,23 +180,6 @@ async def _dispatch(method, params, ctx):
 class TestSessionHandlers:
 
     @pytest.mark.asyncio
-    async def test_session_create_agent(self):
-        wm = FakeWorkspaceManager()
-        wm.workspaces["ws_test"] = FakeWorkspace()
-        sm = FakeSessionManager()
-        broadcasted = []
-        ctx = _make_context(broadcasted, workspace_manager=wm, session_manager=sm)
-
-        resp = await _dispatch("session.create", {"type": "mutbot.session.AgentSession"}, ctx)
-        assert resp["type"] == "rpc_result"
-        result = resp["result"]
-        assert result["type"] == "mutbot.session.AgentSession"
-        assert result["id"].startswith("s_")
-        # 验证 broadcast 被调用
-        assert len(broadcasted) == 1
-        assert broadcasted[0]["event"] == "session_created"
-
-    @pytest.mark.asyncio
     async def test_session_create_terminal(self):
         wm = FakeWorkspaceManager()
         wm.workspaces["ws_test"] = FakeWorkspace()

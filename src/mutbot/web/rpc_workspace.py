@@ -205,22 +205,8 @@ class ConfigOps(WorkspaceRpc):
     namespace = "config"
 
     async def models(self, params: dict, ctx: RpcContext) -> dict:
-        """返回所有已配置的模型列表"""
-        from mutagent.provider import LLMProvider
-
-        sm = ctx.session_manager
-        if sm is None:
-            return {"models": [], "default_model": ""}
-        config = sm.config
-        models = LLMProvider.list_models(config)
-        default_model = config.get("default_model", default="")
-        return {
-            "models": [
-                {"name": m["name"], "model_id": m["model_id"], "provider_name": m["provider_name"]}
-                for m in models
-            ],
-            "default_model": default_model,
-        }
+        """返回所有已配置的模型列表（agent 剩离后始终返回空，保留接口以免前端 404）。"""
+        return {"models": [], "default_model": ""}
 
 
 class DebugRpc(WorkspaceRpc):

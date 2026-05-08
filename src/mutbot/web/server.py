@@ -67,27 +67,15 @@ def _stop_all_clients():
 
 
 async def _shutdown_cleanup():
-    """Stop non-terminal sessions, close ptyhost connection (terminals survive restart)."""
+    """Close ptyhost connection (terminals survive restart) + shutdown sandbox.
+
+    Agent 已剥离：不再区分 terminal/non-terminal session，只保证 Terminal session 的 PTY
+    随 ptyhost 存活。
+    """
     if session_manager is not None:
-        from mutbot.session import TerminalSession
-        sids = list(session_manager._sessions)
-        # 只停止非 Terminal 的 Session（Agent 等）；Terminal 留给 ptyhost 持久化
-        non_terminal_sids = []
-        terminal_sids = []
-        for sid in sids:
-            s = session_manager._sessions.get(sid)
-            if s and isinstance(s, TerminalSession):
-                terminal_sids.append(sid)
-            else:
-                non_terminal_sids.append(sid)
-
-        if non_terminal_sids:
-            logger.info("Stopping %d non-terminal sessions: %s", len(non_terminal_sids), non_terminal_sids)
-            for sid in non_terminal_sids:
-                await session_manager.stop(sid)
-
-        if terminal_sids:
-            logger.info("Preserving %d terminal sessions (ptyhost keeps PTYs alive)", len(terminal_sids))
+        terminal_count = len(session_manager._sessions)
+        if terminal_count:
+            logger.info("Preserving %d session(s) (ptyhost keeps PTYs alive)", terminal_count)
 
     # Stop all WebSocket clients
     _stop_all_clients()
@@ -99,9 +87,9 @@ async def _shutdown_cleanup():
     # 关闭 SandboxApp
     if sandbox_app is not None:
         from mutagent.sandbox.tools import PySandboxTools
-        await sandbox_app.shutdown()
+        await sandbox_app.close()
         PySandboxTools._app = None
-        logger.info("SandboxApp shut down")
+        logger.info("SandboxApp closed")
 
 
 async def _watch_config_changes(cfg: MutbotConfig) -> None:
@@ -177,47 +165,41 @@ async def _on_startup() -> None:
     session_manager.terminal_manager = terminal_manager
 
     # --- SandboxApp 初始化 ---
+    # 仅保留 mutbot.* namespace（debug_tools）作为 pysandbox 能力载体；
+    # web/jina/http 等 agent 侧 namespace 随 agent 剥离一同暂不加载。
+    # NamespaceTools 子类（MutbotTools）由 SandboxApp 在 exec_code 时自动发现。
     from mutagent.sandbox import SandboxApp
     from mutagent.sandbox.tools import PySandboxTools
-    import mutagent.sandbox.tools  # noqa: F401 — 注册 PySandboxTools
-    import mutagent.builtins.web_local  # noqa: F401 — 注册 LocalFetchImpl
-    from mutbot.builtins.web_tools import set_config as _set_web_config
-    import mutbot.builtins.web_tools  # noqa: F401 — 注册 WebTools NamespaceTools
-    import mutbot.builtins.web_jina_ext  # noqa: F401 — 注册 Jina 覆盖实现
-    import mutbot.builtins.debug_tools  # noqa: F401 — 注册 MutbotTools NamespaceTools
-    _set_web_config(config)
-    sandbox_app = SandboxApp(config=config)
-    await sandbox_app.setup()
+    import mutbot.builtins.debug_tools  # noqa: F401 — 注册 MutbotTools
+
+    sandbox_app = SandboxApp()
+
+    # 可选：如配置中声明了 mcp_sources / cli_sources，桥接进沙箱
+    mcp_sources = config.get("mcp_sources", default={}) or {}
+    if mcp_sources:
+        from mutagent.sandbox._adapter_mcp import bridge_mcp_server
+        for ns_name, server_cfg in mcp_sources.items():
+            try:
+                ns, client = await bridge_mcp_server(ns_name, server_cfg)
+                sandbox_app.add_namespace(ns, on_remove=client.close)
+            except Exception:
+                logger.warning("MCP source '%s' failed", ns_name, exc_info=True)
+
+    cli_sources = config.get("cli_sources", default={}) or {}
+    if cli_sources:
+        from mutagent.sandbox._adapter_cli import build_cli_namespace
+        try:
+            cli_ns = build_cli_namespace(cli_sources)
+            sandbox_app.add_namespace(cli_ns)
+        except Exception:
+            logger.warning("CLI sources init failed", exc_info=True)
+
     PySandboxTools._app = sandbox_app
     logger.info("SandboxApp initialized")
 
-    # --- on_change 回调统一注册 ---
-
-    # 1. LLM client 重建（所有活跃 session）
-    def _on_provider_changed(event):
-        from mutbot.runtime.session_manager import create_llm_client, AgentSessionRuntime
-        assert session_manager is not None
-        for _sid, rt in session_manager._runtimes.items():
-            if isinstance(rt, AgentSessionRuntime) and rt.agent:
-                try:
-                    rt.agent.llm = create_llm_client(event.config)
-                except Exception:
-                    logger.warning("Failed to rebuild LLM client for session %s", _sid, exc_info=True)
-
-    config.on_change("providers.**", _on_provider_changed)
-    config.on_change("default_model", _on_provider_changed)
-
-    # 2. Proxy 配置刷新
-    def _refresh_proxy(event):
-        try:
-            import mutbot.proxy.routes as _proxy_routes
-            _proxy_routes.initialize_providers(event.config.get("providers", default={}) or {})
-        except ImportError:
-            pass
-
-    config.on_change("providers.**", _refresh_proxy)
-
-    # 3. WS 广播 config_changed
+    # --- on_change 回调 ---
+    # agent 剥离后：LLM client / proxy 重建逻辑随 agent 一同移除；
+    # 只保留 WS 广播 config_changed。
     def _broadcast_config_changed(event):
         from mutbot.web.routes import _broadcast_to_all_workspaces
         from mutbot.web.rpc import make_event
@@ -229,15 +211,6 @@ async def _on_startup() -> None:
         )
 
     config.on_change("**", _broadcast_config_changed)
-
-    # --- LLM proxy 初始配置 ---
-    try:
-        import mutbot.proxy.routes as _proxy_routes
-        _proxy_routes.initialize_providers(config.get("providers", default={}) or {})
-        logger.info("LLM proxy providers initialized (%d providers)",
-                    len(_proxy_routes._provider_instances))
-    except Exception:
-        logger.warning("Failed to initialize LLM proxy providers", exc_info=True)
 
     # --- Config file change watcher ---
     _background_tasks.append(asyncio.create_task(_watch_config_changes(config)))
@@ -480,12 +453,9 @@ def worker_main(port: int, debug: bool = False) -> None:
     log_store = _init_logging(config, debug, log_prefix="server")
 
     # 3. import 路由模块以触发 View/WebSocketView 子类注册
+    # agent 剥离后不再加载 mutbot.proxy.routes（依赖 LLMProvider/Copilot）
     import mutbot.web.routes  # noqa: F401
     import mutbot.web.mcp  # noqa: F401
-    try:
-        import mutbot.proxy.routes  # noqa: F401
-    except ImportError:
-        pass
 
     # 4. 静态文件
     _frontend_dist = Path(__file__).resolve().parent / "frontend_dist"
@@ -593,12 +563,9 @@ def _standalone_main(addresses: list[tuple[str, int]], debug: bool = False) -> N
     log_store = _init_logging(config, debug)
 
     # 3. import 路由模块
+    # agent 剥离后不再加载 mutbot.proxy.routes
     import mutbot.web.routes  # noqa: F401
     import mutbot.web.mcp  # noqa: F401
-    try:
-        import mutbot.proxy.routes  # noqa: F401
-    except ImportError:
-        pass
 
     # 4. 静态文件
     _frontend_dist = Path(__file__).resolve().parent / "frontend_dist"

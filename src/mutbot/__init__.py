@@ -2,7 +2,7 @@
 
 __version__ = "0.8.999"
 
-from mutbot.session import Session, AgentSession, TerminalSession, DocumentSession
+from mutbot.session import Session, TerminalSession
 from mutbot.menu import Menu, MenuItem, MenuResult
 
 # 确保内置 Declaration 子类被注册

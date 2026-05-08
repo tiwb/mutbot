@@ -34,27 +34,7 @@ class WorkspaceOps(AppRpc):
 
         ws = wm.create(name)
 
-        # 无 LLM 配置时，创建默认 AgentSession 供配置向导使用
-        _cfg = ctx.config
-        if not _cfg or not _cfg.get("providers"):
-            sm = ctx.session_manager
-            if sm:
-                agent_type = "mutbot.session.AgentSession"
-                existing = sm.list_by_workspace(ws.id)
-                agent_session = next(
-                    (s for s in existing if s.type == agent_type),
-                    None,
-                )
-                if agent_session is None:
-                    agent_session = await sm.create(ws.id, session_type=agent_type)
-                    ws.sessions.append(agent_session.id)
-                    wm.update(ws)
-                # 前端连接后自动打开 tab
-                from mutbot.web.routes import queue_workspace_event
-                queue_workspace_event(
-                    ws.id, "open_session", {"session_id": agent_session.id},
-                )
-
+        # agent 已剥离：不再创建默认 AgentSession / 初始化配置向导
         return workspace_dict(ws)
 
     async def remove(self, params: dict, ctx: RpcContext) -> dict:

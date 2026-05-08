@@ -10,11 +10,9 @@ import importlib
 def test_import_mutbot_session():
     """mutbot.session 模块（公开 API）可导入且包含核心类"""
     from mutbot.session import (
-        Session, AgentSession, TerminalSession, DocumentSession,
+        Session, TerminalSession,
     )
-    assert issubclass(AgentSession, Session)
     assert issubclass(TerminalSession, Session)
-    assert issubclass(DocumentSession, Session)
     assert hasattr(Session, "get_session_class")
 
 
@@ -30,12 +28,6 @@ def test_import_mutbot_builtins():
     import mutbot.builtins
     from mutbot.builtins.menus import AddSessionMenu, RenameSessionMenu
     assert hasattr(AddSessionMenu, "execute")
-
-
-def test_import_mutbot_top_level():
-    """mutbot 顶层包导出核心类型"""
-    from mutbot import Session, AgentSession, Menu, MenuItem, MenuResult
-    assert issubclass(AgentSession, Session)
 
 
 # ---------------------------------------------------------------------------
@@ -65,10 +57,9 @@ def test_import_runtime_workspace():
 def test_import_runtime_session_manager():
     """runtime.session_manager 模块可导入且包含 SessionManager"""
     from mutbot.runtime.session_manager import (
-        SessionManager, SessionRuntime, AgentSessionRuntime,
+        SessionManager, SessionRuntime,
     )
     assert hasattr(SessionManager, "create")
-    assert hasattr(SessionManager, "start")
 
 
 def test_import_runtime_menu_impl():

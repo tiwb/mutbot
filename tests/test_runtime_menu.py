@@ -213,12 +213,10 @@ class TestAddSessionMenu:
         ctx = _make_context()
         items = AddSessionMenu.dynamic_items(ctx)
         assert isinstance(items, list)
-        assert len(items) >= 3  # agent, terminal, document
+        assert len(items) >= 1  # terminal
 
         type_names = [it.data.get("session_type") for it in items]
-        assert "mutbot.session.AgentSession" in type_names
         assert "mutbot.session.TerminalSession" in type_names
-        assert "mutbot.session.DocumentSession" in type_names
 
     def test_dynamic_items_have_correct_format(self):
         ctx = _make_context()
@@ -228,37 +226,6 @@ class TestAddSessionMenu:
             assert item.id.startswith("add_session:")
             assert item.name  # 非空
             assert item.order.startswith("0new:")
-
-    @pytest.mark.asyncio
-    async def test_execute_creates_agent_session(self):
-        """execute 应该通过 session_manager 创建 agent session"""
-
-        class FakeSessionManager:
-            def __init__(self):
-                self.created = []
-
-            async def create(self, workspace_id, session_type, config=None):
-                class FakeSession:
-                    id = "fake_id"
-                    title = "Agent 1"
-                self.created.append((workspace_id, session_type))
-                return FakeSession()
-
-        fake_sm = FakeSessionManager()
-        ctx = _make_context(
-            workspace_id="ws_1",
-            managers={"session_manager": fake_sm},
-        )
-
-        menu = AddSessionMenu()
-        result = await menu.execute({"session_type": "mutbot.session.AgentSession"}, ctx)
-
-        assert isinstance(result, MenuResult)
-        assert result.action == "session_created"
-        assert result.data["session_id"] == "fake_id"
-        assert result.data["session_type"] == "mutbot.session.AgentSession"
-        assert result.data["title"] == "Agent 1"
-        assert fake_sm.created == [("ws_1", "mutbot.session.AgentSession")]
 
     @pytest.mark.asyncio
     async def test_execute_creates_terminal_session(self):
@@ -368,7 +335,7 @@ class TestMenuRpcHandlers:
         assert resp["id"] == "r1"
         items = resp["result"]
         assert isinstance(items, list)
-        assert len(items) >= 3
+        assert len(items) >= 1
 
     @pytest.mark.asyncio
     async def test_menu_query_empty_category(self):
@@ -384,63 +351,6 @@ class TestMenuRpcHandlers:
 
         assert resp["type"] == "rpc_result"
         assert resp["result"] == []
-
-    @pytest.mark.asyncio
-    async def test_menu_execute_handler(self):
-
-        class FakeSession:
-            id = "new_session_id"
-            workspace_id = "ws_1"
-            title = "Agent 1"
-            type = "agent"
-            status = "active"
-            created_at = ""
-            updated_at = ""
-            config = {}
-
-        class FakeSessionManager:
-            async def create(self, workspace_id, session_type, config=None):
-                return FakeSession()
-
-            def get(self, session_id):
-                if session_id == "new_session_id":
-                    return FakeSession()
-                return None
-
-        broadcast_events = []
-
-        async def capture_broadcast(data: dict) -> None:
-            broadcast_events.append(data)
-
-        ctx = _make_context(
-            workspace_id="ws_1",
-            managers={"session_manager": FakeSessionManager()},
-            broadcast=capture_broadcast,
-        )
-
-        menu_id = _menu_id(AddSessionMenu)
-        msg = {
-            "type": "rpc",
-            "id": "r3",
-            "method": "menu.execute",
-            "params": {
-                "menu_id": menu_id,
-                "params": {"session_type": "mutbot.session.AgentSession"},
-            },
-        }
-        resp = await self._dispatcher.dispatch(msg, ctx)
-
-        assert resp["type"] == "rpc_result"
-        result = resp["result"]
-        assert result["action"] == "session_created"
-        assert result["data"]["session_id"] == "new_session_id"
-
-        # 验证广播了 session_created 事件
-        assert len(broadcast_events) == 1
-        evt = broadcast_events[0]
-        assert evt["type"] == "event"
-        assert evt["event"] == "session_created"
-        assert evt["data"]["id"] == "new_session_id"
 
     @pytest.mark.asyncio
     async def test_menu_execute_missing_menu_id(self):
