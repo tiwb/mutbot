@@ -2,13 +2,28 @@
 
 只暴露 ``pysandbox`` 一个 tool(在 mutagent 层注册),其余调试能力迁移至
 sandbox namespace ``mutbot.*``,见 ``mutbot/builtins/debug_tools.py``。
+
+另外，本 view 覆盖 ``MCPView`` 的两个扩展钩子，启用 pysandbox
+namespace sharing 能力——让连过来的 mutagent peer client 可以直接以
+namespace 函数形态调用 mutbot 的能力（``mutbot.status()`` 等）。
+详见 ``mutagent/docs/specifications/feature-pysandbox-namespace-sharing.md``。
 """
 
 from __future__ import annotations
 
+from typing import Any, ClassVar, TYPE_CHECKING
+
 import mutbot
+from mutagent.sandbox.share import (
+    PYSANDBOX_CAPABILITY,
+    register_pysandbox_methods,
+)
 from mutio.mcp.view import MCPView
 from mutio.mcp import MCPPromptSet
+
+if TYPE_CHECKING:
+    from mutagent.sandbox.app import SandboxApp
+    from mutio.mcp.protocol import JsonRpcDispatcher
 
 
 class MutBotMCP(MCPView):
@@ -20,6 +35,21 @@ class MutBotMCP(MCPView):
         "通过 pysandbox(code=...) 执行 Python 代码。"
         "能力清单见 help();具体命名空间见 help(<namespace>)。"
     )
+
+    # 启动时由 _on_startup 赋值（类级单例，ClassVar 避免被 mutobj 包成 per-instance AttributeDescriptor）
+    _sandbox_app: ClassVar["SandboxApp | None"] = None
+
+    def extra_capabilities(self) -> dict[str, Any]:
+        # 仅在 sandbox 就绪后才宣告 capability，避免 client 连上可接但
+        # call/list 各种 500
+        if self._sandbox_app is None:
+            return {}
+        return dict(PYSANDBOX_CAPABILITY)
+
+    def register_extra_methods(self, dispatch: "JsonRpcDispatcher") -> None:
+        app = self._sandbox_app
+        if app is not None:
+            register_pysandbox_methods(dispatch, app)
 
 
 class PysandboxReadme(MCPPromptSet):

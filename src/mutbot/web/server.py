@@ -177,13 +177,26 @@ async def _on_startup() -> None:
     # 可选：如配置中声明了 mcp_sources / cli_sources，桥接进沙箱
     mcp_sources = config.get("mcp_sources", default={}) or {}
     if mcp_sources:
-        from mutagent.sandbox._adapter_mcp import bridge_mcp_server
+        # 直接用 MCPConnection，不走 legacy bridge_mcp_server；
+        # 同时收 conn.namespace + conn.peer_namespaces（pysandbox sharing 融合进来的）
+        from mutagent.sandbox._adapter_mcp import MCPConnection
+        main_loop = asyncio.get_running_loop()
         for ns_name, server_cfg in mcp_sources.items():
+            conn = MCPConnection(ns_name, server_cfg, main_loop)
+            # 先设 sandbox 回引，让 conn.reconnect() 里的 _do_rebuild 能自动
+            # 同步 peer namespaces 到 sandbox registry。详
+            # mutagent/docs/specifications/feature-namespace-multi-provider.md。
+            conn._sandbox = sandbox_app
+            # tool namespace 挂入（conn.close 作为 on_remove）。
+            # multi-provider 模型下同名 ns 会同股并存，冲突由 SandboxApp
+            # 走 MergedNamespaceView 在调用/help 级处理。
+            sandbox_app.add_namespace(conn.namespace, on_remove=conn.close)
             try:
-                ns, client = await bridge_mcp_server(ns_name, server_cfg)
-                sandbox_app.add_namespace(ns, on_remove=client.close)
+                await conn.reconnect()
             except Exception:
-                logger.warning("MCP source '%s' failed", ns_name, exc_info=True)
+                # 连接失败仍保留主 namespace 作为 placeholder（后续调用会重试）
+                logger.warning("MCP source '%s' initial connect failed",
+                               ns_name, exc_info=True)
 
     cli_sources = config.get("cli_sources", default={}) or {}
     if cli_sources:
@@ -195,6 +208,10 @@ async def _on_startup() -> None:
             logger.warning("CLI sources init failed", exc_info=True)
 
     PySandboxTools._app = sandbox_app
+    # 让 MutBotMCP 在 initialize 响应里宣告 pysandbox capability，并启用
+    # pysandbox/namespaces.* 扩展方法，供 mutagent peer client 融合
+    from mutbot.web.mcp import MutBotMCP
+    MutBotMCP._sandbox_app = sandbox_app
     logger.info("SandboxApp initialized")
 
     # --- on_change 回调 ---

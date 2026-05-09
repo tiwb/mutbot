@@ -34,6 +34,15 @@ npm run build                                   # 生产构建 → src/mutbot/we
 
 详见 [docs/specifications/](docs/specifications/) 目录。
 
+## Pysandbox namespace sharing
+
+mutbot 的 `/mcp` 端点在标准 MCP 之上额外声明 `capabilities.pysandbox`，
+允许另一个 mutagent / mutbot 实例通过 `mcp_sources` 配置将本实例的
+namespaces（`mutbot.*` 等）平铺融合进其 sandbox。标准 MCP 客户端
+（Claude Code）不受影响，仍只看到一个 `pysandbox` tool。
+
+协议详情：`mutagent/docs/specifications/feature-pysandbox-namespace-sharing.md`。
+
 ## 发布
 
 Tag 触发自动发布（PyPI Trusted Publishers，无需 token）：
