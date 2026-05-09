@@ -103,8 +103,8 @@ def test_import_runtime_terminal():
 
 def test_import_web_server():
     """web.server 整体导入链正常（间接验证所有内部 import）"""
-    from mutbot.web.server import main
-    assert main is not None
+    from mutbot.web.server import run_server
+    assert run_server is not None
 
 
 def test_import_web_routes():

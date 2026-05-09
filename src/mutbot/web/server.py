@@ -391,39 +391,6 @@ def _init_logging(cfg: MutbotConfig, debug: bool, log_prefix: str = "server") ->
     return store
 
 
-def _parse_args():
-    """解析命令行参数。"""
-    import argparse
-    import mutbot
-
-    parser = argparse.ArgumentParser(description="MutBot Web UI")
-    parser.add_argument(
-        "-V", "--version", action="version",
-        version=f"mutbot {mutbot.__version__}",
-    )
-    parser.add_argument(
-        "--listen", action="append", default=None, metavar="[HOST:]PORT",
-        help="Bind address (repeatable). Default: 127.0.0.1:8741",
-    )
-    parser.add_argument("--debug", action="store_true", help="Enable debug logging to console")
-
-    # Supervisor / Worker 模式
-    parser.add_argument(
-        "--worker", action="store_true",
-        help="Run as Worker process (internal, used by Supervisor)",
-    )
-    parser.add_argument(
-        "--port", type=int, default=None,
-        help="Worker listen port (used with --worker)",
-    )
-    parser.add_argument(
-        "--no-supervisor", action="store_true",
-        help="Run in single-process mode (bypass Supervisor)",
-    )
-
-    return parser.parse_args()
-
-
 def worker_main(port: int, debug: bool = False) -> None:
     """Worker 进程入口：监听 localhost 指定端口，运行完整 MutBotServer。"""
     import mutbot
@@ -504,21 +471,11 @@ def supervisor_main(
     supervisor.run()
 
 
-def main():
-    """MutBot server entry point — 根据参数选择 Supervisor / Worker / 单进程模式。"""
-    import os
-    from mutbot.runtime import storage
-    storage.STARTUP_CWD = os.getcwd()
+def run_server(args: Any) -> None:
+    """Server 入口 — 由 __main__.py 调用，根据 args 选择 Supervisor / 单进程模式。
 
-    args = _parse_args()
-
-    # Worker 模式（由 Supervisor spawn）
-    if args.worker:
-        port = args.port or _DEFAULT_PORT
-        worker_main(port=port, debug=args.debug)
-        return
-
-    # 解析监听地址
+    Worker 模式已在 __main__.py 中单独分发，本函数不再处理。
+    """
     global config
     cfg = load_mutbot_config()
     cli_listen = args.listen or []

@@ -206,7 +206,7 @@ class Supervisor:
         self._generation += 1
         port = _find_free_port()
 
-        cmd = [sys.executable, "-m", "mutbot", "--worker", "--port", str(port)]
+        cmd = [sys.executable, "-m", "mutbot", "worker", "--port", str(port)]
         cmd.extend(self.worker_args)
 
         logger.info("Spawning Worker gen=%d on port %d: %s", self._generation, port, " ".join(cmd))
