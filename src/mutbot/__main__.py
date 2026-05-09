@@ -77,9 +77,39 @@ def _restart_command() -> None:
 
 
 def _pysandbox_command() -> None:
-    """Delegate to mutbot.cli.pysandbox with remaining argv."""
-    from mutbot.cli.pysandbox import main as pysandbox_main
-    pysandbox_main(sys.argv[2:])
+    """向活 mutbot server 的 MCP endpoint 提交 Python 代码执行。
+
+    复用 mutagent 的 :class:`PysandboxClient`，只传品牌参数。
+    """
+    import argparse
+
+    from mutagent.cli.pysandbox import PysandboxClient
+
+    parser = argparse.ArgumentParser(
+        prog="mutbot pysandbox",
+        description="Run Python code in the running mutbot server's sandbox.",
+    )
+    parser.add_argument("-c", dest="code", metavar="CODE",
+                        help="code string (like python -c)")
+    parser.add_argument("script", nargs="?",
+                        help="script file path, or '-' to read from stdin")
+    parser.add_argument("--port", type=int, default=8741,
+                        help="mutbot server port (default: 8741)")
+    parser.add_argument("--timeout", type=float, default=30.0,
+                        help="RPC timeout in seconds (default: 30.0)")
+    args = parser.parse_args(sys.argv[2:])
+
+    if args.code is not None and args.script is not None:
+        parser.error("-c CODE and script file are mutually exclusive")
+
+    PysandboxClient(
+        prog="mutbot",
+        default_url=f"http://127.0.0.1:{args.port}/mcp",
+        unreachable_hint=(
+            "To start:           python -m mutbot\n"
+            "Read logs offline:  tail -100 ~/.mutbot/logs/server-*.log"
+        ),
+    ).dispatch(args)
 
 
 def main() -> None:

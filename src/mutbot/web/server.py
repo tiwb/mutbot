@@ -166,46 +166,14 @@ async def _on_startup() -> None:
 
     # --- SandboxApp 初始化 ---
     # 仅保留 mutbot.* namespace（debug_tools）作为 pysandbox 能力载体；
-    # web/jina/http 等 agent 侧 namespace 随 agent 剥离一同暂不加载。
+    # MCP sources / CLI sources 桥接由 mutagent 负责（agent 模式 connect_sources()
+    # 或 --serve 模式 _build_sandbox()），mutbot 不参与外部源管理。
     # NamespaceTools 子类（MutbotTools）由 SandboxApp 在 exec_code 时自动发现。
     from mutagent.sandbox import SandboxApp
     from mutagent.sandbox.tools import PySandboxTools
     import mutbot.builtins.debug_tools  # noqa: F401 — 注册 MutbotTools
 
     sandbox_app = SandboxApp()
-
-    # 可选：如配置中声明了 mcp_sources / cli_sources，桥接进沙箱
-    mcp_sources = config.get("mcp_sources", default={}) or {}
-    if mcp_sources:
-        # 直接用 MCPConnection，不走 legacy bridge_mcp_server；
-        # 同时收 conn.namespace + conn.peer_namespaces（pysandbox sharing 融合进来的）
-        from mutagent.sandbox._adapter_mcp import MCPConnection
-        main_loop = asyncio.get_running_loop()
-        for ns_name, server_cfg in mcp_sources.items():
-            conn = MCPConnection(ns_name, server_cfg, main_loop)
-            # 先设 sandbox 回引，让 conn.reconnect() 里的 _do_rebuild 能自动
-            # 同步 peer namespaces 到 sandbox registry。详
-            # mutagent/docs/specifications/feature-namespace-multi-provider.md。
-            conn._sandbox = sandbox_app
-            # tool namespace 挂入（conn.close 作为 on_remove）。
-            # multi-provider 模型下同名 ns 会同股并存，冲突由 SandboxApp
-            # 走 MergedNamespaceView 在调用/help 级处理。
-            sandbox_app.add_namespace(conn.namespace, on_remove=conn.close)
-            try:
-                await conn.reconnect()
-            except Exception:
-                # 连接失败仍保留主 namespace 作为 placeholder（后续调用会重试）
-                logger.warning("MCP source '%s' initial connect failed",
-                               ns_name, exc_info=True)
-
-    cli_sources = config.get("cli_sources", default={}) or {}
-    if cli_sources:
-        from mutagent.sandbox._adapter_cli import build_cli_namespace
-        try:
-            cli_ns = build_cli_namespace(cli_sources)
-            sandbox_app.add_namespace(cli_ns)
-        except Exception:
-            logger.warning("CLI sources init failed", exc_info=True)
 
     PySandboxTools._app = sandbox_app
     # 让 MutBotMCP 在 initialize 响应里宣告 pysandbox capability，并启用

@@ -47,9 +47,7 @@ from mutagent.sandbox.tools import format_exec_result  # noqa: E402
 async def _pysandbox(self: PySandboxToolkit, code: str) -> str:
     loop = asyncio.get_running_loop()
     # 注入主 loop 供 _wrap_async 投递 async NamespaceTools 方法
-    import threading
-    object.__setattr__(self._app, '_async_loop', loop)
-    object.__setattr__(self._app, '_async_loop_thread_id', threading.get_ident())
+    self._app.bind_main_loop()
     result = await loop.run_in_executor(
         None, self._app.exec_code, code, self._state)
 
