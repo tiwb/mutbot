@@ -53,6 +53,11 @@ python_classes = ["Test*"]
 python_functions = ["test_*"]
 addopts = "-v --tb=short"
 
+[tool.uv.sources]
+mutagent = { path = "../mutagent", editable = true }
+mutio = { path = "../mutio", editable = true }
+mutgui = { path = "../mutgui", editable = true }
+
 [tool.pyright]
 pythonVersion = "3.11"
 pythonPlatform = "Linux"
