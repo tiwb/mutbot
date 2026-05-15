@@ -583,60 +583,36 @@ class TestSupervisorProxy:
 # ---------------------------------------------------------------------------
 
 class TestCLIArgs:
-    """CLI 参数解析测试。"""
+    """CLI 参数解析测试 — 对齐 __main__.py argparse 架构。"""
 
     def test_parse_args_default(self):
-        """默认参数：无 --worker，无 --no-supervisor。"""
-        from mutbot.web.server import _parse_args
-        import sys
-        old_argv = sys.argv
-        sys.argv = ["mutbot"]
-        try:
-            args = _parse_args()
-            assert not args.worker
-            assert not args.no_supervisor
-            assert args.port is None
-            assert not args.debug
-        finally:
-            sys.argv = old_argv
+        """默认命令 serve，无额外参数。"""
+        from mutbot.__main__ import _build_top_parser
+        args = _build_top_parser().parse_args(["serve"])
+        assert args.command == "serve"
+        assert not args.no_supervisor
+        assert args.listen is None
+        assert not args.debug
 
     def test_parse_args_worker_mode(self):
-        """--worker --port 9000"""
-        from mutbot.web.server import _parse_args
-        import sys
-        old_argv = sys.argv
-        sys.argv = ["mutbot", "--worker", "--port", "9000"]
-        try:
-            args = _parse_args()
-            assert args.worker
-            assert args.port == 9000
-        finally:
-            sys.argv = old_argv
+        """worker --port 9000"""
+        from mutbot.__main__ import _build_top_parser
+        args = _build_top_parser().parse_args(["worker", "--port", "9000"])
+        assert args.command == "worker"
+        assert args.port == 9000
 
     def test_parse_args_no_supervisor(self):
-        """--no-supervisor"""
-        from mutbot.web.server import _parse_args
-        import sys
-        old_argv = sys.argv
-        sys.argv = ["mutbot", "--no-supervisor"]
-        try:
-            args = _parse_args()
-            assert args.no_supervisor
-            assert not args.worker
-        finally:
-            sys.argv = old_argv
+        """serve --no-supervisor"""
+        from mutbot.__main__ import _build_top_parser
+        args = _build_top_parser().parse_args(["serve", "--no-supervisor"])
+        assert args.no_supervisor
+        assert args.command == "serve"
 
     def test_parse_args_debug(self):
-        """--debug"""
-        from mutbot.web.server import _parse_args
-        import sys
-        old_argv = sys.argv
-        sys.argv = ["mutbot", "--debug"]
-        try:
-            args = _parse_args()
-            assert args.debug
-        finally:
-            sys.argv = old_argv
+        """serve --debug"""
+        from mutbot.__main__ import _build_top_parser
+        args = _build_top_parser().parse_args(["serve", "--debug"])
+        assert args.debug
 
 
 # ---------------------------------------------------------------------------
