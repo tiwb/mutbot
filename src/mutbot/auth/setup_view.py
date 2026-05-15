@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import json
 import logging
-from functools import partial
 from typing import Any
 from urllib.parse import quote
 
@@ -199,7 +198,7 @@ class AuthSetupView(View):
                 "size": "large",
                 "style": {"marginBottom": 8},
                 "children": f"Sign in with {label} →",
-                "onClick": Callback(partial(self._on_start_oauth, p["name"])),
+                "onClick": Callback(self._on_start_oauth, p["name"]),
             })
 
         return self._container(
