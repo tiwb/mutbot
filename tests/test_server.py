@@ -17,7 +17,7 @@ from typing import Any
 
 import pytest
 
-from mutio.net.asgi import Server
+from mutio.net.asgi import ASGIServer
 from mutio.net._protocol import HTTPProtocol, RequestResponseCycle, FlowControl, WSProtocol, format_sse
 
 
@@ -114,19 +114,16 @@ async def _post_echo_app(scope: dict, receive: Any, send: Any) -> None:
         })
 
 
-async def _start_server(app: Any, port: int) -> Server:
+async def _start_server(app: Any, port: int) -> ASGIServer:
     """启动 server 并返回（不阻塞，用于测试）。"""
-    server = Server(app)
-    await server._lifespan_startup()
-    assert not server._lifespan_startup_failed
-    await server.startup(host="127.0.0.1", port=port)
+    server = ASGIServer(app)
+    await server.start(host="127.0.0.1", port=port)
     return server
 
 
-async def _stop_server(server: Server) -> None:
+async def _stop_server(server: ASGIServer) -> None:
     """停止 server。"""
-    await server.shutdown(timeout=3)
-    await server._lifespan_shutdown()
+    await server.shutdown()
 
 
 async def _http_request(
@@ -405,14 +402,11 @@ class TestLifespan:
             await send({"type": "http.response.body", "body": b"ok"})
 
         port = _BASE_PORT + 20
-        server = Server(tracking_app)
-        await server._lifespan_startup()
-        assert not server._lifespan_startup_failed
+        server = ASGIServer(tracking_app)
+        await server.start(host="127.0.0.1", port=port)
         assert "startup" in events
 
-        await server.startup(host="127.0.0.1", port=port)
-        await server.shutdown(timeout=2)
-        await server._lifespan_shutdown()
+        await server.shutdown()
         assert "shutdown" in events
 
     @pytest.mark.asyncio
@@ -428,9 +422,9 @@ class TestLifespan:
                     })
                 return
 
-        server = Server(failing_app)
-        await server._lifespan_startup()
-        assert server._lifespan_startup_failed
+        server = ASGIServer(failing_app)
+        with pytest.raises(RuntimeError, match="Lifespan startup failed"):
+            await server.start(host="127.0.0.1", port=_BASE_PORT + 21)
 
 
 # ---------------------------------------------------------------------------
@@ -475,9 +469,8 @@ class TestServerManagement:
         sock2.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         sock2.bind(("127.0.0.1", port2))
 
-        server = Server(_simple_app)
-        await server._lifespan_startup()
-        await server.startup(sockets=[sock1, sock2])
+        server = ASGIServer(_simple_app)
+        await server.start(sockets=[sock1, sock2])
 
         try:
             # 两个端口都应该可以访问
@@ -489,8 +482,7 @@ class TestServerManagement:
             assert status2 == 200
             assert body2 == b"GET /port2"
         finally:
-            await server.shutdown(timeout=2)
-            await server._lifespan_shutdown()
+            await server.shutdown()
 
 
 # ---------------------------------------------------------------------------

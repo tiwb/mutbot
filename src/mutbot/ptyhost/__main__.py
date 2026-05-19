@@ -26,7 +26,7 @@ def main() -> None:
     )
 
     from mutbot.ptyhost._app import PtyHostApp
-    from mutio.net.asgi import Server as _ASGIServer
+    from mutio.net.asgi import ASGIServer
 
     app = PtyHostApp()
 
@@ -44,10 +44,10 @@ def main() -> None:
 
     logger.info("ptyhost starting on 127.0.0.1:%d", port)
 
-    server = _ASGIServer(app)
+    server = ASGIServer(app)
 
     # 空闲退出回调
-    app.should_exit_callback = lambda: setattr(server, "should_exit", True)
+    app.should_exit_callback = lambda: server.signal_exit()
 
     try:
         server.run(sockets=[sock])
