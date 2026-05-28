@@ -7,8 +7,7 @@ from pathlib import Path
 
 import pytest
 
-import mutagent.builtins  # noqa: F401  -- register @impl
-from mutagent.config import Config
+from mutagent.app.config import Config
 from mutbot.runtime.config import MutbotConfig, load_mutbot_config
 
 
@@ -76,10 +75,10 @@ class TestMutbotConfig:
     def test_on_change_dispose(self, tmp_path):
         config = self._make_config(tmp_path, {})
         events = []
-        disposable = config.on_change("**", lambda e: events.append(e))
+        cancel = config.on_change("**", lambda e: events.append(e))
         config.set("foo", "bar")
         assert len(events) == 1
-        disposable.dispose()
+        cancel()
         config.set("foo", "baz")
         assert len(events) == 1  # no new event
 
@@ -143,36 +142,3 @@ class TestLoadMutbotConfig:
         }), encoding="utf-8")
         config = load_mutbot_config()
         assert config.get("default_model") == "test-model"
-
-
-# ---------------------------------------------------------------------------
-# Provider validation tests
-# ---------------------------------------------------------------------------
-
-class TestProviderValidation:
-
-    def test_anthropic_requires_auth_token(self):
-        from mutagent.builtins.anthropic_provider import AnthropicProvider
-        with pytest.raises(ValueError, match="auth_token"):
-            AnthropicProvider.from_spec({"model_id": "claude-3"})
-
-    def test_anthropic_accepts_auth_token(self):
-        from mutagent.builtins.anthropic_provider import AnthropicProvider
-        provider = AnthropicProvider.from_spec({
-            "auth_token": "sk-test-key",
-            "base_url": "https://api.anthropic.com",
-        })
-        assert provider.api_key == "sk-test-key"
-
-    def test_openai_requires_auth_token(self):
-        from mutagent.builtins.openai_provider import OpenAIProvider
-        with pytest.raises(ValueError, match="auth_token"):
-            OpenAIProvider.from_spec({"model_id": "gpt-4"})
-
-    def test_openai_accepts_auth_token(self):
-        from mutagent.builtins.openai_provider import OpenAIProvider
-        provider = OpenAIProvider.from_spec({
-            "auth_token": "sk-test-key",
-            "base_url": "https://api.openai.com/v1",
-        })
-        assert provider.api_key == "sk-test-key"

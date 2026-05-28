@@ -182,7 +182,7 @@ class TestUIToolkit:
     def test_ui_property_raises_without_tool_call(self):
         """有 owner 但无 _current_tool_call 时报错。"""
         from mutbot.ui.toolkit import UIToolkit
-        from mutagent.tools import ToolSet
+        from mutagent.core.tools import ToolSet
 
         toolkit = UIToolkit()
         ts = ToolSet()

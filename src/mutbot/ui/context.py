@@ -4,12 +4,12 @@ from __future__ import annotations
 
 from typing import Any
 
-import mutagent
+import mutobj
 
 from mutbot.ui.events import UIEvent
 
 
-class UIContext(mutagent.Declaration):
+class UIContext(mutobj.Declaration):
     """后端 handler 与前端 UI 渲染面的通信通道。
 
     接口声明在此，实现细节（WebSocket 推送、Future 管理等）在 @impl 中。

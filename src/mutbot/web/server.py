@@ -11,7 +11,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from mutagent.runtime.log_store import LogStore, LogStoreHandler, SingleLineFormatter
+from mutagent.app.log_store import LogStore, LogStoreHandler, SingleLineFormatter
 
 from mutbot.runtime.workspace import WorkspaceManager
 from mutbot.runtime.session_manager import SessionManager
@@ -86,7 +86,7 @@ async def _shutdown_cleanup():
 
     # 关闭 SandboxApp
     if sandbox_app is not None:
-        from mutagent.sandbox.tools import PySandboxTools
+        from mutagent.sandbox.entry_mcp import PySandboxTools
         await sandbox_app.close()
         PySandboxTools._app = None
         logger.info("SandboxApp closed")
@@ -169,11 +169,11 @@ async def _on_startup() -> None:
     # MCP sources / CLI sources 桥接由 mutagent 负责（agent 模式 connect_sources()
     # 或 --serve 模式 _build_sandbox()），mutbot 不参与外部源管理。
     # NamespaceTools 子类（MutbotTools）由 SandboxApp 在 exec_code 时自动发现。
-    from mutagent.sandbox import SandboxApp
-    from mutagent.sandbox.tools import PySandboxTools
+    from mutagent.sandbox import SandboxEnv
+    from mutagent.sandbox.entry_mcp import PySandboxTools
     import mutbot.builtins.debug_tools  # noqa: F401 — 注册 MutbotTools
 
-    sandbox_app = SandboxApp()
+    sandbox_app = SandboxEnv()
 
     PySandboxTools._app = sandbox_app
     # 让 MutBotMCP 在 initialize 响应里宣告 pysandbox capability，并启用
@@ -395,7 +395,7 @@ def worker_main(port: int, debug: bool = False) -> None:
     """Worker 进程入口：监听 localhost 指定端口，运行完整 MutBotServer。"""
     import mutbot
     from mutio.net.server import Server as _Server
-    from mutagent import impl as _impl
+    from mutobj import impl as _impl
 
     # 1. Config
     global config, log_store
@@ -495,7 +495,7 @@ def _standalone_main(addresses: list[tuple[str, int]], debug: bool = False) -> N
     """单进程模式（与原来的 main() 行为一致）。"""
     import mutbot
     from mutio.net.server import Server as _Server
-    from mutagent import impl as _impl
+    from mutobj import impl as _impl
 
     # 1. Config
     global config, log_store

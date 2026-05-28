@@ -5,10 +5,10 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
-from mutagent.tools import Toolkit
+from mutagent.core.tools import Toolkit
 
 if TYPE_CHECKING:
-    from mutagent.messages import ToolSchema
+    from mutagent.core.messages import ToolSchema
 
     from mutbot.session import Session
     from mutbot.ui.context import UIContext

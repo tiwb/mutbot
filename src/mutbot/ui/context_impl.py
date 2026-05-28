@@ -6,7 +6,7 @@ import asyncio
 import logging
 from typing import Any
 
-import mutagent
+import mutobj
 
 from mutbot.ui.context import UIContext
 from mutbot.ui.events import UIEvent
@@ -68,7 +68,7 @@ def _get_closed(ctx: UIContext) -> bool:
     return getattr(ctx, '_closed', False)
 
 
-@mutagent.impl(UIContext.set_view)
+@mutobj.impl(UIContext.set_view)
 def set_view(self: UIContext, view: dict) -> None:
     if _get_closed(self):
         logger.warning("set_view called on closed UIContext %s", self.context_id)
@@ -81,7 +81,7 @@ def set_view(self: UIContext, view: dict) -> None:
     _fire_and_forget_broadcast(self, msg)
 
 
-@mutagent.impl(UIContext.wait_event)
+@mutobj.impl(UIContext.wait_event)
 async def wait_event(
     self: UIContext,
     *,
@@ -103,7 +103,7 @@ async def wait_event(
         return event
 
 
-@mutagent.impl(UIContext.show)
+@mutobj.impl(UIContext.show)
 async def show(self: UIContext, view: dict) -> dict | None:
     self.set_view(view)
     event = await self.wait_event()
@@ -112,7 +112,7 @@ async def show(self: UIContext, view: dict) -> dict | None:
     return event.data
 
 
-@mutagent.impl(UIContext.close)
+@mutobj.impl(UIContext.close)
 def close(self: UIContext, final_view: dict | None = None) -> None:
     if _get_closed(self):
         return
@@ -151,6 +151,3 @@ def _fire_and_forget_broadcast(ctx: UIContext, data: dict) -> None:
         except RuntimeError:
             pass
 
-
-# 注册实现
-mutagent.register_module_impls(__import__(__name__))

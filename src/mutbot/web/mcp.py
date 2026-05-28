@@ -14,15 +14,12 @@ from __future__ import annotations
 from typing import Any, ClassVar, TYPE_CHECKING
 
 import mutbot
-from mutagent.sandbox.share import (
-    PYSANDBOX_CAPABILITY,
-    register_pysandbox_methods,
-)
+from mutagent.sandbox import PYSANDBOX_CAPABILITY, register_pysandbox_methods
 from mutio.mcp.view import MCPView
 from mutio.mcp import MCPPromptSet
 
 if TYPE_CHECKING:
-    from mutagent.sandbox.app import SandboxApp
+    from mutagent.sandbox.env import SandboxEnv
     from mutio.mcp.protocol import JsonRpcDispatcher
 
 
@@ -37,7 +34,7 @@ class MutBotMCP(MCPView):
     )
 
     # 启动时由 _on_startup 赋值（类级单例，ClassVar 避免被 mutobj 包成 per-instance AttributeDescriptor）
-    _sandbox_app: ClassVar["SandboxApp | None"] = None
+    _sandbox_app: ClassVar["SandboxEnv | None"] = None
 
     def extra_capabilities(self) -> dict[str, Any]:
         # 仅在 sandbox 就绪后才宣告 capability，避免 client 连上可接但

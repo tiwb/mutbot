@@ -12,11 +12,11 @@ import re
 from pathlib import Path
 from typing import Any
 
-from mutagent.config import (
+from mutagent.app.config import (
+    CancelFn,
     ChangeCallback,
     Config,
     ConfigChangeEvent,
-    Disposable,
 )
 
 logger = logging.getLogger(__name__)
@@ -81,15 +81,15 @@ class MutbotConfig(Config):
         # 触发 on_change
         self._notify(name, source)
 
-    def on_change(self, pattern: str, callback: ChangeCallback) -> Disposable:
-        """注册监听。返回 Disposable 用于取消。"""
+    def on_change(self, pattern: str, callback: ChangeCallback) -> CancelFn:
+        """注册监听。返回 CancelFn 用于取消。"""
         entry = (pattern, callback)
         self._listeners.append(entry)
 
         def dispose() -> None:
             self._listeners.remove(entry)
 
-        return Disposable(dispose=dispose)
+        return dispose
 
     def reload(self) -> None:
         """从文件重新加载。逐个对比顶层 key，每个变化的 key 各触发一次 on_change。"""
