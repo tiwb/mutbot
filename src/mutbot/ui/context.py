@@ -22,6 +22,8 @@ class UIContext(mutobj.Declaration):
 
     context_id: str
     broadcast: Any  # Callable[[str, dict], None]
+    _event_queue: Any = None  # asyncio.Queue，impl 中懒创建
+    _closed: bool = False
 
     def set_view(self, view: dict) -> None:
         """推送完整视图到前端。前端通过 React reconciliation 平滑更新。

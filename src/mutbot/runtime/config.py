@@ -146,8 +146,14 @@ class MutbotConfig(Config):
         """触发匹配的 on_change 回调。"""
         event = ConfigChangeEvent(key=key, source=source, config=self)
         for pattern, cb in list(self._listeners):
-            if self.affects(pattern, key):
+            if self._affects(pattern, key):
                 cb(event)
+
+    @staticmethod
+    def _affects(pattern: str, key: str) -> bool:
+        """简单 glob 匹配。复用 mutagent 的 _glob_match 实现。"""
+        from mutagent.app._config_impl import _glob_match
+        return _glob_match(pattern.split("."), key.split("."))
 
 
 # ---------------------------------------------------------------------------

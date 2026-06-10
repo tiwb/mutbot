@@ -19,6 +19,7 @@ import logging
 from typing import Any
 from urllib.parse import quote
 
+import mutobj
 from mutgui import Bind, Callback, Channel, View, ViewBlock, ViewPort
 
 from mutio.net.server import WebSocketConnection, WebSocketDisconnect, WebSocketView
@@ -33,6 +34,7 @@ logger = logging.getLogger(__name__)
 
 class MutbotMutguiChannel(Channel):
     """把 mutgui 的 send(message: dict) 接到 mutio.net 的 WebSocketConnection。"""
+    ws: WebSocketConnection
 
     def __init__(self, ws: WebSocketConnection) -> None:
         super().__init__()
@@ -79,6 +81,18 @@ class AuthSetupView(View):
 
     鉴权由 middleware 处理 — 能进 View 就说明已通过登录(普通用户或 setup-bootstrap)。
     """
+
+    step: str = ""
+    error: str = ""
+    relay_url: str = ""
+    providers: list[dict[str, str]] = mutobj.field(default_factory=list)
+    _mock_send_command: Any = None  # 测试注入，生产为 None
+
+    async def send_command(self, name: str, /, **args: Any) -> None:
+        if self._mock_send_command:
+            await self._mock_send_command(name, **args)
+        else:
+            await super().send_command(name, **args)
 
     def __init__(self) -> None:
         super().__init__()

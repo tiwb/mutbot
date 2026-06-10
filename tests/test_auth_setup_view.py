@@ -139,7 +139,7 @@ class TestStartOAuth:
         async def _fake_send_command(name: str, /, **args: Any) -> None:
             sent.append((name, args))
 
-        monkeypatch.setattr(v, "send_command", _fake_send_command)
+        v._mock_send_command = _fake_send_command
         await v._on_start_oauth("github")
         assert sent
         name, args = sent[0]
@@ -201,7 +201,7 @@ class TestBackNavigation:
         async def _fake_send_command(name: str, /, **args: Any) -> None:
             sent.append((name, args))
 
-        monkeypatch.setattr(v, "send_command", _fake_send_command)
+        v._mock_send_command = _fake_send_command
         await v._on_back_home()
         assert sent == [("mutgui.redirect", {"url": "/"})]
 

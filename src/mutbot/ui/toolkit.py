@@ -30,7 +30,7 @@ class UIToolkitBase(Toolkit):
         Toolkit.owner → ToolSet → Agent → Session
     """
 
-    _discoverable = False
+    discoverable = False
 
     @property
     def ui(self) -> UIContext:
@@ -145,14 +145,14 @@ class UIToolkit(UIToolkitBase):
     LLM 通过 UI-show 工具自主构建 View Schema，展示交互式 UI。
     """
 
-    _discoverable = True
+    discoverable = True
 
     async def show(self, view: dict) -> dict:
         """展示交互式 UI 并等待用户提交。"""
         result = await self.ui.show(view)
         return result if result is not None else {}
 
-    def _customize_schema(self, method_name: str, schema: ToolSchema) -> ToolSchema:
+    def customize_schema(self, method_name: str, schema: ToolSchema) -> ToolSchema:
         if method_name == "show":
             from dataclasses import replace
             schema = replace(
