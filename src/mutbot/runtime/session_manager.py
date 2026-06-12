@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any
 
 import mutobj
-from mutagent.app.config import Config
+from mutbot.runtime.config import Config
 
 from mutbot.session import Session
 from mutbot.runtime import storage

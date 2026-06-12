@@ -10,7 +10,7 @@ from pathlib import Path as _Path
 from typing import Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from mutbot.runtime.config import MutbotConfig
+    from mutbot.runtime.config import Config
 
 from mutio.net.server import JSONResponse, Response, View, WebSocketConnection, WebSocketDisconnect, WebSocketView
 from mutbot.web.rpc import (
@@ -153,7 +153,7 @@ def _get_channel_manager():
     return channel_manager
 
 
-def _get_config() -> MutbotConfig | None:
+def _get_config() -> Config | None:
     from mutbot.web.server import config
     return config
 

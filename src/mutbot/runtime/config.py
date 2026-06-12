@@ -9,19 +9,34 @@ import json
 import logging
 import os
 import re
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
-from mutagent.app.config import (
-    CancelFn,
-    ChangeCallback,
-    Config,
-    ConfigChangeEvent,
-)
+import mutobj
 
 logger = logging.getLogger(__name__)
 
 MUTBOT_USER_DIR = Path.home() / ".mutbot"
+
+# ---------------------------------------------------------------------------
+# 变更事件与回调类型
+# ---------------------------------------------------------------------------
+
+CancelFn = Callable[[], None]
+"""取消订阅的回调类型。"""
+
+
+@dataclass
+class ConfigChangeEvent:
+    """配置变更事件。"""
+    key: str
+    source: str
+    config: Config
+
+
+ChangeCallback = Callable[[ConfigChangeEvent], None]
+"""配置变更回调。"""
 
 
 # ---------------------------------------------------------------------------
@@ -43,11 +58,33 @@ def _expand_env(value: Any) -> Any:
     return value
 
 
+def _glob_match(pattern_parts: list[str], key_parts: list[str]) -> bool:
+    """glob 风格匹配。* 匹配单段，** 匹配任意段。"""
+
+    def _do_match(pp: list[str], pi: int, kp: list[str], ki: int) -> bool:
+        while pi < len(pp) and ki < len(kp):
+            if pp[pi] == "**":
+                for skip in range(ki, len(kp) + 1):
+                    if _do_match(pp, pi + 1, kp, skip):
+                        return True
+                return False
+            if pp[pi] == "*" or pp[pi] == kp[ki]:
+                pi += 1
+                ki += 1
+            else:
+                return False
+        while pi < len(pp) and pp[pi] == "**":
+            pi += 1
+        return pi == len(pp) and ki == len(kp)
+
+    return _do_match(pattern_parts, 0, key_parts, 0)
+
+
 # ---------------------------------------------------------------------------
-# MutbotConfig
+# Config
 # ---------------------------------------------------------------------------
 
-class MutbotConfig(Config):
+class Config(mutobj.Declaration):
     """mutbot 单层文件配置。
 
     管理 ~/.mutbot/config.json，内置持久化和变更通知。
@@ -151,8 +188,7 @@ class MutbotConfig(Config):
 
     @staticmethod
     def _affects(pattern: str, key: str) -> bool:
-        """简单 glob 匹配。复用 mutagent 的 _glob_match 实现。"""
-        from mutagent.app._config_impl import _glob_match
+        """简单 glob 匹配。* 匹配单段，** 匹配任意段。"""
         return _glob_match(pattern.split("."), key.split("."))
 
 
@@ -160,7 +196,7 @@ class MutbotConfig(Config):
 # 加载
 # ---------------------------------------------------------------------------
 
-def load_mutbot_config() -> MutbotConfig:
+def load_mutbot_config() -> Config:
     """加载 mutbot 配置。"""
     config_path = MUTBOT_USER_DIR / "config.json"
     MUTBOT_USER_DIR.mkdir(parents=True, exist_ok=True)
@@ -175,7 +211,7 @@ def load_mutbot_config() -> MutbotConfig:
         mtime = config_path.stat().st_mtime
     except OSError:
         pass
-    return MutbotConfig(
+    return Config(
         _data=data,
         _listeners=[],
         _config_path=config_path,

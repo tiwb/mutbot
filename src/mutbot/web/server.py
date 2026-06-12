@@ -16,7 +16,7 @@ from mutagent.app.log_store import LogStore, LogStoreHandler, SingleLineFormatte
 from mutbot.runtime.workspace import WorkspaceManager
 from mutbot.runtime.session_manager import SessionManager
 from mutbot.runtime.terminal import TerminalManager
-from mutbot.runtime.config import MutbotConfig, load_mutbot_config
+from mutbot.runtime.config import Config, load_mutbot_config
 from mutio.net.server import Server, StaticView
 
 logger = logging.getLogger(__name__)
@@ -30,7 +30,7 @@ session_manager: SessionManager | None = None
 log_store: LogStore | None = None
 terminal_manager: TerminalManager | None = None
 channel_manager: Any = None
-config: MutbotConfig | None = None
+config: Config | None = None
 sandbox_app: Any = None  # SandboxApp | None
 
 
@@ -92,7 +92,7 @@ async def _shutdown_cleanup():
         logger.info("SandboxApp closed")
 
 
-async def _watch_config_changes(cfg: MutbotConfig) -> None:
+async def _watch_config_changes(cfg: Config) -> None:
     """Background task: poll ~/.mutbot/config.json mtime every 5s."""
     config_path = cfg._config_path
     last_mtime: float = 0.0
@@ -320,7 +320,7 @@ def _build_banner_lines(
 
 def _print_security_warning(
     addresses: list[tuple[str, int]],
-    cfg: MutbotConfig,
+    cfg: Config,
 ) -> None:
     """检测非 loopback + 无 auth 时生成 setup token 并打印警告。"""
     from mutbot.auth.network import is_loopback_only
@@ -350,7 +350,7 @@ def _format_banner_line(host: str, port: int) -> str:
     return f"  \u279c {local_url}  (via {via_url})"
 
 
-def _init_logging(cfg: MutbotConfig, debug: bool, log_prefix: str = "server") -> LogStore:
+def _init_logging(cfg: Config, debug: bool, log_prefix: str = "server") -> LogStore:
     """初始化日志系统（config + console + file + memory store）。"""
     session_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     log_dir = Path.home() / ".mutbot" / "logs"

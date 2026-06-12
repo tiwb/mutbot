@@ -7,24 +7,23 @@ from pathlib import Path
 
 import pytest
 
-from mutagent.app.config import Config
-from mutbot.runtime.config import MutbotConfig, load_mutbot_config
+from mutbot.runtime.config import Config, load_mutbot_config
 
 
 # ---------------------------------------------------------------------------
-# MutbotConfig tests
+# Config tests
 # ---------------------------------------------------------------------------
 
 class TestMutbotConfig:
 
-    def _make_config(self, tmp_path: Path, data: dict | None = None) -> MutbotConfig:
+    def _make_config(self, tmp_path: Path, data: dict | None = None) -> Config:
         config_path = tmp_path / "config.json"
         if data is not None:
             config_path.write_text(json.dumps(data), encoding="utf-8")
             mtime = config_path.stat().st_mtime
         else:
             mtime = 0.0
-        return MutbotConfig(
+        return Config(
             _data=data or {},
             _listeners=[],
             _config_path=config_path,
@@ -133,7 +132,7 @@ class TestLoadMutbotConfig:
     def test_returns_mutbot_config(self, tmp_path, monkeypatch):
         monkeypatch.setattr("mutbot.runtime.config.MUTBOT_USER_DIR", tmp_path)
         config = load_mutbot_config()
-        assert isinstance(config, MutbotConfig)
+        assert isinstance(config, Config)
 
     def test_loads_existing_file(self, tmp_path, monkeypatch):
         monkeypatch.setattr("mutbot.runtime.config.MUTBOT_USER_DIR", tmp_path)
