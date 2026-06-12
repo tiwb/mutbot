@@ -18,6 +18,7 @@ import time
 from typing import Any
 from urllib.parse import quote
 
+from mutio.codec.json import JsonObject, get_field, narrow_value
 from mutio.net.server import HTMLResponse, JSONResponse, RedirectResponse, Request, Response, View
 
 from mutbot.auth.token import (
@@ -245,8 +246,8 @@ class RelayCallbackView(View):
         - Setup 模式：auth 未配置，从临时 nonce 状态获取 relay URL 并保存配置
         """
         try:
-            body = await request.json()
-            assertion = body.get("assertion", "")
+            body = narrow_value(await request.json(), JsonObject)
+            assertion = get_field(body, "assertion", str, default="")
         except Exception:
             return JSONResponse({"error": "invalid body"}, status_code=400)
 

@@ -33,7 +33,7 @@ class MutBotMCP(MCPView):
         "能力清单见 help();具体命名空间见 help(<namespace>)。"
     )
 
-    # 启动时由 _on_startup 赋值（类级单例，ClassVar 避免被 mutobj 包成 per-instance AttributeDescriptor）
+    # 启动时由 _on_startup 赋值（类级单例）
     _sandbox_app: ClassVar["SandboxEnv | None"] = None
 
     def extra_capabilities(self) -> dict[str, Any]:

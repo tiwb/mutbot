@@ -167,7 +167,7 @@ class MutbotTools(NamespaceTools):
     完整函数清单:``help(mutbot)``。
     """
 
-    _namespace = "mutbot"
+    namespace = "mutbot"
 
     # ----- 服务器状态 -----
 

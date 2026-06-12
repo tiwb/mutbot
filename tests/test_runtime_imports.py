@@ -66,7 +66,7 @@ def test_import_runtime_menu_impl():
     """runtime.menu_impl 模块可导入且包含 MenuRegistry"""
     from mutbot.runtime.menu_impl import (
         MenuRegistry, menu_registry,
-        _get_attr_default, _menu_id, _item_to_dict,
+        _menu_id, _item_to_dict,
     )
     assert hasattr(MenuRegistry, "query")
     assert hasattr(MenuRegistry, "find_menu_class")

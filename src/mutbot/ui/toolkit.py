@@ -65,11 +65,9 @@ class UIToolkitBase(Toolkit):
         return ui
 
     @property
-    def session(self) -> Session:
-        """当前 Session。"""
-        assert self.owner is not None, "UIToolkitBase.owner not bound"
-        assert self.owner.agent is not None, "UIToolkitBase.owner.agent not bound"
-        return self.owner.agent.session
+    def session(self) -> Session | None:
+        """当前 Session。Agent 已剥离，返回 None。"""
+        return None
 
     def _resolve_broadcast(self):
         """从绑定链解析 broadcast 函数。

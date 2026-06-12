@@ -22,25 +22,6 @@ logger = logging.getLogger(__name__)
 # 辅助函数
 # ---------------------------------------------------------------------------
 
-def _get_attr_default(cls: type, attr: str) -> Any:
-    """从 Declaration 子类的属性描述符中读取默认值。
-
-    遍历 MRO，优先返回 AttributeDescriptor 的 default，
-    也兼容子类中无类型注解的纯值覆盖（plain value override）。
-    """
-    for klass in cls.__mro__:
-        desc = klass.__dict__.get(attr)
-        if desc is None:
-            continue
-        # AttributeDescriptor 有 has_default 属性
-        if hasattr(desc, "has_default") and desc.has_default:
-            return desc.default
-        # 子类中无类型注解的纯值覆盖（如 display_category = "SessionPanel/Add"）
-        if not hasattr(desc, "has_default") and not callable(desc) and not isinstance(desc, property):
-            return desc
-    return None
-
-
 def _menu_id(cls: type[Menu]) -> str:
     """从 Menu 子类生成唯一 ID"""
     return f"{cls.__module__}.{cls.__qualname__}"
@@ -98,10 +79,10 @@ class MenuRegistry:
         self._refresh()
         result = []
         for cls in self._cached_menus:
-            cat = _get_attr_default(cls, "display_category")
+            cat = mutobj.field_info(cls.display_category).make_default()
             if cat == category:
                 result.append(cls)
-        result.sort(key=lambda c: _get_attr_default(c, "display_order") or "_")
+        result.sort(key=lambda c: mutobj.field_info(c.display_order).make_default())
         return result
 
     def query(self, category: str, context: RpcContext) -> list[dict]:
@@ -121,7 +102,7 @@ class MenuRegistry:
 
         for menu_cls in menus:
             # 可见性判断
-            visible = _get_attr_default(menu_cls, "visible")
+            visible = mutobj.field_info(menu_cls.visible).make_default()
             check_vis = menu_cls.check_visible(menu_context)
             if check_vis is not None:
                 visible = check_vis
@@ -136,20 +117,20 @@ class MenuRegistry:
                 items.extend(dynamic)
             else:
                 # 静态菜单项
-                enabled_val = _get_attr_default(menu_cls, "enabled")
+                enabled_val = mutobj.field_info(menu_cls.enabled).make_default()
                 check_en = menu_cls.check_enabled(menu_context)
                 if check_en is not None:
                     enabled_val = check_en
 
-                shortcut = _get_attr_default(menu_cls, "display_shortcut") or ""
-                client_act = _get_attr_default(menu_cls, "client_action") or ""
-                submenu_cat = _get_attr_default(menu_cls, "display_submenu_category") or ""
+                shortcut = mutobj.field_info(menu_cls.display_shortcut).make_default()
+                client_act = mutobj.field_info(menu_cls.client_action).make_default()
+                submenu_cat = mutobj.field_info(menu_cls.display_submenu_category).make_default()
 
                 items.append(MenuItem(
                     id=_menu_id(menu_cls),
-                    name=_get_attr_default(menu_cls, "display_name") or menu_cls.__name__,
-                    icon=_get_attr_default(menu_cls, "display_icon") or "",
-                    order=_get_attr_default(menu_cls, "display_order") or "_",
+                    name=mutobj.field_info(menu_cls.display_name).make_default() or menu_cls.__name__,
+                    icon=mutobj.field_info(menu_cls.display_icon).make_default(),
+                    order=mutobj.field_info(menu_cls.display_order).make_default(),
                     enabled=enabled_val if enabled_val is not None else True,
                     visible=True,
                     shortcut=shortcut,

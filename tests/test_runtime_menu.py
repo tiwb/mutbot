@@ -18,11 +18,11 @@ import pytest
 
 import mutobj
 
+
 from mutbot.menu import Menu, MenuItem, MenuResult
 from mutbot.runtime.menu_impl import (
     MenuRegistry,
     menu_registry,
-    _get_attr_default,
     _item_to_dict,
     _menu_id,
 )
@@ -84,19 +84,15 @@ class TestGetAttrDefault:
 
     def test_reads_descriptor_default(self):
         """从 Menu 基类读取 AttributeDescriptor 的默认值"""
-        assert _get_attr_default(Menu, "display_name") == ""
-        assert _get_attr_default(Menu, "enabled") is True
-        assert _get_attr_default(Menu, "visible") is True
+        assert Menu.display_name.make_default() == ""
+        assert Menu.enabled.make_default() is True
+        assert Menu.visible.make_default() is True
 
     def test_reads_plain_value_override(self):
         """从子类读取无类型注解的纯值覆盖"""
-        assert _get_attr_default(AddSessionMenu, "display_name") == "New Session"
-        assert _get_attr_default(AddSessionMenu, "display_category") == "SessionPanel/Add"
-        assert _get_attr_default(AddSessionMenu, "display_order") == "0new:0"
-
-    def test_nonexistent_attr_returns_none(self):
-        assert _get_attr_default(Menu, "nonexistent_attr") is None
-
+        assert AddSessionMenu.display_name.make_default() == "New Session"
+        assert AddSessionMenu.display_category.make_default() == "SessionPanel/Add"
+        assert AddSessionMenu.display_order.make_default() == "0new:0"
 
 # ---------------------------------------------------------------------------
 # MenuItem / MenuResult 数据结构
@@ -396,8 +392,8 @@ class TestMenuNewAttributes:
 
     def test_menu_default_new_attributes(self):
         """Menu 基类的新属性默认值"""
-        assert _get_attr_default(Menu, "display_shortcut") == ""
-        assert _get_attr_default(Menu, "client_action") == ""
+        assert Menu.display_shortcut.make_default() == ""
+        assert Menu.client_action.make_default() == ""
 
     def test_check_enabled_default_returns_none(self):
         assert Menu.check_enabled({}) is None
@@ -414,20 +410,20 @@ class TestTabContextMenus:
 
     def test_rename_session_menu_attributes(self):
         from mutbot.builtins.menus import RenameSessionMenu
-        assert _get_attr_default(RenameSessionMenu, "display_name") == "Rename"
-        assert _get_attr_default(RenameSessionMenu, "display_category") == "Tab/Context"
-        assert _get_attr_default(RenameSessionMenu, "display_shortcut") == "F2"
-        assert _get_attr_default(RenameSessionMenu, "client_action") == "start_rename"
+        assert RenameSessionMenu.display_name.make_default() == "Rename"
+        assert RenameSessionMenu.display_category.make_default() == "Tab/Context"
+        assert RenameSessionMenu.display_shortcut.make_default() == "F2"
+        assert RenameSessionMenu.client_action.make_default() == "start_rename"
 
     def test_close_tab_menu_attributes(self):
         from mutbot.builtins.menus import CloseTabMenu
-        assert _get_attr_default(CloseTabMenu, "display_name") == "Close"
-        assert _get_attr_default(CloseTabMenu, "client_action") == "close_tab"
+        assert CloseTabMenu.display_name.make_default() == "Close"
+        assert CloseTabMenu.client_action.make_default() == "close_tab"
 
     def test_close_others_menu_attributes(self):
         from mutbot.builtins.menus import CloseOthersMenu
-        assert _get_attr_default(CloseOthersMenu, "display_name") == "Close Others"
-        assert _get_attr_default(CloseOthersMenu, "client_action") == "close_others"
+        assert CloseOthersMenu.display_name.make_default() == "Close Others"
+        assert CloseOthersMenu.client_action.make_default() == "close_others"
 
     def test_tab_context_discovery(self):
         menus = menu_registry.get_by_category("Tab/Context")
@@ -465,14 +461,14 @@ class TestSessionListContextMenus:
 
     def test_rename_session_list_menu_attributes(self):
         from mutbot.builtins.menus import RenameSessionListMenu
-        assert _get_attr_default(RenameSessionListMenu, "display_name") == "Rename"
-        assert _get_attr_default(RenameSessionListMenu, "display_category") == "SessionList/Context"
-        assert _get_attr_default(RenameSessionListMenu, "client_action") == "start_rename"
+        assert RenameSessionListMenu.display_name.make_default() == "Rename"
+        assert RenameSessionListMenu.display_category.make_default() == "SessionList/Context"
+        assert RenameSessionListMenu.client_action.make_default() == "start_rename"
 
     def test_delete_session_menu_attributes(self):
         from mutbot.builtins.menus import DeleteSessionMenu
-        assert _get_attr_default(DeleteSessionMenu, "display_name") == "Delete"
-        assert _get_attr_default(DeleteSessionMenu, "display_category") == "SessionList/Context"
+        assert DeleteSessionMenu.display_name.make_default() == "Delete"
+        assert DeleteSessionMenu.display_category.make_default() == "SessionList/Context"
 
     def test_session_list_context_discovery(self):
         menus = menu_registry.get_by_category("SessionList/Context")

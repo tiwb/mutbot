@@ -12,6 +12,7 @@ from typing import Any, TYPE_CHECKING
 if TYPE_CHECKING:
     from mutbot.runtime.config import Config
 
+from mutio.codec.json import JsonObject, narrow_value
 from mutio.net.server import JSONResponse, Response, View, WebSocketConnection, WebSocketDisconnect, WebSocketView
 from mutbot.web.rpc import (
     RpcDispatcher, RpcContext, make_event,
@@ -200,7 +201,7 @@ class AppWebSocket(WebSocketView):
 
         try:
             while True:
-                raw = await ws.receive_json()
+                raw = narrow_value(await ws.receive_json(), JsonObject)
                 response = await app_dispatcher.dispatch(raw, context)
                 if response is not None:
                     await ws.send_json(response)
