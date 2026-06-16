@@ -531,14 +531,14 @@ class ChannelTransport(mutobj.Extension[Channel]):
 
 
 @impl(Channel.send_json)
-def _channel_send_json(self: Channel, data: dict) -> None:
+def channel_send_json(self: Channel, data: dict) -> None:
     ext = ChannelTransport.get(self)
     if ext and ext._client:
         ext._client.enqueue("json", {"ch": self.ch, **data})
 
 
 @impl(Channel.send_binary)
-def _channel_send_binary(self: Channel, data: bytes) -> None:
+def channel_send_binary(self: Channel, data: bytes) -> None:
     ext = ChannelTransport.get(self)
     if ext and ext._client:
         # 终端帧流控：buffering/expired 或背压超限时丢弃

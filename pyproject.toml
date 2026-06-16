@@ -64,5 +64,3 @@ pythonPlatform = "Linux"
 include = ["src"]
 extraPaths = ["src"]
 
-[tool.mutobj-lint]
-include = ["src"]

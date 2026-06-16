@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 @mutobj.impl(Session.get_session_class)
-def get_session_class(qualified_name: str) -> type[Session]:
+def session_get_session_class(qualified_name: str) -> type[Session]:
     for cls in mutobj.discover_subclasses(Session):
         if f"{cls.__module__}.{cls.__qualname__}" == qualified_name:
             return cls
@@ -39,7 +39,7 @@ def get_session_class(qualified_name: str) -> type[Session]:
 
 
 @mutobj.impl(Session.serialize)
-def serialize_session(self: Session) -> dict:
+def session_serialize(self: Session) -> dict:
     """序列化为可持久化的 dict（基于 __annotations__ 自动收集所有声明字段）"""
     d: dict[str, Any] = {}
     for cls in type(self).__mro__:
@@ -68,7 +68,7 @@ class SessionRuntime:
 
 
 @mutobj.impl(Session.deserialize)
-def _deserialize_session(cls: type[Session], data: dict) -> Session:
+def session_deserialize(cls: type[Session], data: dict) -> Session:
     """从持久化 dict 重建对应子类的 Session 实例（基于 __annotations__ 自动提取字段）。"""
     raw_type = data.get("type", "")
 

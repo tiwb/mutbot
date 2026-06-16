@@ -69,7 +69,7 @@ def _get_closed(ctx: UIContext) -> bool:
 
 
 @mutobj.impl(UIContext.set_view)
-def set_view(self: UIContext, view: dict) -> None:
+def ui_context_set_view(self: UIContext, view: dict) -> None:
     if _get_closed(self):
         logger.warning("set_view called on closed UIContext %s", self.context_id)
         return
@@ -82,7 +82,7 @@ def set_view(self: UIContext, view: dict) -> None:
 
 
 @mutobj.impl(UIContext.wait_event)
-async def wait_event(
+async def ui_context_wait_event(
     self: UIContext,
     *,
     type: str | None = None,
@@ -104,7 +104,7 @@ async def wait_event(
 
 
 @mutobj.impl(UIContext.show)
-async def show(self: UIContext, view: dict) -> dict | None:
+async def ui_context_show(self: UIContext, view: dict) -> dict | None:
     self.set_view(view)
     event = await self.wait_event()
     if event.type in ("cancel", "disconnect"):
@@ -113,7 +113,7 @@ async def show(self: UIContext, view: dict) -> dict | None:
 
 
 @mutobj.impl(UIContext.close)
-def close(self: UIContext, final_view: dict | None = None) -> None:
+def ui_context_close(self: UIContext, final_view: dict | None = None) -> None:
     if _get_closed(self):
         return
     object.__setattr__(self, '_closed', True)

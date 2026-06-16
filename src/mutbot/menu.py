@@ -78,7 +78,7 @@ class Menu(mutobj.Declaration):
 
     async def execute(self, params: dict, context: RpcContext) -> MenuResult:
         """执行菜单动作，由子类实现"""
-        ...
+        raise NotImplementedError
 
     @classmethod
     def dynamic_items(cls, context: RpcContext) -> list[MenuItem] | None:

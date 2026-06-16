@@ -9,7 +9,6 @@ from __future__ import annotations
 from typing import Any, ClassVar, TYPE_CHECKING
 
 import mutobj
-from mutobj import impl
 
 if TYPE_CHECKING:
     from mutbot.channel import Channel, ChannelContext
@@ -45,17 +44,17 @@ class Session(mutobj.Declaration):
     @staticmethod
     def get_session_class(qualified_name: str) -> type[Session]:
         """通过全限定名查找 Session 子类，直接使用 mutobj 基础设施。"""
-        from mutbot.runtime.session_manager import get_session_class
-        return get_session_class(qualified_name)
+        from mutbot.runtime.session_manager import session_get_session_class
+        return session_get_session_class(qualified_name)
 
     def serialize(self) -> dict:
-        from mutbot.runtime.session_manager import serialize_session
-        return serialize_session(self)
+        from mutbot.runtime.session_manager import session_serialize
+        return session_serialize(self)
 
     @classmethod
     def deserialize(cls, data: dict) -> Session:
         """从 dict 重建 Session 实例。默认实现基于 __annotations__ 自动提取字段。"""
-        ...
+        raise NotImplementedError
 
     async def on_create(self, sm: SessionManager) -> None:
         """创建后的初始化（设状态、创建关联资源等）。
@@ -63,7 +62,7 @@ class Session(mutobj.Declaration):
         sm 提供 terminal_manager、config 等运行时资源。
         各子类按需从 sm 取用，基类默认空操作。
         """
-        ...
+        pass
 
     def on_stop(self, sm: SessionManager) -> None:
         """停止时的关联资源清理和状态归位。
@@ -71,39 +70,43 @@ class Session(mutobj.Declaration):
         runtime 资源（bridge、log handler）由 SessionManager 清理，
         此方法只负责 Session 自身的状态和关联资源（如 PTY）。
         """
-        ...
+        pass
 
     def on_restart_cleanup(self) -> None:
         """服务器重启时清理残留状态（无需外部资源）。"""
-        ...
+        pass
 
     # --- 广播能力（Declaration 桩）---
 
     def broadcast_json(self, data: dict) -> None:
         """广播 JSON 到连接此 Session 的所有 channel。"""
-        ...
+        ext = SessionChannels.get_or_create(self)
+        for ch in ext._channels:
+            ch.send_json(data)
 
     def broadcast_binary(self, data: bytes) -> None:
         """广播 binary 到连接此 Session 的所有 channel。"""
-        ...
+        ext = SessionChannels.get_or_create(self)
+        for ch in ext._channels:
+            ch.send_binary(data)
 
     # --- Channel 生命周期回调（Declaration 桩）---
 
     async def on_connect(self, channel: Channel, ctx: ChannelContext) -> None:
         """前端连接到此 Session 时调用。"""
-        ...
+        pass
 
     def on_disconnect(self, channel: Channel, ctx: ChannelContext) -> None:
         """前端断开此 Session 的 channel 时调用。"""
-        ...
+        pass
 
     async def on_message(self, channel: Channel, raw: dict, ctx: ChannelContext) -> None:
         """收到前端 JSON 消息。"""
-        ...
+        pass
 
     async def on_data(self, channel: Channel, payload: bytes, ctx: ChannelContext) -> None:
         """收到前端二进制数据。"""
-        ...
+        pass
 
 
 class TerminalSession(Session):
@@ -124,16 +127,3 @@ class SessionChannels(mutobj.Extension[Session]):
 
     _channels: list = mutobj.field(default_factory=list)  # list[Channel]
 
-
-@impl(Session.broadcast_json)
-def _session_broadcast_json(self: Session, data: dict) -> None:
-    ext = SessionChannels.get_or_create(self)
-    for ch in ext._channels:
-        ch.send_json(data)
-
-
-@impl(Session.broadcast_binary)
-def _session_broadcast_binary(self: Session, data: bytes) -> None:
-    ext = SessionChannels.get_or_create(self)
-    for ch in ext._channels:
-        ch.send_binary(data)
