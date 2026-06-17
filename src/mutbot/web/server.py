@@ -88,7 +88,7 @@ async def _shutdown_cleanup():
     if sandbox_app is not None:
         from mutagent.sandbox.entry_mcp import PySandboxTools
         await sandbox_app.close()
-        PySandboxTools._app = None
+        PySandboxTools.env = None
         logger.info("SandboxApp closed")
 
 
@@ -175,7 +175,7 @@ async def _on_startup() -> None:
 
     sandbox_app = SandboxEnv()
 
-    PySandboxTools._app = sandbox_app
+    PySandboxTools.env = sandbox_app
     # 让 MutBotMCP 在 initialize 响应里宣告 pysandbox capability，并启用
     # pysandbox/namespaces.* 扩展方法，供 mutagent peer client 融合
     from mutbot.web.mcp import MutBotMCP

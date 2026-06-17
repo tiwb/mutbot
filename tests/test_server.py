@@ -18,7 +18,7 @@ from typing import Any
 import pytest
 
 from mutio.net.asgi import ASGIServer
-from mutio.net._protocol import HTTPProtocol, RequestResponseCycle, FlowControl, WSProtocol, format_sse
+from mutio.net._protocol import HTTPProtocol, RequestResponseCycle, FlowControl, WSProtocol
 
 
 # ---------------------------------------------------------------------------
@@ -174,28 +174,6 @@ async def _http_request(
     finally:
         writer.close()
         await writer.wait_closed()
-
-
-# ---------------------------------------------------------------------------
-# SSE 格式化测试
-# ---------------------------------------------------------------------------
-
-class TestSSE:
-    def test_basic(self):
-        result = format_sse("hello")
-        assert result == b"data: hello\n\n"
-
-    def test_with_event_and_id(self):
-        result = format_sse("payload", event="update", id="42")
-        assert b"id: 42\n" in result
-        assert b"event: update\n" in result
-        assert b"data: payload\n" in result
-
-    def test_multiline_data(self):
-        result = format_sse("line1\nline2\nline3")
-        assert b"data: line1\n" in result
-        assert b"data: line2\n" in result
-        assert b"data: line3\n" in result
 
 
 # ---------------------------------------------------------------------------
