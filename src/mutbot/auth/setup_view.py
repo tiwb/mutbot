@@ -138,7 +138,7 @@ class AuthSetupView(View):
             })
         items.extend(children)
         return ViewBlock([
-            {"$component": "div", "$id": "wrap",
+            {"$component": "html.div", "$id": "wrap",
              "style": {"maxWidth": 460, "margin": "40px auto", "padding": "32px",
                        "background": "#1f1f1f", "border": "1px solid #303030",
                        "borderRadius": 12, "color": "#d4d4d4"},
@@ -219,7 +219,7 @@ class AuthSetupView(View):
             title="Choose Login Provider",
             subtitle=f"via {self.relay_url}",
             children=[
-                {"$component": "div", "$id": "list", "$children": buttons},
+                {"$component": "html.div", "$id": "list", "$children": buttons},
                 {"$component": "antd.Button", "$id": "back",
                  "type": "link", "style": {"marginTop": 8},
                  "children": "← Back",

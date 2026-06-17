@@ -6,6 +6,7 @@ import {
   MutguiView,
   registerComponents,
   registerCommands,
+  registerNamespace,
   resolveCommand,
   ConnectionProvider,
   type MutguiConnection,
@@ -30,6 +31,9 @@ registerComponents({
   __name__: "antd",
   ...(antd as unknown as Record<string, unknown>),
 });
+
+// 注册 html 命名空间 — 原生 HTML 元素和 Web Components
+registerNamespace('html', (key) => key);
 
 registerCommands({
   __name__: "mutgui",
